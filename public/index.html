@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>untitled pvp game</title>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300..700&family=Space+Mono:ital,wght@0,400;0,700;1,400;1,700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #000;
+      color: #fff;
+      font-family: 'Courier New', monospace;
+      overflow: hidden;
+    }
+
+    canvas { display: block; }
+
+    /* ── main menu page — full screen, centered ── */
+    #menu {
+      display: flex;
+      position: fixed;
+      inset: 0;
+      justify-content: center;
+      align-items: center;
+      background-color: rgba(0, 0, 0, 0.19);
+      z-index: 100;
+    }
+
+    /* ── shared overlay base ───────────────────────────────── */
+    .overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.75);
+      gap: 16px;
+      z-index: 100;
+    }
+
+    .overlay h1 {
+      font-size: 48px;
+      letter-spacing: 4px;
+      text-transform: lowercase;
+    }
+
+    .overlay p {
+      color: #aaa;
+      font-size: 14px;
+    }
+
+    /* ── buttons ────────────────────────────────────────────── */
+    .btn {
+      padding: 12px 32px;
+      font-size: 16px;
+      font-family: inherit;
+      background: #fff;
+      color: #000;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      letter-spacing: 1px;
+      text-transform: lowercase;
+      transition: background 0.15s, transform 0.1s;
+    }
+    .btn:hover  { background: #ddd; }
+    .btn:active { transform: scale(0.97); }
+
+    .btn-outline {
+      background: transparent;
+      color: #fff;
+      border: 1px solid #fff;
+    }
+    .btn-outline:hover { background: rgba(255,255,255,0.1); }
+
+    /* ── text input ─────────────────────────────────────────── */
+    input[type="text"] {
+      padding: 10px 16px;
+      font-size: 16px;
+      font-family: inherit;
+      background: #111;
+      color: #fff;
+      border: 1px solid #444;
+      border-radius: 4px;
+      text-align: center;
+      text-transform: uppercase;
+      letter-spacing: 4px;
+      width: 200px;
+      outline: none;
+    }
+    input[type="text"]:focus { border-color: #fff; }
+
+    /* ════════════════════════════════════════════════════════════
+       MAIN MENU  (page-menu)
+       ════════════════════════════════════════════════════════════ */
+
+    /* Root panel */
+    .MainUI {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      width: 70vw;
+      padding-bottom: 10vh;
+      background-color: rgba(150, 163, 181, 0.5);
+      border-radius: 10px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.3);
+      perspective: 500px;
+    }
+    .MainUI h1,
+    .MainUI > p {
+      font-family: 'Space Grotesk', monospace;
+      color: white;
+    }
+
+    /* ── Title bar (top of .MainUI) ── */
+    .title-bar {
+      width: 100%;
+      box-sizing: border-box;
+      height: 35px;
+      display: flex;
+      align-items: center;
+      padding: 0 15px;
+      background: rgba(60, 60, 60, 0.99);
+      border-bottom: 1px solid #545454e4;
+      border-radius: 10px 10px 0 0;
+      box-shadow: 0 0 10px rgba(0,0,0,0.3);
+    }
+    .menu-title {
+      flex-grow: 1;
+      text-align: center;
+      margin-right: 60px;
+      font-family: 'Space Mono', monospace;
+      font-size: 13px;
+      font-weight: 600;
+      color: #d3d0d0;
+    }
+
+    /* ── macOS-style traffic lights ── */
+    .controls       { display: flex; gap: 8px; }
+    .controls.mini .control { width: 8px; height: 8px; }
+    .control        { display: inline-block; width: 12px; height: 12px; border-radius: 50%; }
+    .close          { background-color: #ff5f56; }
+    .minimize       { background-color: #ffbd2e; }
+    .expand         { background-color: #27c93f; }
+    .none           { background-color: #636363; }
+
+    /* ── Mini title bar (on cards / floating panels) ── */
+    .gamemode-bar {
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      z-index: 5;
+      height: 30px;
+      display: flex;
+      align-items: center;
+      padding-left: 10px;
+      background: rgba(40, 40, 40, 0.7);
+      border-radius: 10px 10px 0 0;
+    }
+
+    /* ── Gamemode cards ── */
+    .playGamemodes  { display: flex; gap: 10px; }
+    .gamemodeWrap {
+      position: relative;
+      display: inline-flex;
+      width: 15vw;
+      height: 50vh;
+      box-shadow: 0 0 10px rgba(0,0,0,0.3);
+      transition: transform 0.3s ease, box-shadow 0.3s ease;
+    }
+    .gamemodeWrap:hover {
+      transform: scale(1.05);
+      box-shadow: 0 0 20px rgba(0,0,0,0.3);
+    }
+    .playGamemodes img {
+      width: 100%;
+      height: 50vh;
+      border-radius: 10px;
+      object-fit: cover;
+    }
+
+    /* Card overlay (bottom gradient + buttons) */
+    .gamemodeWrap .overlay {
+      position: absolute;
+      inset: auto 0 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 10px;
+      background: none;
+      text-align: center;
+    }
+    .gamemodeWrap .overlay p,
+    .gamemodeWrap .overlay button {
+      color: white;
+      font-family: 'Space Grotesk', monospace;
+    }
+    .gamemodeWrap .overlay button {
+      width: 100%;
+      padding: 10px;
+      background-color: rgba(100, 100, 127, 0.8);
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: transform 0.3s ease, box-shadow 0.3s ease;
+    }
+    .gamemodeWrap .overlay button:hover {
+      transform: scale(1.05);
+      box-shadow: 0 0 10px rgba(0,0,0,0.3);
+    }
+
+    /* Perspective tilt on outer cards */
+    .left  { transform: perspective(1000px) rotateY( 10deg); transform-origin: right center; }
+    .right { transform: perspective(1000px) rotateY(-10deg); transform-origin: left center;  }
+
+    /* ── Player icon (bottom-left floating card) ── */
+    .playerIcon {
+      position: absolute;
+      bottom: -5vh; left: -5vw;
+      width: 30vh; height: 40vh;
+      transform: rotateX(1deg) rotateY(5deg) rotateZ(-3deg);
+      transition: transform 0.3s ease;
+    }
+    .playerIcon:hover { transform: scale(1.1); }
+    .playerIcon img {
+      width: 30vh; height: 40vh;
+      border-radius: 10px;
+      object-fit: cover;
+      box-shadow: 0 0 10px rgba(0,0,0,0.3);
+    }
+
+    /* ── Options bar (bottom-right floating panel) ── */
+    .options {
+      position: absolute;
+      bottom: -7vh; left: 50vw;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 15px;
+      height: 100px;
+      padding: 0 20px;
+      background-color: rgba(104, 101, 101, 0.95);
+      border-radius: 10px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.3);
+      transform: rotateX(1deg) rotateY(-2deg) rotateZ(3deg);
+    }
+    .options img {
+      height: 60px;
+      padding-top: 30px;
+      cursor: pointer;
+      transition: transform 0.2s ease;
+    }
+    .options img:hover { transform: scale(1.1); }
+
+    /* ── Splash text window (top-right floating panel) ── */
+    .splashWindow {
+      position: absolute;
+      bottom: 62vh; left: 50vw;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 15px;
+      width: 20vw; height: 100px;
+      padding: 0 20px;
+      background-color: rgba(104, 101, 101, 0.95);
+      border-radius: 10px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.3);
+      transform: rotateX(1deg) rotateY(-2deg) rotateZ(-1deg);
+    }
+    .splashText {
+      display: inline-block;
+      font-family: 'Space Grotesk', monospace;
+      font-weight: bold;
+      color: white;
+      animation: tilt 2s ease-in-out infinite;
+      transform-origin: center;
+    }
+    @keyframes tilt {
+      0%, 100% { transform: rotate(5deg);  }
+      50%       { transform: rotate(10deg); }
+    }
+
+    /* ── versusMenu / waitingRoom sections ── */
+    #errorMsg {
+      color: #ff4444;
+      font-size: 13px;
+      min-height: 18px;
+    }
+
+    .section {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      padding: 0 24px;
+    }
+
+    .section label {
+      font-size: 12px;
+      color: #888;
+      letter-spacing: 1px;
+    }
+
+    .divider {
+      width: 1px;
+      height: 40px;
+      background: #444;
+      margin: 0 8px;
+      align-self: center;
+    }
+
+    .code-box {
+      background: rgba(40, 40, 40, 0.85);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 10px;
+      padding: 20px 40px;
+      text-align: center;
+      box-shadow: 0 0 10px rgba(0,0,0,0.3);
+      margin-top: 8px;
+    }
+
+    .code-box label {
+      display: block;
+      font-family: 'Space Mono', monospace;
+      font-size: 11px;
+      color: #888;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+
+    #joinCodeDisplay {
+      font-family: 'Space Mono', monospace;
+      font-size: 40px;
+      letter-spacing: 10px;
+      color: #fff;
+      text-shadow: 0 0 20px rgba(255,255,255,0.15);
+    }
+
+    .spinner {
+      width: 24px;
+      height: 24px;
+      border: 2px solid rgba(255,255,255,0.15);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 4px 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── HUD ────────────────────────────────────────────────── */
+    #hud {
+      display: none;
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 50;
+    }
+
+    .hp-bar-wrap {
+      position: absolute;
+      bottom: 40px;
+      width: 200px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    #myHpWrap   { left:  40px; }
+    #oppHpWrap  { right: 40px; align-items: flex-end; }
+
+    .hp-label {
+      font-size: 11px;
+      color: #aaa;
+      letter-spacing: 1px;
+      text-transform: lowercase;
+    }
+
+    .hp-track {
+      width: 200px;
+      height: 8px;
+      background: #333;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    #myHpFill  { height: 100%; width: 100%; background: #00ff88; border-radius: 4px; transition: width 0.2s; }
+    #oppHpFill { height: 100%; width: 100%; background: #ff4444; border-radius: 4px; transition: width 0.2s; }
+
+    .hp-number { font-size: 13px; font-weight: bold; }
+
+    #stats {
+      position: absolute;
+      top: 16px; right: 16px;
+      text-align: right;
+      font-size: 12px;
+      color: #888;
+      line-height: 1.8;
+    }
+    #stats span { color: #fff; }
+
+    #controls-hint {
+      position: absolute;
+      top: 16px; left: 16px;
+      font-size: 11px;
+      color: #555;
+      line-height: 2;
+    }
+
+    #bombCooldown {
+      position: absolute;
+      bottom: 40px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+    }
+    #bombCooldown label { font-size: 10px; color: #888; letter-spacing: 1px; }
+    #bombReady { font-size: 13px; color: #ffaa00; }
+
+    /* ── pointer-lock overlay ── */
+    #lockOverlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 12px;
+      z-index: 60;
+    }
+    #lockOverlay.visible { display: flex; }
+    #lockOverlay p { font-size: 20px; color: #fff; }
+    #lockOverlay small { color: #888; font-size: 13px; }
+
+    /* ── Map vote ── */
+    #mapVote {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.85);
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 20px;
+      z-index: 110;
+    }
+    #mapVote h2 { font-size: 24px; letter-spacing: 3px; text-transform: lowercase; }
+    #mapVote .subtitle { font-size: 12px; color: #888; letter-spacing: 1px; }
+    #voteTimer { font-size: 13px; color: #ffaa00; }
+
+    #mapGrid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      max-width: 700px;
+      width: 100%;
+      padding: 0 24px;
+    }
+
+    .map-card {
+      background: #111;
+      border: 2px solid #333;
+      border-radius: 8px;
+      padding: 16px;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+      text-align: center;
+    }
+    .map-card:hover          { border-color: #666; background: #1a1a1a; }
+    .map-card.selected       { border-color: #00ff88; background: #0a1f14; }
+    .map-card .map-name      { font-size: 14px; font-weight: bold; margin-bottom: 6px; letter-spacing: 1px; }
+    .map-card .map-desc      { font-size: 11px; color: #888; line-height: 1.5; }
+
+    #voteStatus    { font-size: 12px; color: #aaa; min-height: 18px; }
+    #confirmVoteBtn { margin-top: 4px; }
+
+    /* ── results page ── */
+    #page-results {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.85);
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      z-index: 120;
+    }
+
+    .hidden { display: none !important; }
+  </style>
+  <script type="module" crossorigin src="/assets/index-DSum8RF7.js"></script>
+</head>
+<body>
+
+  <!-- ── MAIN MENU ─────────────────────────────────────────── -->
+  <div id="menu">
+    <div class='MainUI'>
+      <div class="title-bar">
+        <div class="controls">
+          <span class="control close"></span>
+          <span class="control minimize"></span>
+          <span class="control expand"></span>
+        </div>
+        <div class="menu-title">untitled grapple game</div>
+      </div>
+      <h1 style="margin-top:20px;">Untitled Grapple Game</h1>
+      <p>burgerburgerburger</p>
+      <div class='playGamemodes' style="margin-top:20px;">
+
+        <!-- 1v1 card -->
+        <div class='gamemodeWrap left'>
+          <div class="gamemode-bar">
+            <div class="controls mini">
+              <span class="control close"></span>
+              <span class="control none"></span>
+              <span class="control none"></span>
+            </div>
+          </div>
+          <img src='https://www.jocooks.com/wp-content/uploads/2024/08/cheeseburger-1-20.jpg' alt="1v1">
+          <div class='overlay'>
+            <p>1v1 an opponent via sharable join codes.</p>
+            <button onclick="document.getElementById('menu').style.display='none'; document.getElementById('versusMenu').style.display='flex'">Play</button>
+          </div>
+        </div>
+
+        <!-- ranked card -->
+        <div class='gamemodeWrap'>
+          <div class="gamemode-bar">
+            <div class="controls mini">
+              <span class="control close"></span>
+              <span class="control none"></span>
+              <span class="control none"></span>
+            </div>
+          </div>
+          <img src='https://www.jocooks.com/wp-content/uploads/2024/08/cheeseburger-1-20.jpg' alt="ranked">
+          <div class='overlay'>
+            <p>Play ranked and climb the leaderboard.</p>
+            <button disabled style="opacity:0.5;cursor:not-allowed;">coming soon</button>
+          </div>
+        </div>
+
+        <!-- coming soon card -->
+        <div class='gamemodeWrap right'>
+          <div class="gamemode-bar">
+            <div class="controls mini">
+              <span class="control close"></span>
+              <span class="control none"></span>
+              <span class="control none"></span>
+            </div>
+          </div>
+          <img src='https://www.jocooks.com/wp-content/uploads/2024/08/cheeseburger-1-20.jpg' alt="coming soon">
+          <div class='overlay'>
+            <p>GAMEMODE COMING SOON!</p>
+            <button disabled style="opacity:0.5;cursor:not-allowed;">coming soon</button>
+          </div>
+        </div>
+
+      </div>
+
+      <div class='playerIcon'>
+        <div class="gamemode-bar">
+          <div class="controls mini">
+            <span class="control close"></span>
+            <span class="control minimize"></span>
+            <span class="control expand"></span>
+          </div>
+          <div class='menu-title'>Skins</div>
+        </div>
+        <img src='https://theeburgerdude.com/wp-content/uploads/2021/01/Big-Mac-300x300.jpg' alt="player">
+      </div>
+
+      <div class='options'>
+        <div class="gamemode-bar">
+          <div class="controls mini">
+            <span class="control close"></span>
+            <span class="control minimize"></span>
+            <span class="control expand"></span>
+          </div>
+          <div class='menu-title'>Options WIP</div>
+        </div>
+        <img src='https://www.freeiconspng.com/thumbs/settings-icon/settings-icon-13.png' alt="settings">
+        <img src='https://www.freeiconspng.com/thumbs/settings-icon/settings-icon-13.png' alt="settings">
+        <img src='https://www.freeiconspng.com/thumbs/settings-icon/settings-icon-13.png' alt="settings">
+      </div>
+
+      <div class='splashWindow'>
+        <div class='gamemode-bar'>
+          <div class="controls mini">
+            <span class="control close"></span>
+            <span class="control minimize"></span>
+            <span class="control expand"></span>
+          </div>
+          <div class='menu-title'>Splash text</div>
+        </div>
+        <div class='splashText'>If you see this, the splash text script broke FAAH</div>
+      </div>
+    </div>
+  </div><!-- /menu -->
+
+  <!-- versus sub-menu: shown when 1v1 Play is clicked -->
+  <div id="versusMenu" class="overlay" style="display:none;">
+    <div class="MainUI" style="width:50vw; padding-bottom:40px;">
+
+      <!-- title bar — red dot closes the panel -->
+      <div class="title-bar">
+        <div class="controls">
+          <span class="control close"
+            onclick="document.getElementById('versusMenu').style.display='none'; document.getElementById('menu').style.display='flex';"
+            style="cursor:pointer;" title="close"></span>
+          <span class="control none"></span>
+          <span class="control none"></span>
+        </div>
+        <div class="menu-title">1v1 match · press red circle to close</div>
+      </div>
+
+      <p style="margin-top:20px; color:#ddd; font-family:'Space Grotesk',sans-serif;">
+        Play a 1v1 match against an opponent.
+      </p>
+
+      <div style="display:flex; align-items:flex-start; gap:0; margin-top:24px; width:100%; padding:0 40px; box-sizing:border-box;">
+
+        <!-- host -->
+        <div class="section" style="flex:1;">
+          <label>create new game</label>
+          <button id="hostBtn" class="btn">host</button>
+        </div>
+
+        <div class="divider" style="height:80px;"></div>
+
+        <!-- join -->
+        <div class="section" style="flex:1;">
+          <label>join game</label>
+          <input id="codeInput" type="text" maxlength="6" placeholder="XXXXXX" />
+          <button id="joinBtn" class="btn btn-outline">join</button>
+          <span id="errorMsg"></span>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- waiting room: shown after host/join -->
+  <div id="waitingRoom" class="overlay" style="display:none;">
+    <div class="MainUI" style="width:50vw; padding-bottom:40px;">
+
+      <div class="title-bar">
+        <div class="controls">
+          <span class="control close"
+            onclick="document.getElementById('waitingRoom').style.display='none'; document.getElementById('menu').style.display='flex';"
+            style="cursor:pointer;" title="exit"></span>
+          <span class="control none"></span>
+          <span class="control none"></span>
+        </div>
+        <div class="menu-title">waiting room · press red circle to exit</div>
+      </div>
+
+      <p style="margin-top:20px; color:#ddd; font-family:'Space Grotesk',sans-serif;">
+        Waiting for opponent:
+      </p>
+
+      <div class="spinner" style="margin-top:16px;"></div>
+
+      <div class="code-box" style="margin-top:16px;">
+        <label>share this code</label>
+        <div id="joinCodeDisplay">------</div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ── CLICK-TO-PLAY OVERLAY ─────────────────────────────── -->
+  <div id="lockOverlay">
+    <p>click to play</p>
+    <small>esc to release mouse</small>
+  </div>
+
+  <!-- ── HUD (shown during game) ───────────────────────────── -->
+  <div id="hud">
+    <div id="myHpWrap" class="hp-bar-wrap">
+      <div class="hp-label">you</div>
+      <div class="hp-track"><div id="myHpFill"></div></div>
+      <div class="hp-number"><span id="health">100</span> hp</div>
+    </div>
+    <div id="oppHpWrap" class="hp-bar-wrap">
+      <div class="hp-label" style="text-align:right">opponent</div>
+      <div class="hp-track"><div id="oppHpFill"></div></div>
+      <div class="hp-number" style="text-align:right"><span id="opponentHP">100</span> hp</div>
+    </div>
+    <div id="stats">
+      <div>speed &nbsp;<span id="velocity">0.00</span></div>
+      <div>ping &nbsp;&nbsp;<span id="ping">-- ms</span></div>
+    </div>
+    <div id="controls-hint">
+      wasd &nbsp;move<br>
+      space &nbsp;jump<br>
+      f &nbsp;&nbsp;&nbsp;&nbsp;grapple<br>
+      q &nbsp;&nbsp;&nbsp;&nbsp;bomb
+    </div>
+    <div id="bombCooldown">
+      <label>bomb [q]</label>
+      <div id="bombReady">ready</div>
+    </div>
+  </div>
+
+  <!-- ── MAP VOTE ───────────────────────────────────────────── -->
+  <div id="mapVote">
+    <h2>choose a map</h2>
+    <p class="subtitle">if you disagree, one is chosen randomly</p>
+    <div id="voteTimer">30s remaining</div>
+    <div id="mapGrid"></div>
+    <div id="voteStatus"></div>
+    <button id="confirmVoteBtn" class="btn" disabled>confirm</button>
+  </div>
+
+  <!-- ── RESULTS ────────────────────────────────────────────── -->
+  <div id="page-results">
+    <h1 id="resultTitle" style="font-size:64px;letter-spacing:4px;">you won</h1>
+    <p id="resultSub" style="color:#aaa;font-size:18px;">opponent eliminated</p>
+    <div style="display:flex;gap:16px;margin-top:40px;">
+      <button class="btn" id="playAgainBtn">play again</button>
+      <button class="btn btn-outline" id="menuBtn">menu</button>
+    </div>
+  </div>
+
+</body>
+</html>

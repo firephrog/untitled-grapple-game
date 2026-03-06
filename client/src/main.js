@@ -1,0 +1,897 @@
+// ============================================================
+//  CLIENT MAIN.JS  –  Colyseus + Rapier3D + Three.js
+//
+//  Reconciliation flow every frame:
+//    1. Sample keys → build { seq, inputs, camDir }
+//    2. Apply input to LOCAL Rapier body → step world
+//    3. Send packet to server via room.send('input', ...)
+//    4. Read room.state (auto-patched ~30Hz by Colyseus):
+//       a. Server pos matches ours?  → do nothing
+//       b. Small drift (<3u)?        → gentle rubber-band
+//       c. Large error (≥3u)?        → snap + replay all
+//                                      unacknowledged inputs
+//                                      (works perfectly because
+//                                       Rapier is deterministic)
+//    5. Render camera directly from local body (no lag-buffer)
+//    6. Opponent rendered via 100ms snapshot interpolation
+// ============================================================
+
+import * as THREE                from 'three';
+import { GLTFLoader }            from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { PointerLockControls }   from 'three/examples/jsm/controls/PointerLockControls.js';
+import RAPIER                    from '@dimforge/rapier3d-compat';
+import Colyseus                  from 'colyseus.js';
+
+async function init() {
+  await RAPIER.init();
+
+// Always connect to the game server on port 3000
+// Use wss:// when served over HTTPS (Cloudflare tunnel, any production host)
+// Use ws://  when served over HTTP (local dev on port 3000)
+const isSecure   = location.protocol === 'https:';
+const SERVER_URL = isSecure
+  ? `wss://${location.hostname}`        // Cloudflare/prod: no port, WSS
+  : `ws://${location.hostname}:3000`;   // local dev: plain WS on 3000
+const colyseus   = new Colyseus.Client(SERVER_URL);
+
+// ── 2. Three.js scene ─────────────────────────────────────────
+const scene    = new THREE.Scene();
+scene.background = new THREE.Color(0x87CEEB);
+const camera   = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 1000);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled  = true;
+// Required for correct GLB/GLTF texture brightness.
+// Without this, textures exported from Blender appear washed out or black
+// because Blender uses sRGB color space and Three.js defaults to linear.
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping      = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+document.body.appendChild(renderer.domElement);
+
+scene.add(new THREE.DirectionalLight(0xffffff, 2));
+scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+
+// floor visual only (physics handled server-side and in client world)
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(100, 100),
+  new THREE.MeshStandardMaterial({ color: 0x222222 })
+);
+floor.rotation.x = -Math.PI / 2;
+floor.position.y = -1;
+scene.add(floor);
+
+// crosshair
+const chGeo = new THREE.BufferGeometry();
+chGeo.setAttribute('position', new THREE.Float32BufferAttribute(
+  [-0.001,0,0, 0.001,0,0, 0,-0.001,0, 0,0.001,0], 3));
+const crosshair = new THREE.LineSegments(
+  chGeo, new THREE.LineBasicMaterial({ color:0xffffff, depthTest:false }));
+crosshair.position.z = -0.1;
+camera.add(crosshair);
+scene.add(camera);
+
+// ── 3. Game state ──────────────────────────────────────────────
+let room        = null;
+let myId        = null;
+let oppId       = null;
+let isHost      = false;
+// ── Page helpers ─────────────────────────────────────────────
+function showMenu()        { document.getElementById('menu').style.display = 'flex'; }
+function hideMenu()        { document.getElementById('menu').style.display = 'none'; }
+function showWaiting()     { document.getElementById('versusMenu').style.display = 'none';
+                             document.getElementById('waitingRoom').style.display = 'flex'; }
+function showGame()        { hideMenu();
+                             document.getElementById('waitingRoom').style.display = 'none';
+                             document.getElementById('hud').style.display = 'block'; }
+function showMapVote()     { document.getElementById('mapVote').style.display = 'flex'; }
+function hideMapVote()     { document.getElementById('mapVote').style.display = 'none'; }
+function showResults(won)  {
+  document.getElementById('resultTitle').textContent = won ? 'you won' : 'you lost';
+  document.getElementById('resultTitle').style.color = won ? '#00ff88' : '#ff4444';
+  document.getElementById('resultSub').textContent   = won ? 'opponent eliminated' : 'you were eliminated';
+  document.getElementById('page-results').style.display = 'flex';
+}
+
+let gameStarted = false;
+
+// Results buttons
+document.getElementById('playAgainBtn').onclick = () => location.reload();
+document.getElementById('menuBtn').onclick      = () => location.reload();
+
+//randomize splash text
+
+const splashTextList = [
+  'I ran out of ideas',
+  'burgerburgerburgerburgerburgerburger',
+  'virtual real upright inverted',
+  'Use code pear in the Fortnite item shop',
+  'Also try Minecraft!',
+  'Also try Terraria!',
+  'no',
+] 
+
+const randomIndex = Math.floor(Math.random() * splashTextList.length);
+const randomSplash = splashTextList[randomIndex];
+
+const splashText = document.querySelector('.splashText');
+
+splashText.textContent = randomSplash;
+
+// ── 4. Client physics world (mirrors server) ──────────────────
+let cWorld = null;   // RAPIER.World
+let cBody  = null;   // RAPIER.RigidBody (our player)
+// Build the client-side Rapier world from the map's collision JSON.
+// This mirrors exactly what the server does in PhysicsWorld.js so
+// client-side prediction stays in sync with server physics.
+async function buildClientWorld(collisionPath, spawnX, spawnY, spawnZ) {
+  cWorld = new RAPIER.World({ x: 0, y: -25, z: 0 });
+
+  // Load the same collision JSON the server uses
+  try {
+    const res  = await fetch(collisionPath);
+    const data = await res.json();
+
+    const vertices = new Float32Array(data.vertices);
+    const indices  = new Uint32Array(data.indices);
+
+    const body = cWorld.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+    cWorld.createCollider(RAPIER.ColliderDesc.trimesh(vertices, indices), body);
+    console.log(`[Client physics] Loaded trimesh: ${vertices.length/3} verts, ${indices.length/3} tris`);
+  } catch (e) {
+    console.error('[Client physics] Failed to load collision JSON:', e);
+    // Fallback flat ground so the game still runs
+    const g = cWorld.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(0, -2, 0));
+    cWorld.createCollider(RAPIER.ColliderDesc.cuboid(50, 2, 50), g);
+  }
+
+  // Player body at spawn point (matches server spawn)
+  cBody = cWorld.createRigidBody(
+    RAPIER.RigidBodyDesc.dynamic()
+      .setTranslation(spawnX, spawnY, spawnZ)
+      .lockRotations()
+      .setLinearDamping(0.1)
+  );
+  cWorld.createCollider(RAPIER.ColliderDesc.ball(1), cBody);
+}
+
+// ── 5. Grounded check (same logic as server) ──────────────────
+function clientGrounded() {
+  if (!cBody || !cWorld) return false;
+  // If moving upward, we definitely just jumped — not grounded.
+  const vel = cBody.linvel();
+  if (vel.y > 0.5) return false;
+  const pos = cBody.translation();
+  const ray = new RAPIER.Ray(
+    { x: pos.x, y: pos.y - 0.5, z: pos.z },
+    { x: 0,     y: -1,          z: 0     }
+  );
+  return cWorld.castRay(ray, 0.6, false) !== null;
+}
+
+// ── 6. Apply one input frame to the client body ───────────────
+function applyInput(inputs, camDir) {
+  const len = Math.sqrt(camDir.x**2 + camDir.z**2);
+  const fx  = len > 0 ? camDir.x / len : 0;
+  const fz  = len > 0 ? camDir.z / len : 0;
+  const sx  = -fz, sz = fx;
+
+  let vx = 0, vz = 0;
+  if (inputs.w) { vx+=fx; vz+=fz; }
+  if (inputs.s) { vx-=fx; vz-=fz; }
+  if (inputs.d) { vx+=sx; vz+=sz; }
+  if (inputs.a) { vx-=sx; vz-=sz; }
+
+  const vel = cBody.linvel();
+  if (inputs.space && clientGrounded()) {
+    cBody.setLinvel({ x:vel.x, y:15, z:vel.z }, true);
+  }
+
+  const vel2   = cBody.linvel();
+  const moving = inputs.w || inputs.s || inputs.a || inputs.d;
+  if (moving) {
+    cBody.setLinvel({ x:vx*12, y:vel2.y, z:vz*12 }, true);
+  } else {
+    cBody.setLinvel({ x:vel2.x*0.8, y:vel2.y, z:vel2.z*0.8 }, true);
+  }
+}
+
+// ── 7. Reconciliation with server authority ───────────────────
+//  pending[] stores every input the server hasn't yet acknowledged.
+//  When we get a server correction, we snap to it and re-simulate
+//  pending inputs.  Because Rapier is deterministic, the replay
+//  produces the exact same result as if there had been no error.
+const pending = [];     // { seq, inputs, camDir }
+let   lastAck = 0;
+
+// localGrapple no longer needed for visuals — kept as empty object
+// in case future code references it
+const localGrapple = {};
+
+function reconcile(serverPos, serverVel, ackSeq) {
+  // Drop inputs the server has already processed
+  while (pending.length > 0 && pending[0].seq <= ackSeq) pending.shift();
+  lastAck = ackSeq;
+
+  const dx = serverPos.x - cBody.translation().x;
+  const dy = serverPos.y - cBody.translation().y;
+  const dz = serverPos.z - cBody.translation().z;
+  const d  = Math.sqrt(dx*dx + dy*dy + dz*dz);
+
+  if (d < 0.15) return;   // negligible – ignore
+
+  if (d >= 3.0) {
+    // ── Large error: snap to server + replay unacknowledged inputs ──
+    // Rapier determinism means this replay produces the exact right pos.
+    cBody.setTranslation({ x:serverPos.x, y:serverPos.y, z:serverPos.z }, true);
+    cBody.setLinvel(     { x:serverVel.x, y:serverVel.y, z:serverVel.z }, true);
+    for (const inp of pending) {
+      applyInput(inp.inputs, inp.camDir);
+      cWorld.step();
+    }
+  } else {
+    // ── Small/medium drift: gentle rubber-band ──────────────────────
+    const k = Math.min(d * 0.15, 0.4);
+    const p = cBody.translation();
+    cBody.setTranslation({
+      x: p.x + dx*k, y: p.y + dy*k, z: p.z + dz*k
+    }, true);
+    const v = cBody.linvel();
+    cBody.setLinvel({
+      x: v.x + (serverVel.x - v.x)*0.1,
+      y: v.y + (serverVel.y - v.y)*0.1,
+      z: v.z + (serverVel.z - v.z)*0.1
+    }, true);
+  }
+}
+
+// ── 8. Opponent interpolation ─────────────────────────────────
+const oppBuffer   = [];         // { time, position }
+const INTERP_DELAY = 100;       // ms behind real-time
+
+function pushOppSnap(pos) {
+  oppBuffer.push({ time: performance.now(), position: { ...pos } });
+  if (oppBuffer.length > 30) oppBuffer.shift();
+}
+
+function interpolateOpp() {
+  if (!oppMesh || oppBuffer.length < 2) return;
+  const rt = performance.now() - INTERP_DELAY;
+  while (oppBuffer.length >= 2 && oppBuffer[1].time <= rt) oppBuffer.shift();
+  if (oppBuffer.length < 2) return;
+  const a = oppBuffer[0], b = oppBuffer[1];
+  let t = (rt - a.time) / (b.time - a.time);
+  t = Math.max(0, Math.min(1, t));
+  oppMesh.position.set(
+    a.position.x + (b.position.x - a.position.x) * t,
+    a.position.y + (b.position.y - a.position.y) * t,
+    a.position.z + (b.position.z - a.position.z) * t
+  );
+}
+
+// ── 9. Scene objects ──────────────────────────────────────────
+// ── GLB map loading ──────────────────────────────────────────
+// Three.js loads the .glb file and adds the full scene graph directly.
+// Materials, colors, and geometry all come from Blender automatically.
+// We keep a reference so we can remove the map on room change.
+
+const gltfLoader = new GLTFLoader();
+let   currentMapRoot = null;   // the THREE.Group added to scene
+
+async function loadMapGLB(glbPath) {
+  // Remove previous map if any
+  if (currentMapRoot) {
+    scene.remove(currentMapRoot);
+    currentMapRoot.traverse(obj => {
+      if (obj.geometry) obj.geometry.dispose();
+      if (obj.material) {
+        // material can be an array
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        mats.forEach(m => m.dispose());
+      }
+    });
+    currentMapRoot = null;
+  }
+
+  try {
+    const gltf = await gltfLoader.loadAsync(glbPath);
+    currentMapRoot = gltf.scene;
+
+    // If the GLB was NOT exported with +Y Up from Blender, uncomment this line:
+    // currentMapRoot.rotation.x = -Math.PI / 2;
+    // If it WAS exported with +Y Up, leave it commented out.
+
+    // Enable shadows on every mesh in the loaded scene
+    currentMapRoot.traverse(obj => {
+      if (obj.isMesh) {
+        obj.castShadow    = true;
+        obj.receiveShadow = true;
+      }
+    });
+
+    scene.add(currentMapRoot);
+
+    // Hide the default floor plane — the GLB has its own floor
+    floor.visible = false;
+
+    console.log(`[Client] Map loaded: ${glbPath}`);
+  } catch (err) {
+    console.error(`[Client] Failed to load map GLB: ${glbPath}`, err);
+  }
+}
+
+function makeSphere(color) {
+  return new THREE.Mesh(
+    new THREE.SphereGeometry(1),
+    new THREE.MeshStandardMaterial({ color })
+  );
+}
+
+let myMesh  = null;
+let oppMesh = null;
+
+// ── grapple visuals ───────────────────────────────────────────
+function makeHook(color) {
+  const m = new THREE.Mesh(
+    new THREE.BoxGeometry(0.3, 0.3, 0.3),
+    new THREE.MeshBasicMaterial({ color })
+  );
+  m.visible = false;
+  scene.add(m);
+  return m;
+}
+
+// Rope implemented as a thin CylinderGeometry instead of THREE.Line.
+// THREE.Line uses the GPU line primitive which is always 1px wide and
+// disappears when viewed edge-on — a known WebGL limitation with no fix.
+// A cylinder has real geometry so it renders correctly from every angle.
+const ROPE_RADIUS   = 0.04;  // world-space thickness of rope
+const ROPE_SEGMENTS = 4;     // radial segments — 4 is enough, keeps tri count low
+
+function makeRopeLine(color) {
+  const geo  = new THREE.CylinderGeometry(ROPE_RADIUS, ROPE_RADIUS, 1, ROPE_SEGMENTS);
+  const mat  = new THREE.MeshBasicMaterial({ color, depthWrite: true });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.visible = true;  // explicitly visible — pivot controls show/hide
+  const pivot = new THREE.Object3D();
+  pivot.add(mesh);
+  pivot.visible    = false;
+  pivot._ropeMesh  = mesh;
+  scene.add(pivot);
+  return pivot;
+}
+
+// _tmp vectors reused every frame to avoid allocations
+const _ropeMid = new THREE.Vector3();
+const _ropeDir = new THREE.Vector3();
+const _ropeUp  = new THREE.Vector3(0, 1, 0);
+const _ropeQ   = new THREE.Quaternion();
+
+// Rope origin — a fixed point just in front of the camera.
+// Using camera.position directly (plus tiny forward offset so it's not
+// inside the near clip plane) means the rope base never shakes because
+// it moves exactly with the camera with zero lag.
+const _camForward = new THREE.Vector3();
+const barrelPos   = new THREE.Vector3();
+
+function updateBarrelPos() {
+  camera.getWorldDirection(_camForward);
+  // 0.5 units in front of camera — inside near clip plane so the rope
+  // base is never visible, giving the illusion it originates from the HUD
+  barrelPos.copy(camera.position).addScaledVector(_camForward, 0.5);
+}
+
+function updateRope(pivot, a, b) {
+  const ax = a.x, ay = a.y, az = a.z;
+  const bx = b.x, by = b.y, bz = b.z;
+
+  pivot.position.set((ax+bx)*0.5, (ay+by)*0.5, (az+bz)*0.5);
+
+  _ropeDir.set(bx-ax, by-ay, bz-az);
+  const length = _ropeDir.length();
+  if (length < 0.001) return;
+  _ropeDir.divideScalar(length);
+
+  // setFromUnitVectors fails when vectors are exactly parallel (dot = -1).
+  // In that case (straight up or down shot) use a 180° rotation around X.
+  const dot = _ropeUp.dot(_ropeDir);
+  if (dot > 0.9999) {
+    _ropeQ.identity();
+  } else if (dot < -0.9999) {
+    _ropeQ.setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI);
+  } else {
+    _ropeQ.setFromUnitVectors(_ropeUp, _ropeDir);
+  }
+
+  pivot.quaternion.copy(_ropeQ);
+  pivot._ropeMesh.scale.y = length;
+}
+
+const myHook  = makeHook(0x00ffff);  const myRope  = makeRopeLine(0x00ffff);
+const oppHook = makeHook(0xff00ff);  const oppRope = makeRopeLine(0xff00ff);
+
+// ── bombs ─────────────────────────────────────────────────────
+const bombMeshes = new Map();
+
+// ── explosions ────────────────────────────────────────────────
+const explosions = [];
+class Explosion {
+  constructor(pos) {
+    this.N   = 250;
+    const geo = new THREE.BufferGeometry();
+    const arr = new Float32Array(this.N * 3);
+    this.vel  = [];
+    for (let i = 0; i < this.N; i++) {
+      arr[i*3]=pos.x; arr[i*3+1]=pos.y; arr[i*3+2]=pos.z;
+      this.vel.push({
+        x:(Math.random()-0.5),
+        y:(Math.random()-0.5),
+        z:(Math.random()-0.5)
+      });
+    }
+    geo.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+    this.mat  = new THREE.PointsMaterial({
+      color:0xffaa00, size:0.1,
+      transparent:true, opacity:1,
+      blending:THREE.AdditiveBlending
+    });
+    this.pts  = new THREE.Points(geo, this.mat);
+    scene.add(this.pts);
+    this.alive = true;
+  }
+  update() {
+    if (!this.alive) return;
+    const arr = this.pts.geometry.attributes.position.array;
+    this.mat.opacity -= 0.02;
+    for (let i = 0; i < this.N; i++) {
+      arr[i*3]   += this.vel[i].x;
+      arr[i*3+1] += this.vel[i].y;
+      arr[i*3+2] += this.vel[i].z;
+      this.vel[i].y -= 0.005;
+    }
+    this.pts.geometry.attributes.position.needsUpdate = true;
+    if (this.mat.opacity <= 0) {
+      scene.remove(this.pts);
+      this.pts.geometry.dispose();
+      this.mat.dispose();
+      this.alive = false;
+    }
+  }
+}
+
+// ── 10. Input ─────────────────────────────────────────────────
+const controls    = new PointerLockControls(camera, renderer.domElement);
+const keys        = { w:false, a:false, s:false, d:false, space:false };
+let   seq         = 0;
+let   lastSpawn   = 0;
+
+document.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if ('wasd'.includes(k) && k.length === 1) keys[k] = true;
+  if (e.code === 'Space') keys.space = true;
+
+  if (k === 'f' && gameStarted && room) {
+    room.send('grapple');
+  }
+
+  if (e.code === 'KeyQ' && gameStarted && room) {
+    const now = performance.now();
+    if (now - lastSpawn >= 3000) { shootBomb(); lastSpawn = now; }
+  }
+});
+document.addEventListener('keyup', e => {
+  const k = e.key.toLowerCase();
+  if ('wasd'.includes(k) && k.length === 1) keys[k] = false;
+  if (e.code === 'Space') keys.space = false;
+});
+document.addEventListener('click', () => { if (gameStarted) controls.lock(); });
+
+// Show/hide the click-to-play overlay when pointer lock is released mid-game
+controls.addEventListener('unlock', () => {
+  if (gameStarted) document.getElementById('lockOverlay').classList.add('visible');
+});
+controls.addEventListener('lock', () => {
+  document.getElementById('lockOverlay').classList.remove('visible');
+});
+
+function shootBomb() {
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const pos = camera.position.clone().add(dir.clone().multiplyScalar(2));
+  room.send('spawnBomb', {
+    position: { x:pos.x, y:pos.y, z:pos.z },
+    impulse:  { x:dir.x*15, y:dir.y*15, z:dir.z*15 }
+  });
+
+  // Cooldown indicator
+  const readyEl = document.getElementById('bombReady');
+  if (readyEl) {
+    readyEl.textContent = 'cooldown';
+    readyEl.style.color = '#555';
+    let remaining = 3;
+    const countdown = setInterval(() => {
+      remaining--;
+      if (remaining <= 0) {
+        clearInterval(countdown);
+        readyEl.textContent = 'ready';
+        readyEl.style.color = '#ffaa00';
+      } else {
+        readyEl.textContent = remaining + 's';
+      }
+    }, 1000);
+  }
+}
+
+// ── 11. Colyseus room setup ───────────────────────────────────
+function setupRoom(r) {
+  room = r;
+  myId = room.sessionId;
+
+  // ── One-time messages ──────────────────────────────────────
+  room.onMessage('loadMap', async ({ glb, collision, spawnPoints }) => {
+    // Load visual mesh
+    await loadMapGLB(glb);
+
+    // Build client physics world from same collision JSON as server
+    // spawnPoints[0] = host, spawnPoints[1] = guest
+    const spawnIndex = isHost ? 0 : 1;
+    const spawn      = spawnPoints[spawnIndex] || { x: 0, y: 5, z: 0 };
+    await buildClientWorld(collision, spawn.x, spawn.y, spawn.z);
+  });
+
+  room.onMessage('init', (data) => {
+    myId   = data.myId;
+    isHost = data.isHost;
+  });
+
+  // ── Map vote messages ────────────────────────────────────────
+  //
+  // 'mapVote'   → server sends the map list and timeout, we show the picker
+  // 'mapChosen' → server has resolved all votes, we hide the picker and
+  //               store the chosen map id so we can load geometry when
+  //               'blocks' arrives
+  //
+  // The vote UI is purely cosmetic on the client — the server is the
+  // authority. Even if you skip voting the server picks for you.
+
+  room.onMessage('mapVote', ({ maps, timeoutMs }) => {
+    showMapVotePicker(maps, timeoutMs, (chosenId) => {
+      room.send('vote', { mapId: chosenId });
+    });
+  });
+
+  room.onMessage('mapChosen', ({ mapId, mapName }) => {
+    hideMapVotePicker();
+    // Show lobby while map loads
+    const title = document.getElementById('waitingTitle');
+    if (title) title.textContent = `loading ${mapName}...`;
+    showWaiting();
+  });
+
+  room.onMessage('gameStart', (data) => {
+    oppId = myId === data.hostId ? data.guestId : data.hostId;
+
+    myMesh  = makeSphere(0x00ff00); scene.add(myMesh);
+    oppMesh = makeSphere(0xff0000); scene.add(oppMesh);
+
+    showGame();
+    gameStarted = true;
+    controls.lock();
+  });
+
+  room.onMessage('bombExploded', (data) => {
+    if (bombMeshes.has(data.id)) {
+      const m = bombMeshes.get(data.id);
+      scene.remove(m); m.geometry.dispose(); m.material.dispose();
+      bombMeshes.delete(data.id);
+    }
+    explosions.push(new Explosion(data.position));
+  });
+
+  room.onMessage('playerHit', (data) => {
+    const isMe = data.playerId === myId;
+    const numId = isMe ? 'health'     : 'opponentHP';
+    const barId = isMe ? 'myHpFill'  : 'oppHpFill';
+    const el    = document.getElementById(numId);
+    const fill  = document.getElementById(barId);
+    if (!el) return;
+    const newHP = Math.max(0, parseInt(el.textContent) - data.damage);
+    el.textContent = newHP;
+    if (fill) fill.style.width = newHP + '%';
+    if (isMe) {
+      renderer.domElement.style.outline = '5px solid red';
+      setTimeout(() => { renderer.domElement.style.outline = ''; }, 200);
+    }
+  });
+
+  room.onMessage('gameEnd', (data) => {
+    if (controls.isLocked) controls.unlock();
+    gameStarted = false;
+
+    const won = data.winner === myId;
+
+    // Populate results page then show it
+    const resultTitle = document.getElementById('resultTitle');
+    if (resultTitle) {
+      resultTitle.textContent = won ? 'you won' : 'you lost';
+      resultTitle.style.color = won ? '#00ff88' : '#ff4444';
+    }
+    const resultSub = document.getElementById('resultSub');
+    if (resultSub) resultSub.textContent = won ? 'opponent eliminated' : 'you were eliminated';
+
+    showResults(won);
+  });
+
+  room.onMessage('opponentDisconnected', () => {
+    alert('Opponent disconnected!');
+    location.reload();
+  });
+}
+
+// ── 12. UI buttons ────────────────────────────────────────────
+// ── Map vote UI ──────────────────────────────────────────────
+//
+// showMapVotePicker builds the grid of map cards dynamically from
+// the list the server sent — so adding a new map to maps/index.js
+// automatically appears in the UI with zero client changes.
+//
+// A countdown timer runs client-side purely for display.  The server
+// has its own authoritative timer, so desync between them is fine.
+
+let _voteCountdownInterval = null;
+let _selectedMapId = null;
+
+function showMapVotePicker(maps, timeoutMs, onConfirm) {
+  const overlay     = document.getElementById('mapVote');
+  const grid        = document.getElementById('mapGrid');
+  const timerEl     = document.getElementById('voteTimer');
+  const statusEl    = document.getElementById('voteStatus');
+  const confirmBtn  = document.getElementById('confirmVoteBtn');
+
+  // Build map cards from server-provided list
+  grid.innerHTML = '';
+  maps.forEach(map => {
+    const card = document.createElement('div');
+    card.className   = 'map-card';
+    card.dataset.id  = map.id;
+    card.innerHTML   = `
+      <div class="map-name">${map.name}</div>
+      <div class="map-desc">${map.description}</div>
+    `;
+    card.addEventListener('click', () => {
+      // Deselect all, select this one
+      grid.querySelectorAll('.map-card').forEach(c => c.classList.remove('selected'));
+      card.classList.add('selected');
+      _selectedMapId = map.id;
+      confirmBtn.disabled = false;
+      statusEl.textContent = '';
+    });
+    grid.appendChild(card);
+  });
+
+  // Confirm button sends the vote and locks the UI
+  confirmBtn.disabled = true;
+  confirmBtn.onclick = () => {
+    if (!_selectedMapId) return;
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = 'voted!';
+    statusEl.textContent = 'waiting for opponent...';
+    onConfirm(_selectedMapId);
+  };
+
+  // Countdown timer (display only — server resolves authoritatively)
+  let remaining = Math.ceil(timeoutMs / 1000);
+  timerEl.textContent = `${remaining}s remaining`;
+  _voteCountdownInterval = setInterval(() => {
+    remaining--;
+    timerEl.textContent = remaining > 0 ? `${remaining}s remaining` : 'resolving...';
+    if (remaining <= 0) clearInterval(_voteCountdownInterval);
+  }, 1000);
+
+  showMapVote();
+}
+
+function hideMapVotePicker() {
+  clearInterval(_voteCountdownInterval);
+  hideMapVote();
+  _selectedMapId = null;
+  document.getElementById('confirmVoteBtn').textContent = 'confirm';
+  document.getElementById('voteStatus').textContent = '';
+}
+
+document.getElementById('hostBtn').onclick = async () => {
+  try {
+    const r = await colyseus.create('private');
+    setupRoom(r);
+
+    // Server sends us the short code via message once metadata is ready
+    r.onMessage('roomCode', (code) => {
+      document.getElementById('joinCodeDisplay').textContent = code;
+    });
+
+    showWaiting();
+  } catch (e) {
+    console.error('Failed to create room:', e);
+    const el = document.getElementById('errorMsg');
+    if (el) { el.textContent = 'Failed to create room'; setTimeout(()=>el.textContent='',3000); }
+  }
+};
+
+document.getElementById('joinBtn').onclick = async () => {
+  const code = document.getElementById('codeInput').value.trim().toUpperCase();
+  if (!code) return;
+  const errEl = document.getElementById('errorMsg');
+  try {
+    // Resolve short code → full Colyseus room ID
+    const res  = await fetch('/find-room', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ code }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      if (errEl) { errEl.textContent = data.error || 'Room not found'; setTimeout(()=>errEl.textContent='',3000); }
+      return;
+    }
+    const r = await colyseus.joinById(data.roomId);
+    setupRoom(r);
+  } catch (e) {
+    console.error('Failed to join room:', e);
+    if (errEl) { errEl.textContent = 'Failed to join room'; setTimeout(()=>errEl.textContent='',3000); }
+  }
+};
+
+document.getElementById('codeInput').addEventListener('keypress', e => {
+  if (e.key === 'Enter') document.getElementById('joinBtn').click();
+});
+
+// ── 13. Main loop ─────────────────────────────────────────────
+const FT   = 1 / 60;
+let   acc  = 0;
+let   last = performance.now();
+let   lastPingTime = Date.now();
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  const now = performance.now();
+  const dt  = Math.min((now - last) / 1000, 0.1);
+  last = now;
+
+  // Update barrel world position once per frame before any rope drawing
+  updateBarrelPos();
+
+  // ── Client prediction ──────────────────────────────────────
+  if (gameStarted && controls.isLocked && cWorld && cBody) {
+    acc += dt;
+
+    const camDir = new THREE.Vector3();
+    camera.getWorldDirection(camDir);
+    const cd = { x:camDir.x, y:camDir.y, z:camDir.z };
+
+    while (acc >= FT) {
+      const inp = {
+        seq: seq++,
+        inputs: { w:keys.w, a:keys.a, s:keys.s, d:keys.d, space:keys.space },
+        camDir: cd
+      };
+
+      pending.push(inp);
+      if (pending.length > 120) pending.shift();  // safety cap
+
+      applyInput(inp.inputs, inp.camDir);
+      cWorld.step();
+
+      room.send('input', { seq:inp.seq, inputs:inp.inputs, camDir:inp.camDir });
+
+      acc -= FT;
+    }
+
+    // ── Reconcile against server state (Colyseus auto-patches) ──
+    if (room && myId) {
+      const sp = room.state.players.get(myId);
+      if (sp) {
+        reconcile(sp.position, sp.velocity, sp.lastSeq);
+        lastPingTime = Date.now(); // proxy for ping update
+      }
+    }
+
+    // ── Camera & my mesh ──────────────────────────────────────
+    const p = cBody.translation();
+    camera.position.set(p.x, p.y + 1, p.z);
+    if (myMesh) myMesh.position.set(p.x, p.y, p.z);
+
+    // ── HUD: speed ────────────────────────────────────────────
+    const v   = cBody.linvel();
+    const spd = Math.sqrt(v.x**2 + v.y**2 + v.z**2);
+    const vel = document.getElementById('velocity');
+    if (vel) vel.textContent = spd.toFixed(2);
+  }
+
+  // ── Opponent interpolation ─────────────────────────────────
+  if (gameStarted && room && oppId) {
+    const os = room.state.players.get(oppId);
+    if (os) pushOppSnap(os.position);
+    interpolateOpp();
+
+    // Opponent grapple visuals
+    if (os && oppMesh) {
+      const active = os.grapple.active;
+      oppHook.visible = active;
+      oppRope.visible = active;
+      if (active) {
+        oppHook.position.set(os.grapple.hx, os.grapple.hy, os.grapple.hz);
+        // Pass raw world coords — not oppHook.position which is local to the mesh
+        const oppHookWorld = { x: os.grapple.hx, y: os.grapple.hy, z: os.grapple.hz };
+        updateRope(oppRope, oppMesh.position, oppHookWorld);
+      }
+    }
+  }
+
+  // ── My grapple visuals (server-authoritative only) ───────────
+  if (gameStarted && room && myId) {
+    const ms = room.state.players.get(myId);
+    if (!ms) return;
+
+    if (ms.grapple.active) {
+      const hookPos = { x: ms.grapple.hx, y: ms.grapple.hy, z: ms.grapple.hz };
+      myHook.visible = true;
+      myHook.position.set(hookPos.x, hookPos.y, hookPos.z);
+      myRope.visible = true;
+      updateRope(myRope, barrelPos, hookPos);
+    } else {
+      myHook.visible = false;
+      myRope.visible = false;
+    }
+  }
+
+  // ── Bombs (from Colyseus state) ────────────────────────────
+  if (gameStarted && room) {
+    const liveIds = new Set();
+    room.state.bombs.forEach((bs, id) => {
+      liveIds.add(id);
+      if (!bombMeshes.has(id)) {
+        const m = new THREE.Mesh(
+          new THREE.SphereGeometry(0.5),
+          new THREE.MeshStandardMaterial({ color:0x808080 })
+        );
+        scene.add(m);
+        bombMeshes.set(id, m);
+      }
+      const m = bombMeshes.get(id);
+      m.position.set(bs.px, bs.py, bs.pz);
+      m.quaternion.set(bs.rx, bs.ry, bs.rz, bs.rw);
+    });
+    for (const [id, m] of bombMeshes) {
+      if (!liveIds.has(id)) {
+        scene.remove(m); m.geometry.dispose(); m.material.dispose();
+        bombMeshes.delete(id);
+      }
+    }
+  }
+
+  // ── Explosions ─────────────────────────────────────────────
+  for (let i = explosions.length - 1; i >= 0; i--) {
+    explosions[i].update();
+    if (!explosions[i].alive) explosions.splice(i, 1);
+  }
+
+  // ── HUD: ping ──────────────────────────────────────────────
+  if (gameStarted) {
+    const el = document.getElementById('ping');
+    if (el) el.textContent = (Date.now() - lastPingTime) + ' ms';
+  }
+
+  renderer.render(scene, camera);
+}
+animate();
+
+// ── Resize ────────────────────────────────────────────────────
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+} // end init()
+init().catch(console.error);
