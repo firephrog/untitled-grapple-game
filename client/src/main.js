@@ -22,6 +22,129 @@ import { PointerLockControls }   from 'three/examples/jsm/controls/PointerLockCo
 import RAPIER                    from '@dimforge/rapier3d-compat';
 import Colyseus                  from 'colyseus.js';
 
+// ── Auth ─────────────────────────────────────────────────────
+const API_BASE = location.protocol === 'https:'
+  ? `https://${location.hostname}`
+  : `http://${location.hostname}:3000`;
+
+function getUser() {
+  try { return JSON.parse(localStorage.getItem('auth_user')); }
+  catch { return null; }
+}
+
+async function fetchAndDisplayStats(token) {
+  try {
+    const res = await fetch(`${API_BASE}/auth/me`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!res.ok) { showAuthOverlay(); return; }
+    const user = await res.json();
+    document.getElementById('stat-user').textContent   = `your user: ${user.username}`;
+    document.getElementById('stat-wins').textContent   = `games won: ${user.wins ?? 0}`;
+    document.getElementById('stat-deaths').textContent = `times died: ${user.deaths ?? 0}`;
+  } catch { showAuthOverlay(); }
+}
+
+function showAuthOverlay() {
+  document.getElementById('menu').style.display = 'none';
+  const overlay = document.createElement('div');
+  overlay.id = 'authOverlay';
+  overlay.className = 'overlay';
+  overlay.style.zIndex = '200';
+  overlay.innerHTML = `
+    <div class="MainUI" style="width:340px;">
+      <div class="title-bar">
+        <div class="controls">
+          <span class="control none"></span>
+          <span class="control none"></span>
+          <span class="control none"></span>
+        </div>
+        <div class="menu-title" id="authTitle">sign in</div>
+      </div>
+      <div style="display:flex;width:100%;border-bottom:1px solid rgba(255,255,255,0.08);">
+        <button id="tabLogin"  class="btn" style="flex:1;border-radius:0;letter-spacing:1px;">sign in</button>
+        <button id="tabSignup" class="btn btn-outline" style="flex:1;border-radius:0;letter-spacing:1px;">register</button>
+      </div>
+      <div style="padding:24px 32px 32px;display:flex;flex-direction:column;gap:16px;width:100%;">
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          <label style="font-size:11px;color:#aaa;letter-spacing:1.5px;font-family:'Space Mono',monospace;">username</label>
+          <input id="authUser" type="text" placeholder="your_username"
+            style="padding:10px 16px;font-size:14px;font-family:'Space Mono',monospace;background:rgba(30,30,40,0.8);color:#fff;border:1px solid rgba(255,255,255,0.12);border-radius:6px;width:100%;outline:none;letter-spacing:1px;" />
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          <label style="font-size:11px;color:#aaa;letter-spacing:1.5px;font-family:'Space Mono',monospace;">password</label>
+          <input id="authPass" type="password" placeholder="••••••••"
+            style="padding:10px 16px;font-size:14px;font-family:'Space Mono',monospace;background:rgba(30,30,40,0.8);color:#fff;border:1px solid rgba(255,255,255,0.12);border-radius:6px;width:100%;outline:none;letter-spacing:1px;" />
+        </div>
+        <div id="authEmailWrap" style="display:none;flex-direction:column;gap:6px;">
+          <label style="font-size:11px;color:#aaa;letter-spacing:1.5px;font-family:'Space Mono',monospace;">recovery email <span style="font-size:10px;color:#555;">(optional)</span></label>
+          <input id="authEmail" type="email" placeholder="you@example.com"
+            style="padding:10px 16px;font-size:14px;font-family:'Space Mono',monospace;background:rgba(30,30,40,0.8);color:#fff;border:1px solid rgba(255,255,255,0.12);border-radius:6px;width:100%;outline:none;letter-spacing:1px;" />
+        </div>
+        <div id="authStatus" style="font-size:12px;min-height:16px;font-family:'Space Mono',monospace;color:#ff4444;"></div>
+        <button id="authSubmit" class="btn" style="width:100%;">sign in</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  let authMode = 'login';
+
+  const switchTab = (mode) => {
+    authMode = mode;
+    document.getElementById('authTitle').textContent       = mode === 'login' ? 'sign in' : 'register';
+    document.getElementById('authSubmit').textContent      = mode === 'login' ? 'sign in' : 'create account';
+    document.getElementById('authEmailWrap').style.display = mode === 'signup' ? 'flex' : 'none';
+    document.getElementById('authStatus').textContent      = '';
+    document.getElementById('tabLogin').className  = mode === 'login'  ? 'btn' : 'btn btn-outline';
+    document.getElementById('tabSignup').className = mode === 'signup' ? 'btn' : 'btn btn-outline';
+  };
+
+  const submit = async () => {
+    const username = document.getElementById('authUser').value.trim();
+    const password = document.getElementById('authPass').value;
+    const email    = document.getElementById('authEmail').value.trim();
+    const statusEl = document.getElementById('authStatus');
+    const btn      = document.getElementById('authSubmit');
+    if (!username || !password) { statusEl.textContent = 'username and password are required.'; return; }
+    btn.disabled = true; btn.textContent = '...'; statusEl.textContent = '';
+    try {
+      const body = { username, password };
+      if (authMode === 'signup' && email) body.email = email;
+      const res  = await fetch(`${API_BASE}/auth/${authMode === 'login' ? 'login' : 'signup'}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'something went wrong.');
+      localStorage.setItem('auth_user', JSON.stringify({ username: data.username, token: data.token }));
+      document.removeEventListener('keydown', onEnter);
+      overlay.remove();
+      document.getElementById('menu').style.display = 'flex';
+      fetchAndDisplayStats(data.token);
+    } catch (err) {
+      statusEl.textContent = err.message;
+      btn.disabled = false;
+      btn.textContent = authMode === 'login' ? 'sign in' : 'create account';
+    }
+  };
+
+  const onEnter = (e) => { if (e.key === 'Enter') submit(); };
+  document.addEventListener('keydown', onEnter);
+  document.getElementById('tabLogin').addEventListener('click',  () => switchTab('login'));
+  document.getElementById('tabSignup').addEventListener('click', () => switchTab('signup'));
+  document.getElementById('authSubmit').addEventListener('click', submit);
+}
+
+// ── Boot: check auth before showing menu ─────────────────────
+const _savedUser = getUser();
+if (!_savedUser) {
+  showAuthOverlay();
+} else {
+  fetchAndDisplayStats(_savedUser.token);
+}
+
+
 async function init() {
   await RAPIER.init();
 
@@ -741,7 +864,7 @@ document.getElementById('joinBtn').onclick = async () => {
   }
 };
 
-document.getElementById('codeInput').addEventListener('keypress', e => {
+document.getElementById('codeInput')?.addEventListener('keypress', e => {
   if (e.key === 'Enter') document.getElementById('joinBtn').click();
 });
 

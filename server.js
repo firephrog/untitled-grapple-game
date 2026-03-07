@@ -22,6 +22,8 @@ const userSchema = new mongoose.Schema({
   username:     { type: String, required: true, unique: true, trim: true, minlength: 3, maxlength: 32, match: /^[a-zA-Z0-9_]+$/ },
   passwordHash: { type: String, required: true },
   email:        { type: String, default: null },
+  wins:         { type: Number, default: 0 },
+  deaths:       { type: Number, default: 0 },
 }, { timestamps: true });
 
 const User = mongoose.model('User', userSchema);
@@ -54,6 +56,20 @@ app.post('/auth/login', async (req, res) => {
     return res.status(401).json({ error: 'Invalid username or password.' });
   const token = jwt.sign({ userId: user._id, username }, CFG.JWT_SECRET, { expiresIn: '7d' });
   res.json({ username, token });
+});
+
+app.get('/auth/me', async (req, res) => {
+  const header = req.headers.authorization || '';
+  const token  = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'No token.' });
+  try {
+    const { userId } = jwt.verify(token, CFG.JWT_SECRET);
+    const user = await User.findById(userId).select('-passwordHash');
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+    res.json(user);
+  } catch {
+    res.status(401).json({ error: 'Invalid token.' });
+  }
 });
 // ── end auth routes ──────────────────────────────────────────
 // ── Short-code lookup endpoint ────────────────────────────────
