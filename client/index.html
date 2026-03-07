@@ -231,7 +231,7 @@
     /* ── Player icon (bottom-left floating card) ── */
     .playerIcon {
       position: absolute;
-      bottom: -5vh; left: -5vw;
+      bottom: -15vh; left: -5vw;
       width: 30vh; height: 40vh;
       transform: rotateX(1deg) rotateY(5deg) rotateZ(-3deg);
       transition: transform 0.3s ease;
@@ -244,16 +244,31 @@
       box-shadow: 0 0 10px rgba(0,0,0,0.3);
     }
 
+    .profileStats {
+      position: absolute;
+      bottom: 35vh; left: -5vw;
+      width: 30vh; height: 30vh;
+      transform: rotateX(-1deg) rotateY(5deg) rotateZ(3deg);
+      align-items: center;
+      justify-content: center;
+      padding: 0 20px;
+      background-color: rgba(104, 101, 101, 0.95);
+      border-radius: 10px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.3);
+      transition: transform 0.3s ease;
+
+    }
+
     /* ── Options bar (bottom-right floating panel) ── */
     .options {
       position: absolute;
-      bottom: -7vh; left: 50vw;
+      bottom: -7vh; left: 53vw;
       display: flex;
       align-items: center;
       justify-content: center;
       gap: 15px;
       height: 100px;
-      padding: 0 20px;
+      padding: 20px;
       background-color: rgba(104, 101, 101, 0.95);
       border-radius: 10px;
       box-shadow: 0 0 10px rgba(0,0,0,0.3);
@@ -583,6 +598,7 @@
 
       </div>
 
+      <!-- skins window -->
       <div class='playerIcon'>
         <div class="gamemode-bar">
           <div class="controls mini">
@@ -595,6 +611,7 @@
         <img src='https://theeburgerdude.com/wp-content/uploads/2021/01/Big-Mac-300x300.jpg' alt="player">
       </div>
 
+      <!-- options window -->
       <div class='options'>
         <div class="gamemode-bar">
           <div class="controls mini">
@@ -609,6 +626,22 @@
         <img src='https://www.freeiconspng.com/thumbs/settings-icon/settings-icon-13.png' alt="settings">
       </div>
 
+      <!-- profile stats window -->
+      <div class='profileStats'>
+        <div class="gamemode-bar">
+          <div class="controls mini">
+            <span class="control close"></span>
+            <span class="control minimize"></span>
+            <span class="control expand"></span>
+          </div>
+          <div class='menu-title'>Your Profile:</div>
+        </div>
+        <span id="stat-user">Your User: </span>
+        <span id="stat-wins">Games won: </span>
+        <span id="stat-deaths">Times died: </span>
+      </div>
+
+      <!-- splash text window -->
       <div class='splashWindow'>
         <div class='gamemode-bar'>
           <div class="controls mini">

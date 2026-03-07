@@ -13,7 +13,11 @@
 module.exports = {
 
   // ── Server ─────────────────────────────────────────────────
-  PORT:            process.env.PORT || 3000,
+  PORT:       process.env.PORT || 3000,
+
+  // ── Database & Auth ────────────────────────────────────────  ← ADD
+  MONGO_URI:  process.env.MONGO_URI  || 'mongodb+srv://phrog:basicTestPass@cluster0.t8grp4o.mongodb.net/?appName=Cluster0',
+  JWT_SECRET: process.env.JWT_SECRET || 'DeezNuts420',
 
   // ── Room limits ────────────────────────────────────────────
   PRIVATE_MAX_CLIENTS:      2,
