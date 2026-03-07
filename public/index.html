@@ -11,7 +11,7 @@
     body {
       background: #000;
       color: #fff;
-      font-family: 'Courier New', monospace;
+      font-family: 'Space Grotesk', monospace;
       overflow: hidden;
     }
 
@@ -54,44 +54,54 @@
 
     /* ── buttons ────────────────────────────────────────────── */
     .btn {
-      padding: 12px 32px;
-      font-size: 16px;
-      font-family: inherit;
-      background: #fff;
-      color: #000;
-      border: none;
-      border-radius: 4px;
+      padding: 10px 28px;
+      font-size: 13px;
+      font-family: 'Space Grotesk', monospace;
+      font-weight: 600;
+      background: rgba(100, 100, 127, 0.75);
+      color: #fff;
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 6px;
       cursor: pointer;
-      letter-spacing: 1px;
+      letter-spacing: 1.5px;
       text-transform: lowercase;
-      transition: background 0.15s, transform 0.1s;
+      backdrop-filter: blur(6px);
+      transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
     }
-    .btn:hover  { background: #ddd; }
+    .btn:hover  { background: rgba(120, 120, 155, 0.9); transform: scale(1.03); box-shadow: 0 4px 14px rgba(0,0,0,0.4); }
     .btn:active { transform: scale(0.97); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 
     .btn-outline {
-      background: transparent;
-      color: #fff;
-      border: 1px solid #fff;
+      background: rgba(40, 40, 50, 0.6);
+      color: #ccc;
+      border: 1px solid rgba(255,255,255,0.2);
     }
-    .btn-outline:hover { background: rgba(255,255,255,0.1); }
+    .btn-outline:hover { background: rgba(80, 80, 100, 0.7); color: #fff; }
 
     /* ── text input ─────────────────────────────────────────── */
     input[type="text"] {
       padding: 10px 16px;
-      font-size: 16px;
-      font-family: inherit;
-      background: #111;
+      font-size: 15px;
+      font-family: 'Space Mono', monospace;
+      background: rgba(30, 30, 40, 0.8);
       color: #fff;
-      border: 1px solid #444;
-      border-radius: 4px;
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 6px;
       text-align: center;
       text-transform: uppercase;
-      letter-spacing: 4px;
+      letter-spacing: 6px;
       width: 200px;
       outline: none;
+      backdrop-filter: blur(6px);
+      box-shadow: inset 0 1px 4px rgba(0,0,0,0.4);
+      transition: border-color 0.15s, box-shadow 0.15s;
     }
-    input[type="text"]:focus { border-color: #fff; }
+    input[type="text"]:focus {
+      border-color: rgba(255,255,255,0.4);
+      box-shadow: inset 0 1px 4px rgba(0,0,0,0.4), 0 0 0 2px rgba(100,100,180,0.3);
+    }
 
     /* ════════════════════════════════════════════════════════════
        MAIN MENU  (page-menu)
@@ -106,10 +116,11 @@
       justify-content: flex-start;
       width: 70vw;
       padding-bottom: 10vh;
-      background-color: rgba(150, 163, 181, 0.5);
+      background-color: rgba(136, 136, 136, 0.6);
       border-radius: 10px;
       box-shadow: 0 0 10px rgba(0,0,0,0.3);
       perspective: 500px;
+      backdrop-filter: blur(10px);
     }
     .MainUI h1,
     .MainUI > p {
@@ -301,14 +312,14 @@
 
     .section label {
       font-size: 12px;
-      color: #888;
+      color: #aaa;
       letter-spacing: 1px;
     }
 
     .divider {
       width: 1px;
       height: 40px;
-      background: #444;
+      background: #aaa;
       margin: 0 8px;
       align-self: center;
     }
@@ -453,7 +464,7 @@
       z-index: 110;
     }
     #mapVote h2 { font-size: 24px; letter-spacing: 3px; text-transform: lowercase; }
-    #mapVote .subtitle { font-size: 12px; color: #888; letter-spacing: 1px; }
+    #mapVote .subtitle { font-size: 12px; color: #ffffff; letter-spacing: 1px; margin-bottom: 12px; }
     #voteTimer { font-size: 13px; color: #ffaa00; }
 
     #mapGrid {
@@ -466,17 +477,24 @@
     }
 
     .map-card {
-      background: #111;
-      border: 2px solid #333;
       border-radius: 8px;
       padding: 16px;
       cursor: pointer;
-      transition: border-color 0.15s, background 0.15s;
+      background: rgba(30, 30, 40, 0.8);
+      color: #fff;
+      border: 1px solid rgba(255,255,255,0.12);
       text-align: center;
+      text-transform: uppercase;
+      letter-spacing: 6px;
+      width: 200px;
+      outline: none;
+      backdrop-filter: blur(6px);
+      box-shadow: inset 0 1px 4px rgba(0,0,0,0.4);
+      transition: border-color 0.15s, background 0.15s;
     }
     .map-card:hover          { border-color: #666; background: #1a1a1a; }
     .map-card.selected       { border-color: #00ff88; background: #0a1f14; }
-    .map-card .map-name      { font-size: 14px; font-weight: bold; margin-bottom: 6px; letter-spacing: 1px; }
+    .map-card .map-name      { font-size: 14px; font-weight: bold; margin-bottom: 6px; letter-spacing: 1px; font-family: 'Space Mono', monospace; }
     .map-card .map-desc      { font-size: 11px; color: #888; line-height: 1.5; }
 
     #voteStatus    { font-size: 12px; color: #aaa; min-height: 18px; }
@@ -608,7 +626,7 @@
 
   <!-- versus sub-menu: shown when 1v1 Play is clicked -->
   <div id="versusMenu" class="overlay" style="display:none;">
-    <div class="MainUI" style="width:50vw; padding-bottom:40px;">
+    <div class="MainUI" style="width:40vw; padding-bottom:40px;">
 
       <!-- title bar — red dot closes the panel -->
       <div class="title-bar">
@@ -650,7 +668,7 @@
 
   <!-- waiting room: shown after host/join -->
   <div id="waitingRoom" class="overlay" style="display:none;">
-    <div class="MainUI" style="width:50vw; padding-bottom:40px;">
+    <div class="MainUI" style="width:30vw; padding-bottom:40px;">
 
       <div class="title-bar">
         <div class="controls">
@@ -713,12 +731,23 @@
 
   <!-- ── MAP VOTE ───────────────────────────────────────────── -->
   <div id="mapVote">
-    <h2>choose a map</h2>
-    <p class="subtitle">if you disagree, one is chosen randomly</p>
-    <div id="voteTimer">30s remaining</div>
-    <div id="mapGrid"></div>
-    <div id="voteStatus"></div>
-    <button id="confirmVoteBtn" class="btn" disabled>confirm</button>
+    <div class="MainUI" style="width:30vw; padding-bottom:40px;">
+
+      <div class="title-bar">
+        <div class="controls">
+          <span class="control none"></span>
+          <span class="control none"></span>
+          <span class="control none"></span>
+        </div>
+        <div class="menu-title" style="display: flex; justify-content: space-around;">waiting room · <div id="voteTimer">30s remaining</div></div>
+      </div>
+
+      <h2>choose a map</h2>
+      <p class="subtitle">if you disagree, one is chosen randomly</p>
+      <div id="mapGrid"></div>
+      <div id="voteStatus"></div>
+      <button id="confirmVoteBtn" class="btn" disabled>confirm</button>
+    </div>
   </div>
 
   <!-- ── RESULTS ────────────────────────────────────────────── -->
