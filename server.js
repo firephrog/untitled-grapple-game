@@ -19,11 +19,19 @@ mongoose.connect(CFG.MONGO_URI)
   .catch(err => { console.error('❌  MongoDB:', err); process.exit(1); });
 
 const userSchema = new mongoose.Schema({
-  username:     { type: String, required: true, unique: true, trim: true, minlength: 3, maxlength: 32, match: /^[a-zA-Z0-9_]+$/ },
-  passwordHash: { type: String, required: true },
-  email:        { type: String, default: null },
-  wins:         { type: Number, default: 0 },
-  deaths:       { type: Number, default: 0 },
+  //account details
+  username:       { type: String, required: true, unique: true, trim: true, minlength: 3, maxlength: 32, match: /^[a-zA-Z0-9_]+$/ },
+  passwordHash:   { type: String, required: true },
+  email:          { type: String, default: null },
+
+  //play stats
+  wins:           { type: Number, default: 0 },
+  deaths:         { type: Number, default: 0 },
+
+  //customization
+  userPrefix:     { type: String, default: "Player" },
+  usernameColor:  { type: String, default: "#ffffff"},
+  prefixColor:    { type: String, default: "#b3b3b3"},
 }, { timestamps: true });
 
 const User = mongoose.model('User', userSchema);

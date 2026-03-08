@@ -231,7 +231,7 @@
     /* ── Player icon (bottom-left floating card) ── */
     .playerIcon {
       position: absolute;
-      bottom: -15vh; left: -5vw;
+      bottom: -10vh; left: -5vw;
       width: 30vh; height: 40vh;
       transform: rotateX(1deg) rotateY(5deg) rotateZ(-3deg);
       transition: transform 0.3s ease;
@@ -245,19 +245,22 @@
     }
 
     .profileStats {
+      display:flex;
+      flex-direction: column;
       position: absolute;
-      bottom: 35vh; left: -5vw;
-      width: 30vh; height: 30vh;
+      bottom: 35vh; left: -10vw;
+      width: 35vh; height: 30vh;
       transform: rotateX(-1deg) rotateY(5deg) rotateZ(3deg);
-      align-items: center;
+      align-items: left;
       justify-content: center;
       padding: 0 20px;
       background-color: rgba(104, 101, 101, 0.95);
       border-radius: 10px;
       box-shadow: 0 0 10px rgba(0,0,0,0.3);
       transition: transform 0.3s ease;
-
     }
+    .statsDisplay { font-size: 15px; }
+    #stat-user    { font-weight: bolder; }
 
     /* ── Options bar (bottom-right floating panel) ── */
     .options {
@@ -268,6 +271,7 @@
       justify-content: center;
       gap: 15px;
       height: 100px;
+      width: 200px;
       padding: 20px;
       background-color: rgba(104, 101, 101, 0.95);
       border-radius: 10px;
@@ -528,6 +532,122 @@
       z-index: 120;
     }
 
+    /* ── settings ───────────────────────────────────────────── */
+    .settings-tab {
+      width: 100%;
+      padding: 9px 20px;
+      text-align: left;
+      font-family: 'Space Grotesk', monospace;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 1.2px;
+      text-transform: lowercase;
+      background: transparent;
+      color: #888;
+      border: none;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+      border-left: 2px solid transparent;
+    }
+    .settings-tab:hover  { background: rgba(255,255,255,0.04); color: #ccc; }
+    .settings-tab.active { color: #fff; border-left-color: rgba(255,255,255,0.5); background: rgba(255,255,255,0.06); }
+
+    .settings-group { margin-bottom: 28px; }
+
+    .settings-label {
+      font-family: 'Space Mono', monospace;
+      font-size: 10px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: #ccc;
+      margin-bottom: 12px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+
+    .settings-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 9px 0;
+      font-size: 13px;
+      color: #ccc;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+    }
+    .settings-row:last-child { border-bottom: none; }
+
+    .settings-val {
+      font-family: 'Space Mono', monospace;
+      font-size: 12px;
+      color: #fff;
+      min-width: 36px;
+      text-align: right;
+    }
+
+    .settings-slider {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 130px;
+      height: 3px;
+      background: rgba(255,255,255,0.15);
+      border-radius: 2px;
+      outline: none;
+      cursor: pointer;
+    }
+    .settings-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 13px; height: 13px;
+      border-radius: 50%;
+      background: #fff;
+      cursor: pointer;
+      transition: transform 0.1s;
+      box-shadow: 0 0 4px rgba(0,0,0,0.4);
+    }
+    .settings-slider::-webkit-slider-thumb:hover { transform: scale(1.25); }
+
+    .settings-toggle { position: relative; display: inline-block; width: 36px; height: 20px; cursor: pointer; }
+    .settings-toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle-track {
+      position: absolute; inset: 0;
+      background: rgba(255,255,255,0.12);
+      border-radius: 20px;
+      transition: background 0.2s;
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+    .toggle-track::after {
+      content: '';
+      position: absolute;
+      left: 3px; top: 3px;
+      width: 12px; height: 12px;
+      border-radius: 50%;
+      background: #aaa;
+      transition: transform 0.2s, background 0.2s;
+    }
+    .settings-toggle input:checked + .toggle-track { background: rgba(80,80,160,0.6); border-color: rgba(100,100,200,0.4); }
+    .settings-toggle input:checked + .toggle-track::after { transform: translateX(16px); background: #fff; }
+
+    kbd {
+      font-family: 'Space Mono', monospace;
+      font-size: 11px;
+      color: #ccc;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-bottom-width: 2px;
+      border-radius: 4px;
+      padding: 3px 8px;
+      letter-spacing: 0.5px;
+    }
+
+    .settings-scroll {
+      flex: 1;
+      padding: 24px 28px;
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,0.1) transparent;
+    }
+    .settings-scroll::-webkit-scrollbar { width: 4px; }
+    .settings-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+
     .hidden { display: none !important; }
   </style>
 </head>
@@ -619,11 +739,13 @@
             <span class="control minimize"></span>
             <span class="control expand"></span>
           </div>
-          <div class='menu-title'>Options WIP</div>
+          <div class='menu-title'>Options</div>
         </div>
-        <img src='https://www.freeiconspng.com/thumbs/settings-icon/settings-icon-13.png' alt="settings">
-        <img src='https://www.freeiconspng.com/thumbs/settings-icon/settings-icon-13.png' alt="settings">
-        <img src='https://www.freeiconspng.com/thumbs/settings-icon/settings-icon-13.png' alt="settings">
+        <img src='https://assets.streamlinehq.com/image/private/w_300,h_300,ar_1/f_auto/v1/icons/business-payments/leaderboard-c2xgbi34v5lkfqcsnn4rls.png/leaderboard-3rvm6vbkyzgye3ova2wwy.png?_a=DATAiZAAZAA0' alt="leaderboard">
+        <img src='https://cdn-icons-png.flaticon.com/512/1500/1500455.png' alt="friends">
+        <img src='https://www.freeiconspng.com/thumbs/settings-icon/settings-icon-13.png' alt="settings"
+          onclick="document.getElementById('menu').style.display='none'; document.getElementById('settingsMenu').style.display='flex';"
+          style="cursor:pointer;">
       </div>
 
       <!-- profile stats window -->
@@ -634,11 +756,13 @@
             <span class="control minimize"></span>
             <span class="control expand"></span>
           </div>
-          <div class='menu-title'>Your Profile:</div>
+          <div class='menu-title'>Your Stats:</div>
         </div>
-        <span id="stat-user">Your User: </span>
-        <span id="stat-wins">Games won: </span>
-        <span id="stat-deaths">Times died: </span>
+        <div class="statsDisplay">
+          <div id="stat-user">Your User: </div>
+          <div id="stat-wins">Games won: </div>
+          <div id="stat-deaths">Times died: </div>
+        </div>
       </div>
 
       <!-- splash text window -->
@@ -656,11 +780,9 @@
     </div>
   </div><!-- /menu -->
 
-  <!-- versus sub-menu: shown when 1v1 Play is clicked -->
+  <!-- ── VERSUS MENU ───────────────────────────────────────── -->
   <div id="versusMenu" class="overlay" style="display:none;">
     <div class="MainUI" style="width:40vw; padding-bottom:40px;">
-
-      <!-- title bar — red dot closes the panel -->
       <div class="title-bar">
         <div class="controls">
           <span class="control close"
@@ -671,37 +793,28 @@
         </div>
         <div class="menu-title">1v1 match · press red circle to close</div>
       </div>
-
       <p style="margin-top:20px; color:#ddd; font-family:'Space Grotesk',sans-serif;">
         Play a 1v1 match against an opponent.
       </p>
-
       <div style="display:flex; align-items:flex-start; gap:0; margin-top:24px; width:100%; padding:0 40px; box-sizing:border-box;">
-
-        <!-- host -->
         <div class="section" style="flex:1;">
           <label>create new game</label>
           <button id="hostBtn" class="btn">host</button>
         </div>
-
         <div class="divider" style="height:80px;"></div>
-
-        <!-- join -->
         <div class="section" style="flex:1;">
           <label>join game</label>
           <input id="codeInput" type="text" maxlength="6" placeholder="XXXXXX" />
           <button id="joinBtn" class="btn btn-outline">join</button>
           <span id="errorMsg"></span>
         </div>
-
       </div>
     </div>
   </div>
 
-  <!-- waiting room: shown after host/join -->
+  <!-- ── WAITING ROOM ──────────────────────────────────────── -->
   <div id="waitingRoom" class="overlay" style="display:none;">
     <div class="MainUI" style="width:30vw; padding-bottom:40px;">
-
       <div class="title-bar">
         <div class="controls">
           <span class="control close"
@@ -712,18 +825,139 @@
         </div>
         <div class="menu-title">waiting room · press red circle to exit</div>
       </div>
-
       <p style="margin-top:20px; color:#ddd; font-family:'Space Grotesk',sans-serif;">
         Waiting for opponent:
       </p>
-
       <div class="spinner" style="margin-top:16px;"></div>
-
       <div class="code-box" style="margin-top:16px;">
         <label>share this code</label>
         <div id="joinCodeDisplay">------</div>
       </div>
+    </div>
+  </div>
 
+  <!-- ── SETTINGS ──────────────────────────────────────────── -->
+  <div id="settingsMenu" class="overlay" style="display:none;">
+    <div class="MainUI" style="width:560px; height:480px; padding-bottom:0;">
+
+      <div class="title-bar">
+        <div class="controls">
+          <span class="control close"
+            onclick="document.getElementById('settingsMenu').style.display='none'; document.getElementById('menu').style.display='flex';"
+            style="cursor:pointer;" title="close"></span>
+          <span class="control none"></span>
+          <span class="control none"></span>
+        </div>
+        <div class="menu-title">settings</div>
+      </div>
+
+      <div style="display:flex; width:100%; flex:1; overflow:hidden; border-radius:0 0 10px 10px; height:calc(100% - 35px);">
+
+        <!-- sidebar -->
+        <div style="display:flex; flex-direction:column; width:130px; border-right:1px solid rgba(255,255,255,0.07); padding:12px 0; gap:2px; flex-shrink:0; background:rgba(0,0,0,0.15);">
+          <button class="settings-tab active" onclick="settingsTab(this,'general')">general</button>
+          <button class="settings-tab" onclick="settingsTab(this,'controls')">controls</button>
+          <button class="settings-tab" onclick="settingsTab(this,'account')">account</button>
+        </div>
+
+        <!-- content -->
+        <div style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
+          <div class="settings-scroll">
+
+            <!-- general -->
+            <div class="settings-panel" id="panel-general">
+              <div class="settings-group">
+                <div class="settings-label">graphics</div>
+                <div class="settings-row">
+                  <span>field of view</span>
+                  <div style="display:flex; align-items:center; gap:10px;">
+                    <input type="range" id="fov" min="60" max="120" value="75" class="settings-slider"
+                      oninput="document.getElementById('fov-val').textContent=this.value" />
+                    <span id="fov-val" class="settings-val">75</span>
+                  </div>
+                </div>
+                <div class="settings-row">
+                  <span>show fps</span>
+                  <label class="settings-toggle"><input type="checkbox" id="showFps" /><span class="toggle-track"></span></label>
+                </div>
+              </div>
+              <div class="settings-group">
+                <div class="settings-label">overlay</div>
+                <div class="settings-row">
+                  <span>show ping</span>
+                  <label class="settings-toggle"><input type="checkbox" id="showPing" checked /><span class="toggle-track"></span></label>
+                </div>
+                <div class="settings-row">
+                  <span>show speed</span>
+                  <label class="settings-toggle"><input type="checkbox" id="showSpeed" checked /><span class="toggle-track"></span></label>
+                </div>
+                <div class="settings-row">
+                  <span>show input hints</span>
+                  <label class="settings-toggle"><input type="checkbox" id="showInputs" checked /><span class="toggle-track"></span></label>
+                </div>
+              </div>
+            </div>
+
+            <!-- controls -->
+            <div class="settings-panel" id="panel-controls" style="display:none;">
+              <div class="settings-group">
+                <div class="settings-label">mouse</div>
+                <div class="settings-row">
+                  <span>sensitivity</span>
+                  <div style="display:flex; align-items:center; gap:10px;">
+                    <input type="range" id="sensitivity" min="1" max="20" value="5" class="settings-slider"
+                      oninput="document.getElementById('sens-val').textContent=(this.value/10).toFixed(1)" />
+                    <span id="sens-val" class="settings-val">0.5</span>
+                  </div>
+                </div>
+                <div class="settings-row">
+                  <span>invert y-axis</span>
+                  <label class="settings-toggle"><input type="checkbox" id="invertY" /><span class="toggle-track"></span></label>
+                </div>
+              </div>
+              <div class="settings-group">
+                <div class="settings-label">keybinds</div>
+                <div class="settings-row"><span>forward</span><kbd>W</kbd></div>
+                <div class="settings-row"><span>back</span><kbd>S</kbd></div>
+                <div class="settings-row"><span>left</span><kbd>A</kbd></div>
+                <div class="settings-row"><span>right</span><kbd>D</kbd></div>
+                <div class="settings-row"><span>jump</span><kbd>space</kbd></div>
+                <div class="settings-row"><span>grapple</span><kbd>F</kbd></div>
+                <div class="settings-row"><span>bomb</span><kbd>Q</kbd></div>
+              </div>
+            </div>
+
+            <!-- account -->
+            <div class="settings-panel" id="panel-account" style="display:none;">
+              <div class="settings-group">
+                <div class="settings-label">profile</div>
+                <div class="settings-row">
+                  <span>Account name:</span>
+                  <span id="settings-username" style="font-family:'Space Mono',monospace; color:#fff; font-size:13px;">—</span>
+                </div>
+                <div class="settings-row">
+                  <span>Reset password (Requires old password):</span>
+                  <button class="btn btn-outline" id="settingsChangePswdBtn" style="padding:6px 16px; font-size:11px;">change password</button>
+                </div>
+              </div>
+              <div class="settings-group">
+                <div class="settings-label">session</div>
+                <div class="settings-row">
+                  <span>Sign out of your account</span>
+                  <button class="btn btn-outline" id="settingsSignOutBtn" style="padding:6px 16px; font-size:11px;">sign out</button>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          <!-- save bar -->
+          <div style="padding:12px 28px; border-top:1px solid rgba(255,255,255,0.07); display:flex; justify-content:flex-end; background:rgba(0,0,0,0.1); flex-shrink:0;">
+            <button class="btn" id="saveBtn" style="padding:8px 24px; font-size:12px;">save</button>
+          </div>
+        </div>
+
+      </div>
     </div>
   </div>
 
@@ -764,7 +998,6 @@
   <!-- ── MAP VOTE ───────────────────────────────────────────── -->
   <div id="mapVote">
     <div class="MainUI" style="width:30vw; padding-bottom:40px;">
-
       <div class="title-bar">
         <div class="controls">
           <span class="control none"></span>
@@ -773,7 +1006,6 @@
         </div>
         <div class="menu-title" style="display: flex; justify-content: space-around;">waiting room · <div id="voteTimer">30s remaining</div></div>
       </div>
-
       <h2>choose a map</h2>
       <p class="subtitle">if you disagree, one is chosen randomly</p>
       <div id="mapGrid"></div>

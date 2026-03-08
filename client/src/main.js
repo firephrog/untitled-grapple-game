@@ -22,6 +22,8 @@ import { PointerLockControls }   from 'three/examples/jsm/controls/PointerLockCo
 import RAPIER                    from '@dimforge/rapier3d-compat';
 import Colyseus                  from 'colyseus.js';
 
+import { initBackground, hideBackground, showBackground } from './background.js';
+
 // ── Auth ─────────────────────────────────────────────────────
 const API_BASE = location.protocol === 'https:'
   ? `https://${location.hostname}`
@@ -32,14 +34,27 @@ function getUser() {
   catch { return null; }
 }
 
+
 async function fetchAndDisplayStats(token) {
   try {
     const res = await fetch(`${API_BASE}/auth/me`, {
       headers: { Authorization: `Bearer ${token}` }
     });
+
     if (!res.ok) { showAuthOverlay(); return; }
+
     const user = await res.json();
-    document.getElementById('stat-user').textContent   = `your user: ${user.username}`;
+    
+    const pColor = user.prefixColor || '#ffffff';
+    const uColor = user.usernameColor || '#ffffff';
+
+    const displayNameHTML = `
+      ${user.userPrefix ? `<span style="color: ${user.prefixColor || '#00ffcc'}">[${user.userPrefix}]</span> ` : ''}
+      <span style="color: ${user.usernameColor || '#ffffff'}">${user.username}</span>
+    `.trim();
+
+    document.getElementById('stat-user').innerHTML = `your user: ${displayNameHTML}`;
+    
     document.getElementById('stat-wins').textContent   = `games won: ${user.wins ?? 0}`;
     document.getElementById('stat-deaths').textContent = `times died: ${user.deaths ?? 0}`;
   } catch { showAuthOverlay(); }
@@ -143,6 +158,8 @@ if (!_savedUser) {
 } else {
   fetchAndDisplayStats(_savedUser.token);
 }
+initBackground();
+showBackground();
 
 
 async function init() {
@@ -219,8 +236,14 @@ function showResults(won)  {
 let gameStarted = false;
 
 // Results buttons
-document.getElementById('playAgainBtn').onclick = () => location.reload();
-document.getElementById('menuBtn').onclick      = () => location.reload();
+document.getElementById('playAgainBtn').onclick = () => {
+  location.reload();
+  showBackground();
+}
+document.getElementById('menuBtn').onclick      = () => {
+  location.reload();
+  showBackground();
+}
 
 //randomize splash text
 
@@ -700,6 +723,7 @@ function setupRoom(r) {
     showGame();
     gameStarted = true;
     controls.lock();
+    hideBackground();
   });
 
   room.onMessage('bombExploded', (data) => {
