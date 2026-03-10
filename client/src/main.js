@@ -1,19 +1,5 @@
 // ============================================================
-//  CLIENT MAIN.JS  –  Colyseus + Rapier3D + Three.js
-//
-//  Reconciliation flow every frame:
-//    1. Sample keys → build { seq, inputs, camDir }
-//    2. Apply input to LOCAL Rapier body → step world
-//    3. Send packet to server via room.send('input', ...)
-//    4. Read room.state (auto-patched ~30Hz by Colyseus):
-//       a. Server pos matches ours?  → do nothing
-//       b. Small drift (<3u)?        → gentle rubber-band
-//       c. Large error (≥3u)?        → snap + replay all
-//                                      unacknowledged inputs
-//                                      (works perfectly because
-//                                       Rapier is deterministic)
-//    5. Render camera directly from local body (no lag-buffer)
-//    6. Opponent rendered via 100ms snapshot interpolation
+//  CLIENT MAIN.JS 
 // ============================================================
 
 import * as THREE                from 'three';
@@ -171,25 +157,20 @@ showBackground();
 async function init() {
   await RAPIER.init();
 
-// Always connect to the game server on port 3000
-// Use wss:// when served over HTTPS (Cloudflare tunnel, any production host)
-// Use ws://  when served over HTTP (local dev on port 3000)
 const isSecure   = location.protocol === 'https:';
 const SERVER_URL = isSecure
-  ? `wss://${location.hostname}`        // Cloudflare/prod: no port, WSS
-  : `ws://${location.hostname}:3000`;   // local dev: plain WS on 3000
+  ? `wss://${location.hostname}`        
+  : `ws://${location.hostname}:3000`;  
 const colyseus   = new Colyseus.Client(SERVER_URL);
 
-// ── 2. Three.js scene ─────────────────────────────────────────
+// ── Three.js scene ─────────────────────────────────────────
 const scene    = new THREE.Scene();
 scene.background = new THREE.Color(0x87CEEB);
 const camera   = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 1000);
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled  = true;
-// Required for correct GLB/GLTF texture brightness.
-// Without this, textures exported from Blender appear washed out or black
-// because Blender uses sRGB color space and Three.js defaults to linear.
+
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping      = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
@@ -218,7 +199,7 @@ crosshair.position.z = -0.1;
 camera.add(crosshair);
 scene.add(camera);
 
-// ── 3. Game state ──────────────────────────────────────────────
+// ──  Game state ──────────────────────────────────────────────
 let room        = null;
 let myId        = null;
 let oppId       = null;
@@ -345,12 +326,10 @@ document.addEventListener('click', () => {
 let pingMs = 0;
 
 
-// ── 4. Client physics world (mirrors server) ──────────────────
-let cWorld = null;   // RAPIER.World
-let cBody  = null;   // RAPIER.RigidBody (our player)
-// Build the client-side Rapier world from the map's collision JSON.
-// This mirrors exactly what the server does in PhysicsWorld.js so
-// client-side prediction stays in sync with server physics.
+// ── Client physics world (client side of SSR) ──────────────────
+let cWorld = null;   
+let cBody  = null;  
+
 async function buildClientWorld(collisionPath, spawnX, spawnY, spawnZ) {
   cWorld = new RAPIER.World({ x: 0, y: -25, z: 0 });
 
@@ -381,10 +360,9 @@ async function buildClientWorld(collisionPath, spawnX, spawnY, spawnZ) {
   cWorld.createCollider(RAPIER.ColliderDesc.ball(1), cBody);
 }
 
-// ── 5. Grounded check (same logic as server) ──────────────────
+// ── Grounded check ──────────────────
 function clientGrounded() {
   if (!cBody || !cWorld) return false;
-  // If moving upward, we definitely just jumped — not grounded.
   const vel = cBody.linvel();
   if (vel.y > 0.5) return false;
   const pos = cBody.translation();
@@ -395,7 +373,6 @@ function clientGrounded() {
   return cWorld.castRay(ray, 0.6, false) !== null;
 }
 
-// ── 6. Apply one input frame to the client body ───────────────
 function applyInput(inputs, camDir) {
   const len = Math.sqrt(camDir.x**2 + camDir.z**2);
   const fx  = len > 0 ? camDir.x / len : 0;
@@ -422,16 +399,11 @@ function applyInput(inputs, camDir) {
   }
 }
 
-// ── 7. Reconciliation with server authority ───────────────────
-//  pending[] stores every input the server hasn't yet acknowledged.
-//  When we get a server correction, we snap to it and re-simulate
-//  pending inputs.  Because Rapier is deterministic, the replay
-//  produces the exact same result as if there had been no error.
-const pending = [];     // { seq, inputs, camDir }
+// ── Reconciliation ───────────────────
+const pending = [];   
 let   lastAck = 0;
 
-// localGrapple no longer needed for visuals — kept as empty object
-// in case future code references it
+
 const localGrapple = {};
 
 function reconcile(serverPos, serverVel, ackSeq) {
@@ -447,8 +419,7 @@ function reconcile(serverPos, serverVel, ackSeq) {
   if (d < 0.15) return;   // negligible – ignore
 
   if (d >= 3.0) {
-    // ── Large error: snap to server + replay unacknowledged inputs ──
-    // Rapier determinism means this replay produces the exact right pos.
+
     cBody.setTranslation({ x:serverPos.x, y:serverPos.y, z:serverPos.z }, true);
     cBody.setLinvel(     { x:serverVel.x, y:serverVel.y, z:serverVel.z }, true);
     for (const inp of pending) {
@@ -456,7 +427,7 @@ function reconcile(serverPos, serverVel, ackSeq) {
       cWorld.step();
     }
   } else {
-    // ── Small/medium drift: gentle rubber-band ──────────────────────
+
     const k = Math.min(d * 0.15, 0.4);
     const p = cBody.translation();
     cBody.setTranslation({
