@@ -25,7 +25,7 @@ module.exports = {
 
   // ── Physics ────────────────────────────────────────────────
   TICK_RATE:       60,          // Hz – physics simulation rate
-  PATCH_RATE_MS:   33,          // ms – Colyseus state delta rate (~30 Hz)
+  PATCH_RATE_MS:   10,          // ms – Colyseus state delta rate (~30 Hz)
   GRAVITY:         -20,
 
   // ── Map ────────────────────────────────────────────────────

@@ -28,6 +28,7 @@ class PrivateRoom extends BaseGameRoom {
     console.log(`[PrivateRoom] Created with code: ${shortCode}`);
   }
 
+
   onJoin(client, opts = {}) {
     console.log('Client joined the room');
     const isFirst = this.clients.length === 1;

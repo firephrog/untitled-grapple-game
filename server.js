@@ -32,6 +32,8 @@ const userSchema = new mongoose.Schema({
   userPrefix:     { type: String, default: "Player" },
   usernameColor:  { type: String, default: "#ffffff"},
   prefixColor:    { type: String, default: "#b3b3b3"},
+
+  settings:       { type: Object, default: {} },
 }, { timestamps: true });
 
 const User = mongoose.model('User', userSchema);
@@ -80,6 +82,25 @@ app.get('/auth/me', async (req, res) => {
   }
 });
 // ── end auth routes ──────────────────────────────────────────
+
+//client database send route
+
+app.post('/api/save', async (req, res) => {
+  const header = req.headers.authorization || '';
+  const token  = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'No token.' });
+
+  try {
+    const { userId } = jwt.verify(token, CFG.JWT_SECRET);
+    const { data } = req.body;
+    await User.findByIdAndUpdate(userId, { $set: { settings: data.settings } });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(401).json({ error: 'Invalid token.' });
+  }
+});
+
 // ── Short-code lookup endpoint ────────────────────────────────
 app.use(express.json());
 app.post('/find-room', async (req, res) => {

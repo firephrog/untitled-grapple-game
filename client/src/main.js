@@ -18,7 +18,7 @@
 
 import * as THREE                from 'three';
 import { GLTFLoader }            from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { PointerLockControls }   from 'three/examples/jsm/controls/PointerLockControls.js';
+import { PointerLockControls }   from './PointerLockControls.js';
 import RAPIER                    from '@dimforge/rapier3d-compat';
 import Colyseus                  from 'colyseus.js';
 
@@ -33,6 +33,12 @@ function getUser() {
   try { return JSON.parse(localStorage.getItem('auth_user')); }
   catch { return null; }
 }
+
+
+document.addEventListener('pointerlockerror', () => {
+  console.error('Pointer lock failed');
+  document.getElementById('lockOverlay').classList.add('visible');
+});
 
 
 async function fetchAndDisplayStats(token) {
@@ -207,6 +213,7 @@ chGeo.setAttribute('position', new THREE.Float32BufferAttribute(
   [-0.001,0,0, 0.001,0,0, 0,-0.001,0, 0,0.001,0], 3));
 const crosshair = new THREE.LineSegments(
   chGeo, new THREE.LineBasicMaterial({ color:0xffffff, depthTest:false }));
+crosshair.renderOrder = 999;
 crosshair.position.z = -0.1;
 camera.add(crosshair);
 scene.add(camera);
@@ -245,6 +252,8 @@ document.getElementById('menuBtn').onclick      = () => {
   showBackground();
 }
 
+// ── Menu screen and others ──────────────────────────────────────────────
+
 //randomize splash text
 
 const splashTextList = [
@@ -263,6 +272,78 @@ const randomSplash = splashTextList[randomIndex];
 const splashText = document.querySelector('.splashText');
 
 splashText.textContent = randomSplash;
+
+async function databaseSave(info) {
+  const authUser = JSON.parse(localStorage.getItem('auth_user'));
+  if (!authUser) return console.warn('databaseSave: not logged in');
+
+  const res = await fetch(`${API_BASE}/api/save`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${authUser.token}`
+    },
+    body: JSON.stringify({ data: info })
+  });
+
+  const json = await res.json();
+}
+
+function applySettings() {
+  const fov = parseInt(document.getElementById('fov').value);
+  const sensitivity = parseFloat(document.getElementById('sensitivity').value) / 10;
+  const invertY = document.getElementById('invertY').checked;
+  const showHints = document.getElementById('showInputs').checked;
+  const showSpeed = document.getElementById('showSpeed').checked;
+  const showPing = document.getElementById('showPing').checked;
+  
+  controls.pointerSpeed = sensitivity;
+  controls.invertYAxis = invertY;
+  camera.fov = fov;
+
+  if (showHints == false) { document.getElementById('controls-hint').style.display = 'none'; } else { document.getElementById('controls-hint').style.display = 'block'; }
+  if (showSpeed == false) { document.getElementById('velocity').style.display = 'none'; } else { document.getElementById('velocity').style.display = 'block'; }
+  if (showPing == false) { document.getElementById('ping').style.display = 'none'; } else { document.getElementById('ping').style.display = 'block'; }
+
+  camera.updateProjectionMatrix();
+}
+
+
+document.getElementById('saveBtn').addEventListener('click', () => {
+  const settings = {
+    graphics: {
+      fov:      parseInt(document.getElementById('fov').value),
+      showFps:  document.getElementById('showFps').checked,
+    },
+    interface: {
+      showPing:   document.getElementById('showPing').checked,
+      showSpeed:  document.getElementById('showSpeed').checked,
+      showInputs: document.getElementById('showInputs').checked,
+    },
+    mouse: {
+      sensitivity: parseFloat((document.getElementById('sensitivity').value / 10).toFixed(1)),
+      invertY:     document.getElementById('invertY').checked,
+    },
+    keybinds: { ...window.keybinds },
+  };
+
+  applySettings();
+  databaseSave({ settings })
+})
+
+
+document.addEventListener('click', () => {
+  if (gameStarted && !controls.isLocked) {
+    try {
+      controls.lock();
+    } catch(e) {
+      console.warn('lock failed:', e);
+    }
+  }
+});
+
+let pingMs = 0;
+
 
 // ── 4. Client physics world (mirrors server) ──────────────────
 let cWorld = null;   // RAPIER.World
@@ -283,7 +364,6 @@ async function buildClientWorld(collisionPath, spawnX, spawnY, spawnZ) {
 
     const body = cWorld.createRigidBody(RAPIER.RigidBodyDesc.fixed());
     cWorld.createCollider(RAPIER.ColliderDesc.trimesh(vertices, indices), body);
-    console.log(`[Client physics] Loaded trimesh: ${vertices.length/3} verts, ${indices.length/3} tris`);
   } catch (e) {
     console.error('[Client physics] Failed to load collision JSON:', e);
     // Fallback flat ground so the game still runs
@@ -460,7 +540,6 @@ async function loadMapGLB(glbPath) {
     // Hide the default floor plane — the GLB has its own floor
     floor.visible = false;
 
-    console.log(`[Client] Map loaded: ${glbPath}`);
   } catch (err) {
     console.error(`[Client] Failed to load map GLB: ${glbPath}`, err);
   }
@@ -522,9 +601,14 @@ const barrelPos   = new THREE.Vector3();
 
 function updateBarrelPos() {
   camera.getWorldDirection(_camForward);
-  // 0.5 units in front of camera — inside near clip plane so the rope
-  // base is never visible, giving the illusion it originates from the HUD
-  barrelPos.copy(camera.position).addScaledVector(_camForward, 0.5);
+  
+  // get camera right vector
+  const right = new THREE.Vector3();
+  right.crossVectors(_camForward, camera.up).normalize();
+  
+  barrelPos.copy(camera.position)
+    .addScaledVector(_camForward, 0.5)
+    .addScaledVector(right, 0.15); // nudge right
 }
 
 function updateRope(pivot, a, b) {
@@ -612,25 +696,28 @@ let   seq         = 0;
 let   lastSpawn   = 0;
 
 document.addEventListener('keydown', e => {
-  const k = e.key.toLowerCase();
-  if ('wasd'.includes(k) && k.length === 1) keys[k] = true;
-  if (e.code === 'Space') keys.space = true;
+  if (e.code === keybinds.fwd)   keys.w     = true;
+  if (e.code === keybinds.back)  keys.s     = true;
+  if (e.code === keybinds.left)  keys.a     = true;
+  if (e.code === keybinds.right) keys.d     = true;
+  if (e.code === keybinds.jump)  keys.space = true;
 
-  if (k === 'f' && gameStarted && room) {
+  if (e.code === window.keybinds.grapple && gameStarted && room) {
     room.send('grapple');
   }
 
-  if (e.code === 'KeyQ' && gameStarted && room) {
+  if (e.code === window.keybinds.bomb && gameStarted && room) {
     const now = performance.now();
     if (now - lastSpawn >= 3000) { shootBomb(); lastSpawn = now; }
   }
 });
 document.addEventListener('keyup', e => {
-  const k = e.key.toLowerCase();
-  if ('wasd'.includes(k) && k.length === 1) keys[k] = false;
-  if (e.code === 'Space') keys.space = false;
+  if (e.code === window.keybinds.fwd)   keys.w     = false;
+  if (e.code === window.keybinds.back)  keys.s     = false;
+  if (e.code === window.keybinds.left)  keys.a     = false;
+  if (e.code === window.keybinds.right) keys.d     = false;
+  if (e.code === window.keybinds.jump)  keys.space = false;
 });
-document.addEventListener('click', () => { if (gameStarted) controls.lock(); });
 
 // Show/hide the click-to-play overlay when pointer lock is released mid-game
 controls.addEventListener('unlock', () => {
@@ -672,6 +759,16 @@ function shootBomb() {
 function setupRoom(r) {
   room = r;
   myId = room.sessionId;
+
+  // start pinging once we have a room
+  setInterval(() => {
+    room.send('ping', { t: Date.now() });
+  }, 1000);
+
+  room.onMessage('pong', ({ t }) => {
+    const el = document.getElementById('ping');
+    if (el) el.textContent = (Date.now() - t) + ' ms';
+  });
 
   // ── One-time messages ──────────────────────────────────────
   room.onMessage('loadMap', async ({ glb, collision, spawnPoints }) => {
@@ -892,6 +989,8 @@ document.getElementById('codeInput')?.addEventListener('keypress', e => {
   if (e.key === 'Enter') document.getElementById('joinBtn').click();
 });
 
+applySettings();
+
 // ── 13. Main loop ─────────────────────────────────────────────
 const FT   = 1 / 60;
 let   acc  = 0;
@@ -905,8 +1004,6 @@ function animate() {
   const dt  = Math.min((now - last) / 1000, 0.1);
   last = now;
 
-  // Update barrel world position once per frame before any rope drawing
-  updateBarrelPos();
 
   // ── Client prediction ──────────────────────────────────────
   if (gameStarted && controls.isLocked && cWorld && cBody) {
@@ -948,6 +1045,8 @@ function animate() {
     camera.position.set(p.x, p.y + 1, p.z);
     if (myMesh) myMesh.position.set(p.x, p.y, p.z);
 
+    updateBarrelPos();
+
     // ── HUD: speed ────────────────────────────────────────────
     const v   = cBody.linvel();
     const spd = Math.sqrt(v.x**2 + v.y**2 + v.z**2);
@@ -982,10 +1081,10 @@ function animate() {
 
     if (ms.grapple.active) {
       const hookPos = { x: ms.grapple.hx, y: ms.grapple.hy, z: ms.grapple.hz };
-      myHook.visible = true;
+      myHook.visible = true; 
       myHook.position.set(hookPos.x, hookPos.y, hookPos.z);
       myRope.visible = true;
-      updateRope(myRope, barrelPos, hookPos);
+      updateRope(myRope, barrelPos, hookPos); // barrelPos is camera-relative, feels perfect
     } else {
       myHook.visible = false;
       myRope.visible = false;
@@ -1023,11 +1122,6 @@ function animate() {
     if (!explosions[i].alive) explosions.splice(i, 1);
   }
 
-  // ── HUD: ping ──────────────────────────────────────────────
-  if (gameStarted) {
-    const el = document.getElementById('ping');
-    if (el) el.textContent = (Date.now() - lastPingTime) + ' ms';
-  }
 
   renderer.render(scene, camera);
 }

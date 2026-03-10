@@ -1,7 +1,38 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
+  <script>
+    //define keybinds before everything else
+    window.keybinds = {
+      fwd:      'KeyW',
+      back:     'KeyS',
+      left:     'KeyA',
+      right:    'KeyD',
+      jump:     'Space',
+      grapple:  'KeyF',
+      bomb:     'KeyQ',
+    };
+    window.gameSettings = {
+    graphics: {
+      fov:     75,
+      showFps: false,
+    },
+    interface: {
+      showPing:   true,
+      showSpeed:  true,
+      showInputs: true,
+    },
+    mouse: {
+      sensitivity: 0.5,
+      invertY:     false,
+    },
+  };
+    
+
+  </script>
+
+  <!-- main script -->
+  
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>untitled pvp game</title>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300..700&family=Space+Mono:ital,wght@0,400;0,700;1,400;1,700&display=swap" rel="stylesheet">
@@ -650,7 +681,7 @@
 
     .hidden { display: none !important; }
   </style>
-  <script type="module" crossorigin src="/assets/index-ChUzfWRf.js"></script>
+  <script type="module" crossorigin src="/assets/index-CH45C-hr.js"></script>
 </head>
 <body>
 
@@ -745,7 +776,7 @@
         <img src='https://assets.streamlinehq.com/image/private/w_300,h_300,ar_1/f_auto/v1/icons/business-payments/leaderboard-c2xgbi34v5lkfqcsnn4rls.png/leaderboard-3rvm6vbkyzgye3ova2wwy.png?_a=DATAiZAAZAA0' alt="leaderboard">
         <img src='https://cdn-icons-png.flaticon.com/512/1500/1500455.png' alt="friends">
         <img src='https://www.freeiconspng.com/thumbs/settings-icon/settings-icon-13.png' alt="settings"
-          onclick="document.getElementById('menu').style.display='none'; document.getElementById('settingsMenu').style.display='flex';"
+          onclick="document.getElementById('menu').style.display='none'; document.getElementById('settingsMenu').style.display='flex'; loadSettings();"
           style="cursor:pointer;">
       </div>
 
@@ -856,9 +887,9 @@
 
         <!-- sidebar -->
         <div style="display:flex; flex-direction:column; width:130px; border-right:1px solid rgba(255,255,255,0.07); padding:12px 0; gap:2px; flex-shrink:0; background:rgba(0,0,0,0.15);">
-          <button class="settings-tab active" onclick="settingsTab(this,'general')">general</button>
-          <button class="settings-tab" onclick="settingsTab(this,'controls')">controls</button>
-          <button class="settings-tab" onclick="settingsTab(this,'account')">account</button>
+          <button class="settings-tab active" onclick="settingsTabSwitch(this,'general')">general</button>
+          <button class="settings-tab" onclick="settingsTabSwitch(this,'controls')">controls</button>
+          <button class="settings-tab" onclick="settingsTabSwitch(this,'account')">account</button>
         </div>
 
         <!-- content -->
@@ -918,13 +949,13 @@
               </div>
               <div class="settings-group">
                 <div class="settings-label">keybinds</div>
-                <div class="settings-row"><span>forward</span><kbd>W</kbd></div>
-                <div class="settings-row"><span>back</span><kbd>S</kbd></div>
-                <div class="settings-row"><span>left</span><kbd>A</kbd></div>
-                <div class="settings-row"><span>right</span><kbd>D</kbd></div>
-                <div class="settings-row"><span>jump</span><kbd>space</kbd></div>
-                <div class="settings-row"><span>grapple</span><kbd>F</kbd></div>
-                <div class="settings-row"><span>bomb</span><kbd>Q</kbd></div>
+                <div class="settings-row"><span>forward</span>  <kbd id="fwd" onclick="rebind('fwd', this)">W</kbd></div>
+                <div class="settings-row"><span>back</span>     <kbd id="back" onclick="rebind('back', this)">S</kbd></div>
+                <div class="settings-row"><span>left</span>     <kbd id="left" onclick="rebind('left', this)">A</kbd></div>
+                <div class="settings-row"><span>right</span>    <kbd id="right" onclick="rebind('right', this)">D</kbd></div>
+                <div class="settings-row"><span>jump</span>     <kbd id="jump" onclick="rebind('jump', this)">space</kbd></div>
+                <div class="settings-row"><span>grapple</span>  <kbd id="grapple" onclick="rebind('grapple', this)">F</kbd></div>
+                <div class="settings-row"><span>bomb</span>     <kbd id="bomb" onclick="rebind('bomb', this)">Q</kbd></div>
               </div>
             </div>
 
@@ -966,6 +997,8 @@
   <div id="lockOverlay">
     <p>click to play</p>
     <small>esc to release mouse</small>
+    <small>Note: sometimes there is a 1.3s delay to continue.</small>
+    <small>This is done at a browser level thus I cannot do anything about</small>
   </div>
 
   <!-- ── HUD (shown during game) ───────────────────────────── -->
@@ -1025,5 +1058,98 @@
     </div>
   </div>
 
+  <script>
+    const API_BASE = location.protocol === 'https:'
+  ? `https://${location.hostname}`
+  : `http://${location.hostname}:3000`;
+
+
+    // menu scripts
+    function displayStoredSettings() {
+      // graphics
+      document.getElementById('fov').value             = gameSettings.graphics.fov;
+      document.getElementById('fov-val').textContent   = gameSettings.graphics.fov;
+      document.getElementById('showFps').checked       = gameSettings.graphics.showFps;
+
+      // overlay
+      document.getElementById('showPing').checked      = gameSettings.interface.showPing;
+      document.getElementById('showSpeed').checked     = gameSettings.interface.showSpeed;
+      document.getElementById('showInputs').checked    = gameSettings.interface.showInputs;
+
+      // mouse
+      document.getElementById('sensitivity').value     = gameSettings.mouse.sensitivity * 10;
+      document.getElementById('sens-val').textContent  = gameSettings.mouse.sensitivity.toFixed(1);
+      document.getElementById('invertY').checked       = gameSettings.mouse.invertY;
+
+      // keybinds — strip "Key" prefix for display e.g. "KeyW" -> "W"
+      const fmt = code => code.replace('Key','').replace('Space','space');
+      document.getElementById('fwd').textContent     = fmt(window.keybinds.fwd);
+      document.getElementById('back').textContent    = fmt(window.keybinds.back);
+      document.getElementById('left').textContent    = fmt(window.keybinds.left);
+      document.getElementById('right').textContent   = fmt(window.keybinds.right);
+      document.getElementById('jump').textContent    = fmt(window.keybinds.jump);
+      document.getElementById('grapple').textContent = fmt(window.keybinds.grapple);
+      document.getElementById('bomb').textContent    = fmt(window.keybinds.bomb);
+
+      // account
+      const authUser = JSON.parse(localStorage.getItem('auth_user'));
+      if (authUser) document.getElementById('settings-username').textContent = authUser.username;
+    }
+
+    async function loadSettings() {
+      const authUser = JSON.parse(localStorage.getItem('auth_user'));
+      if (!authUser) return;
+
+      const res  = await fetch(`${API_BASE}/auth/me`, {
+        headers: { 'Authorization': `Bearer ${authUser.token}` }
+      });
+      const user = await res.json();
+
+      if (user.settings) {
+        // merge into your local gameSettings object
+        Object.assign(gameSettings.graphics,  user.settings.graphics  || {});
+        Object.assign(gameSettings.interface, user.settings.interface || {});
+        Object.assign(gameSettings.mouse,     user.settings.mouse     || {});
+        Object.assign(window.keybinds, user.settings.keybinds);
+
+
+        displayStoredSettings(); 
+      }
+    }
+
+    loadSettings();
+
+    function settingsTabSwitch(btn, id) {
+      document.querySelectorAll('.settings-tab').forEach(b => b.classList.remove('active')); //change the visual
+      document.querySelectorAll('.settings-panel').forEach(p => p.style.display = 'none'); //stop displaying current panel
+      btn.classList.add('active'); //make the new one active
+      document.getElementById('panel-' + id).style.display = 'block'; //display the new panel
+    }
+
+    let rebinding = null;
+
+    function rebind(action, btn) {
+      rebinding = action;
+      btn.textContent = 'press a key...';
+      btn.classList.add('listening');
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (!rebinding) return;
+      e.preventDefault();
+
+      window.keybinds[rebinding] = e.code;
+
+      const fmt = code => code.replace('Key', '').replace('Space', 'space');
+      document.getElementById(rebinding).textContent = fmt(e.code);
+
+      rebinding = null;
+    });
+
+    document.getElementById('settingsSignOutBtn').addEventListener('click', () => {
+      localStorage.removeItem('auth_user');
+      location.reload();
+    });
+  </script>
 </body>
 </html>

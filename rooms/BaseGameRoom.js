@@ -48,6 +48,7 @@ class BaseGameRoom extends Room {
 
     // Messages that are always valid
     this.onMessage('vote', (c, d) => this._handleVote(c, d));
+    this.onMessage('ping', (c, d) => c.send('pong', { t: d.t }));
 
     // Game messages registered once voting is done (in _beginGame)
   }
@@ -170,6 +171,7 @@ class BaseGameRoom extends Room {
       this._handleExplosion(id, pos, ownerId);
     });
 
+
     // Create player bodies at map spawn points
     const sessions = this.clients.map(c => c.sessionId);
     sessions.forEach((sid, index) => {
@@ -192,6 +194,8 @@ class BaseGameRoom extends Room {
     this.onMessage('input',     (c, d) => this._handleInput(c, d));
     this.onMessage('grapple',   (c)    => this._handleGrapple(c));
     this.onMessage('spawnBomb', (c, d) => this._handleSpawnBomb(c, d));
+
+
 
     // Start the 60Hz physics loop
     this.setSimulationInterval(() => this._tick(), 1000 / CFG.TICK_RATE);
