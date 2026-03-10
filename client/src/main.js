@@ -442,9 +442,9 @@ function reconcile(serverPos, serverVel, ackSeq) {
   }
 }
 
-// ── 8. Opponent interpolation ─────────────────────────────────
-const oppBuffer   = [];         // { time, position }
-const INTERP_DELAY = 100;       // ms behind real-time
+// ── Opponent interpolation ─────────────────────────────────
+const oppBuffer   = [];    
+const INTERP_DELAY = 100;     
 
 function pushOppSnap(pos) {
   oppBuffer.push({ time: performance.now(), position: { ...pos } });
@@ -466,14 +466,8 @@ function interpolateOpp() {
   );
 }
 
-// ── 9. Scene objects ──────────────────────────────────────────
-// ── GLB map loading ──────────────────────────────────────────
-// Three.js loads the .glb file and adds the full scene graph directly.
-// Materials, colors, and geometry all come from Blender automatically.
-// We keep a reference so we can remove the map on room change.
-
 const gltfLoader = new GLTFLoader();
-let   currentMapRoot = null;   // the THREE.Group added to scene
+let   currentMapRoot = null;   
 
 async function loadMapGLB(glbPath) {
   // Remove previous map if any
@@ -494,10 +488,6 @@ async function loadMapGLB(glbPath) {
     const gltf = await gltfLoader.loadAsync(glbPath);
     currentMapRoot = gltf.scene;
 
-    // If the GLB was NOT exported with +Y Up from Blender, uncomment this line:
-    // currentMapRoot.rotation.x = -Math.PI / 2;
-    // If it WAS exported with +Y Up, leave it commented out.
-
     // Enable shadows on every mesh in the loaded scene
     currentMapRoot.traverse(obj => {
       if (obj.isMesh) {
@@ -508,7 +498,6 @@ async function loadMapGLB(glbPath) {
 
     scene.add(currentMapRoot);
 
-    // Hide the default floor plane — the GLB has its own floor
     floor.visible = false;
 
   } catch (err) {
@@ -537,18 +526,14 @@ function makeHook(color) {
   return m;
 }
 
-// Rope implemented as a thin CylinderGeometry instead of THREE.Line.
-// THREE.Line uses the GPU line primitive which is always 1px wide and
-// disappears when viewed edge-on — a known WebGL limitation with no fix.
-// A cylinder has real geometry so it renders correctly from every angle.
-const ROPE_RADIUS   = 0.04;  // world-space thickness of rope
-const ROPE_SEGMENTS = 4;     // radial segments — 4 is enough, keeps tri count low
+const ROPE_RADIUS   = 0.04;  
+const ROPE_SEGMENTS = 4;     
 
 function makeRopeLine(color) {
   const geo  = new THREE.CylinderGeometry(ROPE_RADIUS, ROPE_RADIUS, 1, ROPE_SEGMENTS);
   const mat  = new THREE.MeshBasicMaterial({ color, depthWrite: true });
   const mesh = new THREE.Mesh(geo, mat);
-  mesh.visible = true;  // explicitly visible — pivot controls show/hide
+  mesh.visible = true; 
   const pivot = new THREE.Object3D();
   pivot.add(mesh);
   pivot.visible    = false;
@@ -557,16 +542,11 @@ function makeRopeLine(color) {
   return pivot;
 }
 
-// _tmp vectors reused every frame to avoid allocations
 const _ropeMid = new THREE.Vector3();
 const _ropeDir = new THREE.Vector3();
 const _ropeUp  = new THREE.Vector3(0, 1, 0);
 const _ropeQ   = new THREE.Quaternion();
 
-// Rope origin — a fixed point just in front of the camera.
-// Using camera.position directly (plus tiny forward offset so it's not
-// inside the near clip plane) means the rope base never shakes because
-// it moves exactly with the camera with zero lag.
 const _camForward = new THREE.Vector3();
 const barrelPos   = new THREE.Vector3();
 
@@ -593,8 +573,6 @@ function updateRope(pivot, a, b) {
   if (length < 0.001) return;
   _ropeDir.divideScalar(length);
 
-  // setFromUnitVectors fails when vectors are exactly parallel (dot = -1).
-  // In that case (straight up or down shot) use a 180° rotation around X.
   const dot = _ropeUp.dot(_ropeDir);
   if (dot > 0.9999) {
     _ropeQ.identity();
@@ -660,13 +638,13 @@ class Explosion {
   }
 }
 
-// ── 10. Input ─────────────────────────────────────────────────
+// ── Input ─────────────────────────────────────────────────
 const controls    = new PointerLockControls(camera, renderer.domElement);
 const keys        = { w:false, a:false, s:false, d:false, space:false };
 let   seq         = 0;
 let   lastSpawn   = 0;
 
-document.addEventListener('keydown', e => {
+document.addEventListener('keydown', e => { //use custom keybinds
   if (e.code === keybinds.fwd)   keys.w     = true;
   if (e.code === keybinds.back)  keys.s     = true;
   if (e.code === keybinds.left)  keys.a     = true;
@@ -726,12 +704,12 @@ function shootBomb() {
   }
 }
 
-// ── 11. Colyseus room setup ───────────────────────────────────
+// ── Colyseus room setup ───────────────────────────────────
 function setupRoom(r) {
   room = r;
   myId = room.sessionId;
 
-  // start pinging once we have a room
+  // start pinging 
   setInterval(() => {
     room.send('ping', { t: Date.now() });
   }, 1000);
@@ -746,8 +724,6 @@ function setupRoom(r) {
     // Load visual mesh
     await loadMapGLB(glb);
 
-    // Build client physics world from same collision JSON as server
-    // spawnPoints[0] = host, spawnPoints[1] = guest
     const spawnIndex = isHost ? 0 : 1;
     const spawn      = spawnPoints[spawnIndex] || { x: 0, y: 5, z: 0 };
     await buildClientWorld(collision, spawn.x, spawn.y, spawn.z);
@@ -758,15 +734,6 @@ function setupRoom(r) {
     isHost = data.isHost;
   });
 
-  // ── Map vote messages ────────────────────────────────────────
-  //
-  // 'mapVote'   → server sends the map list and timeout, we show the picker
-  // 'mapChosen' → server has resolved all votes, we hide the picker and
-  //               store the chosen map id so we can load geometry when
-  //               'blocks' arrives
-  //
-  // The vote UI is purely cosmetic on the client — the server is the
-  // authority. Even if you skip voting the server picks for you.
 
   room.onMessage('mapVote', ({ maps, timeoutMs }) => {
     showMapVotePicker(maps, timeoutMs, (chosenId) => {
@@ -825,7 +792,6 @@ function setupRoom(r) {
 
     const won = data.winner === myId;
 
-    // Populate results page then show it
     const resultTitle = document.getElementById('resultTitle');
     if (resultTitle) {
       resultTitle.textContent = won ? 'you won' : 'you lost';
@@ -843,15 +809,6 @@ function setupRoom(r) {
   });
 }
 
-// ── 12. UI buttons ────────────────────────────────────────────
-// ── Map vote UI ──────────────────────────────────────────────
-//
-// showMapVotePicker builds the grid of map cards dynamically from
-// the list the server sent — so adding a new map to maps/index.js
-// automatically appears in the UI with zero client changes.
-//
-// A countdown timer runs client-side purely for display.  The server
-// has its own authoritative timer, so desync between them is fine.
 
 let _voteCountdownInterval = null;
 let _selectedMapId = null;
@@ -962,7 +919,7 @@ document.getElementById('codeInput')?.addEventListener('keypress', e => {
 
 applySettings();
 
-// ── 13. Main loop ─────────────────────────────────────────────
+// ──  Main loop ─────────────────────────────────────────────
 const FT   = 1 / 60;
 let   acc  = 0;
 let   last = performance.now();
@@ -1045,7 +1002,7 @@ function animate() {
     }
   }
 
-  // ── My grapple visuals (server-authoritative only) ───────────
+  // ── My grapple visuals ───────────
   if (gameStarted && room && myId) {
     const ms = room.state.players.get(myId);
     if (!ms) return;
@@ -1055,7 +1012,7 @@ function animate() {
       myHook.visible = true; 
       myHook.position.set(hookPos.x, hookPos.y, hookPos.z);
       myRope.visible = true;
-      updateRope(myRope, barrelPos, hookPos); // barrelPos is camera-relative, feels perfect
+      updateRope(myRope, barrelPos, hookPos); 
     } else {
       myHook.visible = false;
       myRope.visible = false;
