@@ -35,7 +35,7 @@
   <script type="module" src="/src/main.js"></script>
   
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>untitled pvp game</title>
+  <title>untitled grapple game</title>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300..700&family=Space+Mono:ital,wght@0,400;0,700;1,400;1,700&display=swap" rel="stylesheet">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -681,6 +681,348 @@
     .settings-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 
     .hidden { display: none !important; }
+
+    /* ════════════════════════════════════════════════════════════
+       FRIENDS MENU
+       ════════════════════════════════════════════════════════════ */
+
+    #friendsMenu {
+      display: none;
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 300px;
+      height: 520px;
+      flex-direction: column;
+      background-color: rgba(136, 136, 136, 0.6);
+      border-radius: 10px;
+      box-shadow: 0 0 20px rgba(0,0,0,0.5);
+      backdrop-filter: blur(14px);
+      overflow: hidden;
+      z-index: 200;
+    }
+
+  
+    .friend-section-label {
+      font-family: 'Space Mono', monospace;
+      font-size: 9px;
+      letter-spacing: 2.5px;
+      text-transform: uppercase;
+      color: #666;
+      padding: 10px 14px 4px;
+    }
+
+    .friend-list {
+      flex: 1;
+      overflow-y: auto;
+      width: 100%;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,0.1) transparent;
+    }
+    .friend-list::-webkit-scrollbar { width: 3px; }
+    .friend-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+
+    .friend-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 14px;
+      transition: background 0.12s;
+      cursor: pointer;
+      position: relative;
+    }
+    .friend-row:hover { background: rgba(255,255,255,0.05); }
+
+    .f-avatar {
+      position: relative;
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
+      background: rgba(80, 80, 100, 0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Space Mono', monospace;
+      font-size: 13px;
+      font-weight: 700;
+      color: #ccc;
+      flex-shrink: 0;
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .status-dot {
+      position: absolute;
+      bottom: -2px; right: -2px;
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      border: 2px solid rgba(50, 50, 60, 0.95);
+    }
+    .status-dot.online  { background: #00ff88; }
+    .status-dot.in-game { background: #ffaa00; }
+    .status-dot.offline { background: #555; }
+
+    .friend-info { flex: 1; min-width: 0; }
+    .friend-name {
+      font-size: 13px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: #e8e8e8;
+    }
+    .friend-status-text {
+      font-size: 10px;
+      color: #666;
+      font-family: 'Space Mono', monospace;
+      letter-spacing: 0.5px;
+      margin-top: 1px;
+    }
+    .friend-status-text.online  { color: #00cc6a; }
+    .friend-status-text.in-game { color: #cc8800; }
+
+    .friend-actions {
+      display: flex;
+      gap: 6px;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+    .friend-row:hover .friend-actions { opacity: 1; }
+
+    .friend-action-btn {
+      width: 26px; height: 26px;
+      border-radius: 5px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(50, 50, 70, 0.8);
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px;
+      transition: background 0.1s, transform 0.1s;
+    }
+    .friend-action-btn:hover { background: rgba(100, 100, 150, 0.9); transform: scale(1.08); }
+
+    .friend-divider {
+      width: calc(100% - 28px);
+      height: 1px;
+      background: rgba(255,255,255,0.06);
+      margin: 4px 14px;
+    }
+
+    .add-friend-bar {
+      width: 100%;
+      padding: 10px 14px;
+      border-top: 1px solid rgba(255,255,255,0.07);
+      display: flex;
+      gap: 8px;
+      flex-shrink: 0;
+      background: rgba(0,0,0,0.15);
+    }
+    .add-friend-input {
+      flex: 1;
+      padding: 7px 10px;
+      font-size: 12px;
+      font-family: 'Space Mono', monospace;
+      background: rgba(20, 20, 30, 0.7);
+      color: #fff;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 6px;
+      outline: none;
+      text-transform: none;
+      text-align: left;
+      letter-spacing: normal;
+      width: auto;
+    }
+    .add-friend-input::placeholder { color: #444; }
+    .add-friend-input:focus { border-color: rgba(255,255,255,0.3); }
+
+    .btn-sm {
+      padding: 7px 14px;
+      font-size: 11px;
+      font-family: 'Space Grotesk', monospace;
+      font-weight: 600;
+      background: rgba(100, 100, 127, 0.75);
+      color: #fff;
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 6px;
+      cursor: pointer;
+      letter-spacing: 1px;
+      text-transform: lowercase;
+      transition: background 0.15s, transform 0.1s;
+    }
+    .btn-sm:hover { background: rgba(120, 120, 155, 0.9); transform: scale(1.03); }
+
+    /* ════════════════════════════════════════════════════════════
+       CHAT MENU
+       ════════════════════════════════════════════════════════════ */
+
+    #chatMenu {
+      display: none;
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 340px;
+      height: 480px;
+      flex-direction: column;
+      background-color: rgba(136, 136, 136, 0.6);
+      border-radius: 10px;
+      box-shadow: 0 0 20px rgba(0,0,0,0.5);
+      backdrop-filter: blur(14px);
+      overflow: hidden;
+      z-index: 200;
+    }
+
+    /* chat header — shows who you're talking to */
+    .chat-header {
+      padding: 10px 14px 10px;
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+      background: rgba(0,0,0,0.1);
+    }
+    .chat-header-avatar {
+      width: 30px; height: 30px;
+      border-radius: 7px;
+      background: rgba(60, 80, 120, 0.7);
+      display: flex; align-items: center; justify-content: center;
+      font-family: 'Space Mono', monospace;
+      font-size: 11px; font-weight: 700; color: #ccc;
+      border: 1px solid rgba(255,255,255,0.08);
+      flex-shrink: 0;
+      position: relative;
+    }
+    .chat-header-name {
+      font-size: 13px;
+      font-weight: 700;
+      color: #e8e8e8;
+    }
+    .chat-header-status {
+      font-size: 10px;
+      color: #00cc6a;
+      font-family: 'Space Mono', monospace;
+      margin-top: 1px;
+    }
+
+    /* messages scroll area */
+    .msg-scroll {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,0.08) transparent;
+    }
+    .msg-scroll::-webkit-scrollbar { width: 3px; }
+    .msg-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 2px; }
+
+    .msg {
+      display: flex;
+      flex-direction: column;
+      max-width: 85%;
+    }
+    .msg.mine   { align-self: flex-end; align-items: flex-end; }
+    .msg.theirs { align-self: flex-start; align-items: flex-start; }
+
+    .msg-bubble {
+      padding: 7px 11px;
+      font-size: 12px;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+    .msg.mine   .msg-bubble {
+      background: rgba(80, 80, 160, 0.55);
+      border: 1px solid rgba(100, 100, 200, 0.3);
+      color: #dde;
+      border-radius: 8px 8px 2px 8px;
+    }
+    .msg.theirs .msg-bubble {
+      background: rgba(50, 50, 60, 0.7);
+      border: 1px solid rgba(255,255,255,0.08);
+      color: #ccc;
+      border-radius: 8px 8px 8px 2px;
+    }
+    .msg-time {
+      font-size: 9px;
+      color: #444;
+      font-family: 'Space Mono', monospace;
+      margin-top: 3px;
+      letter-spacing: 0.5px;
+    }
+
+    /* system message e.g. game invite */
+    .msg-system {
+      align-self: center;
+      background: rgba(255, 170, 0, 0.1);
+      border: 1px solid rgba(255, 170, 0, 0.25);
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 11px;
+      color: #ffaa00;
+      font-family: 'Space Mono', monospace;
+      letter-spacing: 0.5px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .msg-system .accept-btn {
+      padding: 3px 10px;
+      font-size: 10px;
+      background: rgba(255, 170, 0, 0.25);
+      border: 1px solid rgba(255, 170, 0, 0.4);
+      border-radius: 4px;
+      color: #ffaa00;
+      cursor: pointer;
+      font-family: 'Space Mono', monospace;
+      transition: background 0.12s;
+    }
+    .msg-system .accept-btn:hover { background: rgba(255, 170, 0, 0.45); }
+
+    /* input bar */
+    .msg-input-wrap {
+      padding: 10px 14px;
+      border-top: 1px solid rgba(255,255,255,0.07);
+      display: flex;
+      gap: 8px;
+      flex-shrink: 0;
+      background: rgba(0,0,0,0.1);
+    }
+    .msg-input {
+      flex: 1;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-family: 'Space Grotesk', monospace;
+      background: rgba(20, 20, 30, 0.7);
+      color: #fff;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 6px;
+      outline: none;
+      resize: none;
+      height: 34px;
+      text-transform: none;
+      text-align: left;
+      letter-spacing: normal;
+      width: auto;
+    }
+    .msg-input::placeholder { color: #444; }
+    .msg-input:focus { border-color: rgba(255,255,255,0.25); }
+
+    .send-btn {
+      width: 34px; height: 34px;
+      border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(80, 80, 140, 0.7);
+      color: #fff;
+      font-size: 15px;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: background 0.12s, transform 0.1s;
+      flex-shrink: 0;
+    }
+    .send-btn:hover { background: rgba(100, 100, 180, 0.9); transform: scale(1.05); }
   </style>
 </head>
 <body>
@@ -774,7 +1116,12 @@
           <div class='menu-title'>Options</div>
         </div>
         <img src='https://assets.streamlinehq.com/image/private/w_300,h_300,ar_1/f_auto/v1/icons/business-payments/leaderboard-c2xgbi34v5lkfqcsnn4rls.png/leaderboard-3rvm6vbkyzgye3ova2wwy.png?_a=DATAiZAAZAA0' alt="leaderboard">
-        <img src='https://cdn-icons-png.flaticon.com/512/1500/1500455.png' alt="friends">
+        <img 
+          src='https://cdn-icons-png.flaticon.com/512/1500/1500455.png' 
+          alt="friends"
+          onclick="document.getElementById('friendsMenu').style.display='flex';"
+          style="cursor:pointer;" 
+          id="friendsMenuBtn" >
         <img src='https://www.freeiconspng.com/thumbs/settings-icon/settings-icon-13.png' alt="settings"
           onclick="document.getElementById('menu').style.display='none'; document.getElementById('settingsMenu').style.display='flex'; loadSettings();"
           style="cursor:pointer;">
@@ -1058,30 +1405,142 @@
     </div>
   </div>
 
+  <!-- ══════════════════════════════════════════════════════════
+       FRIENDS MENU  — starts hidden, open via friends icon
+       ══════════════════════════════════════════════════════════ -->
+  <div id="friendsMenu">
+
+    <div class="title-bar">
+      <div class="controls">
+        <span class="control close" onclick="document.getElementById('friendsMenu').style.display='none';" style="cursor:pointer;" title="close"></span>
+        <span class="control none"></span>
+        <span class="control none"></span>
+      </div>
+      <div class="menu-title">friends (WIP)</div>
+    </div>
+
+    <div class="friend-list">
+
+      <!-- pending -->
+      <div class="friend-section-label">pending · 69</div>
+
+      <div id="friends-pending">
+      </div>
+
+      <div class="friend-divider"></div>
+
+      <!-- online -->
+      <div class="friend-section-label">online · 69</div>
+      
+      <div id="online-friends">
+        <div class="friend-row" onclick="openChat()">
+          <div class="f-avatar" style="background:rgba(60,80,120,0.6);">GH<div class="status-dot in-game"></div></div>
+          <div class="friend-info">
+            <div class="friend-name">test3</div>
+            <div class="friend-status-text in-game">in game · 1v1</div>
+          </div>
+          <div class="friend-actions">
+            <div class="friend-action-btn" title="message" onclick="event.stopPropagation(); openChat()">💬</div>
+          </div>
+        </div>
+
+        <div class="friend-row" onclick="openChat('kraken_mv', 'KR', 'rgba(60,100,70,0.7)', 'online', '● online · in lobby')">
+          <div class="f-avatar" style="background:rgba(60,100,70,0.6);">KR<div class="status-dot online"></div></div>
+          <div class="friend-info">
+            <div class="friend-name">test4</div>
+            <div class="friend-status-text online">online · in lobby</div>
+          </div>
+          <div class="friend-actions">
+            <div class="friend-action-btn" title="message" onclick="event.stopPropagation(); openChat()">💬</div>
+          </div>
+        </div>
+
+        <div class="friend-row" onclick="openChat('zzephyr', 'ZZ', 'rgba(90,70,100,0.7)', 'online', '● online · menu')">
+          <div class="f-avatar" style="background:rgba(90,70,100,0.6);">ZZ<div class="status-dot online"></div></div>
+          <div class="friend-info">
+            <div class="friend-name">burger</div>
+            <div class="friend-status-text online">online · menu</div>
+          </div>
+          <div class="friend-actions">
+            <div class="friend-action-btn" title="message" onclick="event.stopPropagation(); openChat()">💬</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="friend-divider"></div>
+
+      <!-- offline -->
+      <div class="friend-section-label">offline · 69</div>
+
+      <div id="offline-friends">
+        
+      </div>
+      
+
+    </div><!-- /friend-list -->
+
+    <!-- add friend bar -->
+    <div class="add-friend-bar">
+      <input class="add-friend-input" type="text" placeholder="add by user /">
+      <button class="btn-sm">add</button>
+    </div>
+
+  </div><!-- /friendsMenu -->
+
+
+  <!-- ══════════════════════════════════════════════════════════
+       CHAT MENU  — starts hidden, opens when clicking a friend
+       ══════════════════════════════════════════════════════════ -->
+  <div id="chatMenu">
+
+    <div class="title-bar">
+      <div class="controls">
+        <span class="control close" onclick="document.getElementById('chatMenu').style.display='none';" style="cursor:pointer;" title="close"></span>
+        <span class="control none"></span>
+        <span class="control none"></span>
+      </div>
+      <div class="menu-title" id="chatMenuTitle">messages</div>
+    </div>
+
+    <!-- who you're chatting with -->
+    <div class="chat-header">
+      <div class="chat-header-avatar" id="chatHeaderAvatar">??</div>
+      <div>
+        <div class="chat-header-name" id="chatHeaderName">—</div>
+        <div class="chat-header-status" id="chatHeaderStatus">—</div>
+      </div>
+    </div>
+
+    <!-- message history -->
+    <div class="msg-scroll" id="msgScroll">
+      <!-- messages injected by openChat() -->
+    </div>
+
+    <!-- input -->
+    <div class="msg-input-wrap">
+      <textarea class="msg-input" id="msgInput" placeholder="send a message..."></textarea>
+      <button class="send-btn" onclick="sendMessage()">↑</button>
+    </div>
+
+  </div><!-- /chatMenu -->
+
+
   <script>
     const API_BASE = location.protocol === 'https:'
-  ? `https://${location.hostname}`
-  : `http://${location.hostname}:3000`;
+      ? `https://${location.hostname}`
+      : `http://${location.hostname}:3000`;
 
-
-    // menu scripts
+    // ── settings ────────────────────────────────────────────
     function displayStoredSettings() {
-      // graphics
       document.getElementById('fov').value             = gameSettings.graphics.fov;
       document.getElementById('fov-val').textContent   = gameSettings.graphics.fov;
       document.getElementById('showFps').checked       = gameSettings.graphics.showFps;
-
-      // overlay
       document.getElementById('showPing').checked      = gameSettings.interface.showPing;
       document.getElementById('showSpeed').checked     = gameSettings.interface.showSpeed;
       document.getElementById('showInputs').checked    = gameSettings.interface.showInputs;
-
-      // mouse
       document.getElementById('sensitivity').value     = gameSettings.mouse.sensitivity * 10;
       document.getElementById('sens-val').textContent  = gameSettings.mouse.sensitivity.toFixed(1);
       document.getElementById('invertY').checked       = gameSettings.mouse.invertY;
-
-      // keybinds — strip "Key" prefix for display e.g. "KeyW" -> "W"
       const fmt = code => code.replace('Key','').replace('Space','space');
       document.getElementById('fwd').textContent     = fmt(window.keybinds.fwd);
       document.getElementById('back').textContent    = fmt(window.keybinds.back);
@@ -1090,8 +1549,6 @@
       document.getElementById('jump').textContent    = fmt(window.keybinds.jump);
       document.getElementById('grapple').textContent = fmt(window.keybinds.grapple);
       document.getElementById('bomb').textContent    = fmt(window.keybinds.bomb);
-
-      // account
       const authUser = JSON.parse(localStorage.getItem('auth_user'));
       if (authUser) document.getElementById('settings-username').textContent = authUser.username;
     }
@@ -1099,57 +1556,158 @@
     async function loadSettings() {
       const authUser = JSON.parse(localStorage.getItem('auth_user'));
       if (!authUser) return;
-
       const res  = await fetch(`${API_BASE}/auth/me`, {
         headers: { 'Authorization': `Bearer ${authUser.token}` }
       });
       const user = await res.json();
-
       if (user.settings) {
-        // merge into your local gameSettings object
         Object.assign(gameSettings.graphics,  user.settings.graphics  || {});
         Object.assign(gameSettings.interface, user.settings.interface || {});
         Object.assign(gameSettings.mouse,     user.settings.mouse     || {});
         Object.assign(window.keybinds, user.settings.keybinds);
-
-
-        displayStoredSettings(); 
+        displayStoredSettings();
       }
     }
 
     loadSettings();
 
     function settingsTabSwitch(btn, id) {
-      document.querySelectorAll('.settings-tab').forEach(b => b.classList.remove('active')); //change the visual
-      document.querySelectorAll('.settings-panel').forEach(p => p.style.display = 'none'); //stop displaying current panel
-      btn.classList.add('active'); //make the new one active
-      document.getElementById('panel-' + id).style.display = 'block'; //display the new panel
+      document.querySelectorAll('.settings-tab').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.settings-panel').forEach(p => p.style.display = 'none');
+      btn.classList.add('active');
+      document.getElementById('panel-' + id).style.display = 'block';
     }
 
     let rebinding = null;
-
     function rebind(action, btn) {
       rebinding = action;
       btn.textContent = 'press a key...';
       btn.classList.add('listening');
     }
-
     document.addEventListener('keydown', (e) => {
       if (!rebinding) return;
       e.preventDefault();
-
       window.keybinds[rebinding] = e.code;
-
       const fmt = code => code.replace('Key', '').replace('Space', 'space');
       document.getElementById(rebinding).textContent = fmt(e.code);
-
       rebinding = null;
     });
 
-    document.getElementById('settingsSignOutBtn').addEventListener('click', () => {
+    document.getElementById('settingsSignOutBtn').addEventListener('click', async () => {
+      if (presenceRoom) await presenceRoom.leave();
       localStorage.removeItem('auth_user');
       location.reload();
     });
+
+    // ── friends ─────────────────────────────────────────────────
+
+    async function acceptRequest(requesterId, requesterUsername) {
+      const authUser = JSON.parse(localStorage.getItem('auth_user'));
+      const res = await fetch(`${API_BASE}/api/friends/accept`, {
+        method: 'POST',
+        headers: { 
+          'Authorization': `Bearer ${authUser.token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ requesterId, requesterUsername })
+      });
+      if (res.ok) document.getElementById(`request-${requesterId}`).remove();
+    }
+
+    async function declineRequest(requesterId) {
+      const authUser = JSON.parse(localStorage.getItem('auth_user'));
+      const res = await fetch(`${API_BASE}/api/friends/decline`, {
+        method: 'POST',
+        headers: { 
+          'Authorization': `Bearer ${authUser.token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ requesterId })
+      });
+      if (res.ok) document.getElementById(`request-${requesterId}`).remove();
+    }
+
+    // ── chat ─────────────────────────────────────────────────
+
+    // Stub message history per friend (replace with real data)
+    const chatHistory = {
+      test1:   [
+        { mine: false, text: 'otherPersonMessage',                     time: '4:12 PM' },
+        { mine: true,  text: 'MyMessage',                              time: '4:13 PM' },
+      ],
+      test2:   [
+        { mine: false, text: 'otherPersonMessage',                     time: '4:12 PM' },
+        { mine: true,  text: 'MyMessage',                              time: '4:13 PM' },
+      ],
+    };
+
+    let activeChatUser = null;
+
+    function openChat(username, initials, avatarBg, statusClass, statusText) {
+      activeChatUser = username;
+
+      // update header
+      const av = document.getElementById('chatHeaderAvatar');
+      av.textContent = initials;
+      av.style.background = avatarBg;
+      document.getElementById('chatHeaderName').textContent   = username;
+      document.getElementById('chatMenuTitle').textContent    = username;
+      const st = document.getElementById('chatHeaderStatus');
+      st.textContent  = statusText;
+      st.style.color  = statusClass === 'online' ? '#00cc6a'
+                      : statusClass === 'in-game' ? '#cc8800'
+                      : '#666';
+
+      // render messages
+      renderMessages(username);
+
+      document.getElementById('chatMenu').style.display = 'flex';
+      document.getElementById('msgInput').focus();
+    }
+
+    function renderMessages(username) {
+      const scroll = document.getElementById('msgScroll');
+      scroll.innerHTML = '';
+      const history = chatHistory[username] || [];
+      if (history.length === 0) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'text-align:center; color:#555; font-size:11px; font-family:"Space Mono",monospace; margin:auto; padding-top:20px;';
+        empty.textContent = 'no messages yet';
+        scroll.appendChild(empty);
+        return;
+      }
+      history.forEach(m => {
+        const wrap = document.createElement('div');
+        wrap.className = 'msg ' + (m.mine ? 'mine' : 'theirs');
+        wrap.innerHTML = `<div class="msg-bubble">${m.text}</div><div class="msg-time">${m.time}</div>`;
+        scroll.appendChild(wrap);
+      });
+      scroll.scrollTop = scroll.scrollHeight;
+    }
+
+    function sendMessage() {
+      const input = document.getElementById('msgInput');
+      const text  = input.value.trim();
+      if (!text || !activeChatUser) return;
+
+      const now = new Date();
+      const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+      if (!chatHistory[activeChatUser]) chatHistory[activeChatUser] = [];
+      chatHistory[activeChatUser].push({ mine: true, text, time });
+
+      renderMessages(activeChatUser);
+      input.value = '';
+      input.focus();
+    }
+
+    document.getElementById('msgInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+
   </script>
 </body>
 </html>

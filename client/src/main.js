@@ -264,6 +264,7 @@ const splashTextList = [
   'Also try Minecraft!',
   'Also try Terraria!',
   'no',
+  'Garry Egghead is the best (he told me to add)',
 ] 
 
 const randomIndex = Math.floor(Math.random() * splashTextList.length);
@@ -344,6 +345,189 @@ document.addEventListener('click', () => {
 
 let pingMs = 0;
 
+//friend request
+
+async function sendFriendRequest(username) {
+  const authUser = JSON.parse(localStorage.getItem('auth_user'));
+  if (!authUser) return { error: 'Not logged in' }
+
+  try {
+    const res = await fetch(`${API_BASE}/api/users/${username}/friend-request`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${authUser.token}` }
+    });
+    const data = await res.json();
+    if (!res.ok) return { error: data.error };
+    return { ok: true };
+  } catch (err) {
+    return { error: 'Network error.' };
+  }
+}
+
+document.querySelector('.add-friend-bar .btn-sm').addEventListener('click', async () => {
+  const input = document.querySelector('.add-friend-input');
+  const username = input.value.trim();
+  if (!username) return;
+
+  const result = await sendFriendRequest(username);
+  if (result.error) {
+    input.placeholder = result.error;
+    input.value = '';
+  } else {
+    input.value = '';
+    input.placeholder = 'request sent!';
+  }
+
+  setTimeout(() => input.placeholder = 'add by user /', 2000);
+});
+
+//display friend requests
+
+async function displayFriendRequests(requests) {
+
+  const container = document.getElementById('friends-pending');
+
+  //wipe previous
+  container.innerHTML  = '';
+
+  for (const [userId, username] of Object.entries(requests)) {
+    //grab status
+    const res    = await fetch(`${API_BASE}/api/users/${username}`);
+    const user   = await res.json();
+    const status = user.status === 'Online'   ? 'online'
+                 : user.status === 'In Game'  ? 'in-game'
+                 : 'offline';
+    const prefix = user.userPrefix;
+    const prefixColor = user.prefixColor;
+    const userColor = user.usernameColor;
+
+    const initials = username.slice(0, 2).toUpperCase();
+    container.insertAdjacentHTML('beforeend', `
+      <div class="friend-row" id="request-${userId}">
+        <div class="f-avatar">${initials}<div class="status-dot ${status}"></div></div>
+        <div class="friend-info">
+          <div class="friend-name">
+            <span style="color:${prefixColor}">[${prefix}]</span> 
+            <span style="color:${userColor}">${username}</span>
+          </div>
+          <div class="friend-status-text">Sent you a request</div>
+        </div>
+        <div style="display:flex; gap:5px;">
+          <div class="friend-action-btn" title="accept" style="opacity:1;" onclick="acceptRequest('${userId}', '${username}')">✓</div>
+          <div class="friend-action-btn" title="decline" style="opacity:1; color:#ff5f56;" onclick="declineRequest('${userId}')">✕</div>
+        </div>
+      </div>
+    `);
+  };
+}
+
+async function displayFriends(friends) {
+  const onlineContainer  = document.getElementById('online-friends');
+  const offlineContainer = document.getElementById('offline-friends');
+
+  //wipe previous
+  onlineContainer.innerHTML  = '';
+  offlineContainer.innerHTML = '';
+
+  for (const [userId, username] of Object.entries(friends)) {
+    const res    = await fetch(`${API_BASE}/api/users/${username}`);
+    const user   = await res.json();
+    const status = user.status === 'Online'  ? 'online'
+                 : user.status === 'In Game' ? 'in-game'
+                 : 'offline';
+
+    const statusText = user.status === 'In Game' ? 'in game · 1v1' 
+                     : user.status === 'Online'  ? 'online · in lobby'
+                     : 'offline';
+
+    const prefix = user.userPrefix;
+    const prefixColor = user.prefixColor;
+    const userColor = user.usernameColor;
+
+
+    const initials = username.slice(0, 2).toUpperCase();
+    const html = `
+      <div class="friend-row" id="friend-${userId}" onclick="openChat('${username}')">
+        <div class="f-avatar">${initials}<div class="status-dot ${status}"></div></div>
+        <div class="friend-info">
+          <div class="friend-name">
+            <span style="color:${prefixColor}">[${prefix}]</span> 
+            <span style="color:${userColor}">${username}</span>
+          </div>
+          <div class="friend-status-text ${status}">${statusText}</div>
+        </div>
+        <div class="friend-actions">
+          <div class="friend-action-btn" title="message" onclick="event.stopPropagation(); openChat('${username}')">💬</div>
+        </div>
+      </div>
+    `;
+
+    if (status === 'offline') {
+      offlineContainer.insertAdjacentHTML('beforeend', html);
+    } else {
+      onlineContainer.insertAdjacentHTML('beforeend', html);
+    }
+  }
+}
+
+async function loadFriendRequests() {
+  const authUser = JSON.parse(localStorage.getItem('auth_user'));
+  if (!authUser) return;
+
+  const res  = await fetch(`${API_BASE}/auth/me`, {
+    headers: { 'Authorization': `Bearer ${authUser.token}` }
+  });
+  const user = await res.json();
+  
+  const requests = user.friends?.requests || {};
+  displayFriendRequests(requests);
+}
+
+async function loadFriends() {
+  const authUser = JSON.parse(localStorage.getItem('auth_user'));
+  if (!authUser) return;
+
+  const res = await fetch(`${API_BASE}/auth/me`, {
+    headers: { 'Authorization': `Bearer ${authUser.token}` }
+  });
+  const user = await res.json();
+
+  const friends = user.friends?.list || {};
+  displayFriends(friends);
+}
+
+loadFriendRequests();
+loadFriends();
+
+document.getElementById('friendsMenuBtn').addEventListener('click', () => {
+  loadFriendRequests();
+  loadFriends();
+})
+
+document.querySelector('.friend-action-btn').addEventListener('click', () => {
+  loadFriendRequests();
+  loadFriends();
+})
+
+// ── Presence ─────────────────────────────────────────────────
+let presenceRoom = null;
+
+async function joinPresence() {
+  const authUser = JSON.parse(localStorage.getItem('auth_user'));
+  if (!authUser) return;
+  try {
+    const client = new Colyseus.Client(
+      location.protocol === 'https:' 
+        ? `wss://${location.hostname}` 
+        : `ws://${location.hostname}:3000`
+    );
+    presenceRoom = await client.joinOrCreate('lobby', { token: authUser.token });
+  } catch (e) {
+    console.warn('Presence room failed:', e);
+  }
+}
+
+joinPresence();
 
 // ── 4. Client physics world (mirrors server) ──────────────────
 let cWorld = null;   // RAPIER.World
@@ -756,7 +940,7 @@ function shootBomb() {
 }
 
 // ── 11. Colyseus room setup ───────────────────────────────────
-function setupRoom(r) {
+async function setupRoom(r) {
   room = r;
   myId = room.sessionId;
 
@@ -812,6 +996,7 @@ function setupRoom(r) {
   });
 
   room.onMessage('gameStart', (data) => {
+    
     oppId = myId === data.hostId ? data.guestId : data.hostId;
 
     myMesh  = makeSphere(0x00ff00); scene.add(myMesh);
@@ -945,7 +1130,8 @@ function hideMapVotePicker() {
 
 document.getElementById('hostBtn').onclick = async () => {
   try {
-    const r = await colyseus.create('private');
+    const authUser = JSON.parse(localStorage.getItem('auth_user'));
+    const r = await colyseus.create('private', { token: authUser?.token });
     setupRoom(r);
 
     // Server sends us the short code via message once metadata is ready
@@ -966,6 +1152,7 @@ document.getElementById('joinBtn').onclick = async () => {
   if (!code) return;
   const errEl = document.getElementById('errorMsg');
   try {
+    
     // Resolve short code → full Colyseus room ID
     const res  = await fetch('/find-room', {
       method:  'POST',
@@ -977,7 +1164,8 @@ document.getElementById('joinBtn').onclick = async () => {
       if (errEl) { errEl.textContent = data.error || 'Room not found'; setTimeout(()=>errEl.textContent='',3000); }
       return;
     }
-    const r = await colyseus.joinById(data.roomId);
+    const authUser = JSON.parse(localStorage.getItem('auth_user'));
+    const r = await colyseus.joinById(data.roomId, { token: authUser?.token });
     setupRoom(r);
   } catch (e) {
     console.error('Failed to join room:', e);

@@ -5,38 +5,31 @@ const { createServer }       = require('http');
 const path                   = require('path');
 const { Server }             = require('colyseus');
 const { WebSocketTransport } = require('@colyseus/ws-transport');
-const mongoose               = require('mongoose');   // ← ADD
-const bcrypt                 = require('bcryptjs');   // ← ADD
-const jwt                    = require('jsonwebtoken'); // ← ADD
+const mongoose               = require('mongoose');  
+const bcrypt                 = require('bcryptjs'); 
+const jwt                    = require('jsonwebtoken'); 
 
 const { PrivateRoom }     = require('./rooms/PrivateRoom');
 const { MatchmakingRoom } = require('./rooms/MatchmakingRoom');
+const { Lobby } = require('./rooms/Lobby');
 const CFG                 = require('./config');
 
 //mango db
 mongoose.connect(CFG.MONGO_URI)
-  .then(() => console.log('✅  MongoDB connected'))
+  .then(async () => {
+    console.log('✅  MongoDB connected');
+    
+    // one-time migration — remove after running once
+    const result = await User.updateMany(
+      { status: { $exists: false } },
+      { $set: { status: 'Offline' } }
+    );
+    console.log(`Migrated ${result.modifiedCount} users`);
+  })
   .catch(err => { console.error('❌  MongoDB:', err); process.exit(1); });
 
-const userSchema = new mongoose.Schema({
-  //account details
-  username:       { type: String, required: true, unique: true, trim: true, minlength: 3, maxlength: 32, match: /^[a-zA-Z0-9_]+$/ },
-  passwordHash:   { type: String, required: true },
-  email:          { type: String, default: null },
+const User = require('./models/User'); 
 
-  //play stats
-  wins:           { type: Number, default: 0 },
-  deaths:         { type: Number, default: 0 },
-
-  //customization
-  userPrefix:     { type: String, default: "Player" },
-  usernameColor:  { type: String, default: "#ffffff"},
-  prefixColor:    { type: String, default: "#b3b3b3"},
-
-  settings:       { type: Object, default: {} },
-}, { timestamps: true });
-
-const User = mongoose.model('User', userSchema);
 // ── end MongoDB block ────────────────────────────────────────
 
 const app        = express();
@@ -48,14 +41,20 @@ app.use(express.json());
 
 // ── Auth routes ──────────────────────────────────────────── // ← ADD BLOCK
 app.post('/auth/signup', async (req, res) => {
-  const { username, password, email } = req.body;
-  if (!username || !password) return res.status(400).json({ error: 'Username and password required.' });
-  if (password.length < 8)   return res.status(400).json({ error: 'Password must be 8+ characters.' });
-  if (await User.findOne({ username })) return res.status(409).json({ error: 'Username already taken.' });
-  const passwordHash = await bcrypt.hash(password, 12);
-  const user = await User.create({ username, passwordHash, email: email || null });
-  const token = jwt.sign({ userId: user._id, username }, CFG.JWT_SECRET, { expiresIn: '7d' });
-  res.status(201).json({ username, token });
+  try {
+    const { username, password, email } = req.body;
+    if (!username || !password) return res.status(400).json({ error: 'Username and password required.' });
+    if (password.length < 8)   return res.status(400).json({ error: 'Password must be 8+ characters.' });
+    if (!/^[a-zA-Z0-9_]+$/.test(username)) return res.status(400).json({ error: 'Username can only contain letters, numbers and underscores.' });
+    if (await User.findOne({ username })) return res.status(409).json({ error: 'Username already taken.' });
+    const passwordHash = await bcrypt.hash(password, 12);
+    const user = await User.create({ username, passwordHash, email: email || null });
+    const token = jwt.sign({ userId: user._id, username }, CFG.JWT_SECRET, { expiresIn: '7d' });
+    res.status(201).json({ username, token });
+  } catch (err) {
+    console.error('Signup error:', err.message);
+    res.status(400).json({ error: err.message });
+  }
 });
 
 app.post('/auth/login', async (req, res) => {
@@ -101,6 +100,83 @@ app.post('/api/save', async (req, res) => {
   }
 });
 
+//find user route
+app.get('/api/users/:username', async (req, res) => {
+  try {
+    const user = await User.findOne({ username: req.params.username })
+      .select('username status userPrefix usernameColor prefixColor wins deaths');
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ error: `Server error: ${err}` });
+  }
+});
+
+//friend request
+
+app.post('/api/users/:username/friend-request', async (req, res) => {
+  const header = req.headers.authorization || ' ';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'Token not found' });
+  try {
+    const { userId, username } = jwt.verify(token, CFG.JWT_SECRET);
+    const target = await User.findOne({ username: req.params.username });
+    if (!target) return res.status(404).json({ error: 'User not found.' });
+    if (target._id.equals(userId)) return res.status(400).json({ error: 'Cannot add yourself.' });
+    // add to their pending requests
+    await User.findByIdAndUpdate(target._id, {
+      $set: { [`friends.requests.${userId}`]: username }
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: `Server error: ${err}` });
+  }
+});
+
+app.post('/api/friends/accept', async (req, res) => {
+  const header = req.headers.authorization || '';
+  const token  = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'No token.' });
+  try {
+    const { userId } = jwt.verify(token, CFG.JWT_SECRET);
+    const { requesterId, requesterUsername } = req.body;
+
+    await User.findByIdAndUpdate(userId, {
+      $unset: { [`friends.requests.${requesterId}`]: '' }
+    });
+
+    await User.findByIdAndUpdate(userId, {
+      $set: { [`friends.list.${requesterId}`]: requesterUsername }
+    });
+    const me = await User.findById(userId).select('username');
+    await User.findByIdAndUpdate(requesterId, {
+      $set: { [`friends.list.${userId}`]: me.username }
+    });
+
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error.' });
+  }
+});
+
+app.post('/api/friends/decline', async (req, res) => {
+  const header = req.headers.authorization || '';
+  const token  = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'No token.' });
+  try {
+    const { userId } = jwt.verify(token, CFG.JWT_SECRET);
+    const { requesterId } = req.body;
+
+    await User.findByIdAndUpdate(userId, {
+      $unset: { [`friends.requests.${requesterId}`]: '' }
+    });
+
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error.' });
+  }
+});
+
 // ── Short-code lookup endpoint ────────────────────────────────
 app.use(express.json());
 app.post('/find-room', async (req, res) => {
@@ -132,6 +208,7 @@ gameServer.define('private',     PrivateRoom);
 gameServer.define('matchmaking', MatchmakingRoom, {
   filterBy: ['ratingMin', 'ratingMax'],
 });
+gameServer.define('lobby', Lobby);
 
 httpServer.listen(CFG.PORT, () => {
   console.log(`\n🎮  Server running → http://localhost:${CFG.PORT}`);

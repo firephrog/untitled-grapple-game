@@ -19,6 +19,10 @@ const { BombSystem }     = require('../game/BombSystem');
 const { MAP_LIST, getMap, resolveVotes } = require('../maps');
 const CFG                = require('../config');
 
+const mongoose = require('mongoose');
+const jwt      = require('jsonwebtoken');
+const User = require('../models/User');
+
 // How long to wait for votes before auto-resolving (ms)
 const VOTE_TIMEOUT_MS = 30_000;
 
@@ -53,7 +57,14 @@ class BaseGameRoom extends Room {
     // Game messages registered once voting is done (in _beginGame)
   }
 
-  onJoin(client) {
+  async onJoin(client, opts = {}) {
+    if (opts.token) {
+      try {
+        const { userId } = jwt.verify(opts.token, CFG.JWT_SECRET);
+        client._userId = userId;
+        await User.findByIdAndUpdate(userId, { status: 'In Game' });
+      } catch {}
+    }
     const isFirst = this.clients.length === 1;
 
     // Input state (needed before game starts so no null checks later)
@@ -76,7 +87,11 @@ class BaseGameRoom extends Room {
     }
   }
 
-  onLeave(client) {
+  async onLeave(client, consented) {
+    if (client._userId) {
+      await User.findByIdAndUpdate(client._userId, { status: 'Online' });
+      // back to Online not Offline — they're still in the presence room
+    }
     if (this._physics) {
       const body = this._bodies.get(client.sessionId);
       if (body) this._physics.removeBody(body);
