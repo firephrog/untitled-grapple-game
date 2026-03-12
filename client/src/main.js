@@ -1,19 +1,5 @@
 // ============================================================
 //  CLIENT MAIN.JS  –  Colyseus + Rapier3D + Three.js
-//
-//  Reconciliation flow every frame:
-//    1. Sample keys → build { seq, inputs, camDir }
-//    2. Apply input to LOCAL Rapier body → step world
-//    3. Send packet to server via room.send('input', ...)
-//    4. Read room.state (auto-patched ~30Hz by Colyseus):
-//       a. Server pos matches ours?  → do nothing
-//       b. Small drift (<3u)?        → gentle rubber-band
-//       c. Large error (≥3u)?        → snap + replay all
-//                                      unacknowledged inputs
-//                                      (works perfectly because
-//                                       Rapier is deterministic)
-//    5. Render camera directly from local body (no lag-buffer)
-//    6. Opponent rendered via 100ms snapshot interpolation
 // ============================================================
 
 import * as THREE                from 'three';
@@ -24,7 +10,7 @@ import Colyseus                  from 'colyseus.js';
 
 import { initBackground, hideBackground, showBackground } from './background.js';
 
-// ── Auth ─────────────────────────────────────────────────────
+// ── Auth ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 const API_BASE = location.protocol === 'https:'
   ? `https://${location.hostname}`
   : `http://${location.hostname}:3000`;
@@ -157,7 +143,7 @@ function showAuthOverlay() {
   document.getElementById('authSubmit').addEventListener('click', submit);
 }
 
-// ── Boot: check auth before showing menu ─────────────────────
+// Check authentication
 const _savedUser = getUser();
 if (!_savedUser) {
   showAuthOverlay();
@@ -171,25 +157,19 @@ showBackground();
 async function init() {
   await RAPIER.init();
 
-// Always connect to the game server on port 3000
-// Use wss:// when served over HTTPS (Cloudflare tunnel, any production host)
-// Use ws://  when served over HTTP (local dev on port 3000)
 const isSecure   = location.protocol === 'https:';
 const SERVER_URL = isSecure
   ? `wss://${location.hostname}`        // Cloudflare/prod: no port, WSS
   : `ws://${location.hostname}:3000`;   // local dev: plain WS on 3000
 const colyseus   = new Colyseus.Client(SERVER_URL);
 
-// ── 2. Three.js scene ─────────────────────────────────────────
+// Three.js scene ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 const scene    = new THREE.Scene();
 scene.background = new THREE.Color(0x87CEEB);
 const camera   = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 1000);
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled  = true;
-// Required for correct GLB/GLTF texture brightness.
-// Without this, textures exported from Blender appear washed out or black
-// because Blender uses sRGB color space and Three.js defaults to linear.
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping      = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
@@ -198,7 +178,6 @@ document.body.appendChild(renderer.domElement);
 scene.add(new THREE.DirectionalLight(0xffffff, 2));
 scene.add(new THREE.AmbientLight(0xffffff, 0.5));
 
-// floor visual only (physics handled server-side and in client world)
 const floor = new THREE.Mesh(
   new THREE.PlaneGeometry(100, 100),
   new THREE.MeshStandardMaterial({ color: 0x222222 })
@@ -218,12 +197,12 @@ crosshair.position.z = -0.1;
 camera.add(crosshair);
 scene.add(camera);
 
-// ── 3. Game state ──────────────────────────────────────────────
+// ── Game state ────────────────────────────────────────────────────────────────────────────────────────────────
 let room        = null;
 let myId        = null;
 let oppId       = null;
 let isHost      = false;
-// ── Page helpers ─────────────────────────────────────────────
+// Page helpers
 function showMenu()        { document.getElementById('menu').style.display = 'flex'; }
 function hideMenu()        { document.getElementById('menu').style.display = 'none'; }
 function showWaiting()     { document.getElementById('versusMenu').style.display = 'none';
@@ -252,7 +231,7 @@ document.getElementById('menuBtn').onclick      = () => {
   showBackground();
 }
 
-// ── Menu screen and others ──────────────────────────────────────────────
+// Menu ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 //randomize splash text
 
@@ -265,6 +244,7 @@ const splashTextList = [
   'Also try Terraria!',
   'no',
   'Garry Egghead is the best (he told me to add)',
+  'Cheese is delicious',
 ] 
 
 const randomIndex = Math.floor(Math.random() * splashTextList.length);
@@ -509,7 +489,7 @@ document.querySelector('.friend-action-btn').addEventListener('click', () => {
   loadFriends();
 })
 
-// ── Presence ─────────────────────────────────────────────────
+// ── Presence ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 let presenceRoom = null;
 
 async function joinPresence() {
@@ -529,12 +509,9 @@ async function joinPresence() {
 
 joinPresence();
 
-// ── 4. Client physics world (mirrors server) ──────────────────
+// ── Client physics ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 let cWorld = null;   // RAPIER.World
 let cBody  = null;   // RAPIER.RigidBody (our player)
-// Build the client-side Rapier world from the map's collision JSON.
-// This mirrors exactly what the server does in PhysicsWorld.js so
-// client-side prediction stays in sync with server physics.
 async function buildClientWorld(collisionPath, spawnX, spawnY, spawnZ) {
   cWorld = new RAPIER.World({ x: 0, y: -25, z: 0 });
 
@@ -565,10 +542,9 @@ async function buildClientWorld(collisionPath, spawnX, spawnY, spawnZ) {
   cWorld.createCollider(RAPIER.ColliderDesc.ball(1), cBody);
 }
 
-// ── 5. Grounded check (same logic as server) ──────────────────
+// ground checker
 function clientGrounded() {
   if (!cBody || !cWorld) return false;
-  // If moving upward, we definitely just jumped — not grounded.
   const vel = cBody.linvel();
   if (vel.y > 0.5) return false;
   const pos = cBody.translation();
@@ -579,7 +555,7 @@ function clientGrounded() {
   return cWorld.castRay(ray, 0.6, false) !== null;
 }
 
-// ── 6. Apply one input frame to the client body ───────────────
+// ──  apply input frame onto client body
 function applyInput(inputs, camDir) {
   const len = Math.sqrt(camDir.x**2 + camDir.z**2);
   const fx  = len > 0 ? camDir.x / len : 0;
@@ -606,16 +582,10 @@ function applyInput(inputs, camDir) {
   }
 }
 
-// ── 7. Reconciliation with server authority ───────────────────
-//  pending[] stores every input the server hasn't yet acknowledged.
-//  When we get a server correction, we snap to it and re-simulate
-//  pending inputs.  Because Rapier is deterministic, the replay
-//  produces the exact same result as if there had been no error.
+
 const pending = [];     // { seq, inputs, camDir }
 let   lastAck = 0;
 
-// localGrapple no longer needed for visuals — kept as empty object
-// in case future code references it
 const localGrapple = {};
 
 function reconcile(serverPos, serverVel, ackSeq) {
@@ -631,8 +601,6 @@ function reconcile(serverPos, serverVel, ackSeq) {
   if (d < 0.15) return;   // negligible – ignore
 
   if (d >= 3.0) {
-    // ── Large error: snap to server + replay unacknowledged inputs ──
-    // Rapier determinism means this replay produces the exact right pos.
     cBody.setTranslation({ x:serverPos.x, y:serverPos.y, z:serverPos.z }, true);
     cBody.setLinvel(     { x:serverVel.x, y:serverVel.y, z:serverVel.z }, true);
     for (const inp of pending) {
@@ -640,7 +608,7 @@ function reconcile(serverPos, serverVel, ackSeq) {
       cWorld.step();
     }
   } else {
-    // ── Small/medium drift: gentle rubber-band ──────────────────────
+
     const k = Math.min(d * 0.15, 0.4);
     const p = cBody.translation();
     cBody.setTranslation({
@@ -655,7 +623,7 @@ function reconcile(serverPos, serverVel, ackSeq) {
   }
 }
 
-// ── 8. Opponent interpolation ─────────────────────────────────
+// Interpolate the opp
 const oppBuffer   = [];         // { time, position }
 const INTERP_DELAY = 100;       // ms behind real-time
 
@@ -679,12 +647,7 @@ function interpolateOpp() {
   );
 }
 
-// ── 9. Scene objects ──────────────────────────────────────────
-// ── GLB map loading ──────────────────────────────────────────
-// Three.js loads the .glb file and adds the full scene graph directly.
-// Materials, colors, and geometry all come from Blender automatically.
-// We keep a reference so we can remove the map on room change.
-
+// Scene objets
 const gltfLoader = new GLTFLoader();
 let   currentMapRoot = null;   // the THREE.Group added to scene
 
@@ -706,10 +669,6 @@ async function loadMapGLB(glbPath) {
   try {
     const gltf = await gltfLoader.loadAsync(glbPath);
     currentMapRoot = gltf.scene;
-
-    // If the GLB was NOT exported with +Y Up from Blender, uncomment this line:
-    // currentMapRoot.rotation.x = -Math.PI / 2;
-    // If it WAS exported with +Y Up, leave it commented out.
 
     // Enable shadows on every mesh in the loaded scene
     currentMapRoot.traverse(obj => {
@@ -750,12 +709,8 @@ function makeHook(color) {
   return m;
 }
 
-// Rope implemented as a thin CylinderGeometry instead of THREE.Line.
-// THREE.Line uses the GPU line primitive which is always 1px wide and
-// disappears when viewed edge-on — a known WebGL limitation with no fix.
-// A cylinder has real geometry so it renders correctly from every angle.
 const ROPE_RADIUS   = 0.04;  // world-space thickness of rope
-const ROPE_SEGMENTS = 4;     // radial segments — 4 is enough, keeps tri count low
+const ROPE_SEGMENTS = 4;     // radial segments 
 
 function makeRopeLine(color) {
   const geo  = new THREE.CylinderGeometry(ROPE_RADIUS, ROPE_RADIUS, 1, ROPE_SEGMENTS);
@@ -776,10 +731,6 @@ const _ropeDir = new THREE.Vector3();
 const _ropeUp  = new THREE.Vector3(0, 1, 0);
 const _ropeQ   = new THREE.Quaternion();
 
-// Rope origin — a fixed point just in front of the camera.
-// Using camera.position directly (plus tiny forward offset so it's not
-// inside the near clip plane) means the rope base never shakes because
-// it moves exactly with the camera with zero lag.
 const _camForward = new THREE.Vector3();
 const barrelPos   = new THREE.Vector3();
 
@@ -806,8 +757,6 @@ function updateRope(pivot, a, b) {
   if (length < 0.001) return;
   _ropeDir.divideScalar(length);
 
-  // setFromUnitVectors fails when vectors are exactly parallel (dot = -1).
-  // In that case (straight up or down shot) use a 180° rotation around X.
   const dot = _ropeUp.dot(_ropeDir);
   if (dot > 0.9999) {
     _ropeQ.identity();
@@ -873,7 +822,7 @@ class Explosion {
   }
 }
 
-// ── 10. Input ─────────────────────────────────────────────────
+// ── Input ─────────────────────────────────────────────────
 const controls    = new PointerLockControls(camera, renderer.domElement);
 const keys        = { w:false, a:false, s:false, d:false, space:false };
 let   seq         = 0;
@@ -939,7 +888,7 @@ function shootBomb() {
   }
 }
 
-// ── 11. Colyseus room setup ───────────────────────────────────
+// ── Colyseus room setup ───────────────────────────────────
 async function setupRoom(r) {
   room = r;
   myId = room.sessionId;
@@ -959,8 +908,6 @@ async function setupRoom(r) {
     // Load visual mesh
     await loadMapGLB(glb);
 
-    // Build client physics world from same collision JSON as server
-    // spawnPoints[0] = host, spawnPoints[1] = guest
     const spawnIndex = isHost ? 0 : 1;
     const spawn      = spawnPoints[spawnIndex] || { x: 0, y: 5, z: 0 };
     await buildClientWorld(collision, spawn.x, spawn.y, spawn.z);
@@ -971,15 +918,6 @@ async function setupRoom(r) {
     isHost = data.isHost;
   });
 
-  // ── Map vote messages ────────────────────────────────────────
-  //
-  // 'mapVote'   → server sends the map list and timeout, we show the picker
-  // 'mapChosen' → server has resolved all votes, we hide the picker and
-  //               store the chosen map id so we can load geometry when
-  //               'blocks' arrives
-  //
-  // The vote UI is purely cosmetic on the client — the server is the
-  // authority. Even if you skip voting the server picks for you.
 
   room.onMessage('mapVote', ({ maps, timeoutMs }) => {
     showMapVotePicker(maps, timeoutMs, (chosenId) => {
@@ -1039,7 +977,7 @@ async function setupRoom(r) {
 
     const won = data.winner === myId;
 
-    // Populate results page then show it
+
     const resultTitle = document.getElementById('resultTitle');
     if (resultTitle) {
       resultTitle.textContent = won ? 'you won' : 'you lost';
@@ -1057,15 +995,6 @@ async function setupRoom(r) {
   });
 }
 
-// ── 12. UI buttons ────────────────────────────────────────────
-// ── Map vote UI ──────────────────────────────────────────────
-//
-// showMapVotePicker builds the grid of map cards dynamically from
-// the list the server sent — so adding a new map to maps/index.js
-// automatically appears in the UI with zero client changes.
-//
-// A countdown timer runs client-side purely for display.  The server
-// has its own authoritative timer, so desync between them is fine.
 
 let _voteCountdownInterval = null;
 let _selectedMapId = null;
@@ -1179,7 +1108,7 @@ document.getElementById('codeInput')?.addEventListener('keypress', e => {
 
 applySettings();
 
-// ── 13. Main loop ─────────────────────────────────────────────
+// ── Main loop ─────────────────────────────────────────────
 const FT   = 1 / 60;
 let   acc  = 0;
 let   last = performance.now();
@@ -1219,7 +1148,7 @@ function animate() {
       acc -= FT;
     }
 
-    // ── Reconcile against server state (Colyseus auto-patches) ──
+    // ── Reconcile against server state 
     if (room && myId) {
       const sp = room.state.players.get(myId);
       if (sp) {
@@ -1262,7 +1191,7 @@ function animate() {
     }
   }
 
-  // ── My grapple visuals (server-authoritative only) ───────────
+  // ── My grapple visuals ───────────
   if (gameStarted && room && myId) {
     const ms = room.state.players.get(myId);
     if (!ms) return;
@@ -1279,7 +1208,7 @@ function animate() {
     }
   }
 
-  // ── Bombs (from Colyseus state) ────────────────────────────
+  // ── Bombs ────────────────────────────
   if (gameStarted && room) {
     const liveIds = new Set();
     room.state.bombs.forEach((bs, id) => {

@@ -3,7 +3,7 @@ import * as THREE from 'three';
 let renderer, scene, camera;
 
 export function initBackground() {
-  // Create a second canvas behind everything
+  // Create background canvas
   const canvas = document.createElement('canvas');
   canvas.id = 'bgCanvas';
   canvas.style.cssText = `
