@@ -202,6 +202,8 @@ let room        = null;
 let myId        = null;
 let oppId       = null;
 let isHost      = false;
+let presenceRoom = null;
+
 // Page helpers
 function showMenu()        { document.getElementById('menu').style.display = 'flex'; }
 function hideMenu()        { document.getElementById('menu').style.display = 'none'; }
@@ -364,30 +366,36 @@ document.querySelector('.add-friend-bar .btn-sm').addEventListener('click', asyn
 //display friend requests
 
 async function displayFriendRequests(requests) {
-
   const container = document.getElementById('friends-pending');
+  container.innerHTML = '<div class="friend-section-label" style="color:#555;">loading...</div>';
 
-  //wipe previous
-  container.innerHTML  = '';
+  const entries = Object.entries(requests);
+  if (entries.length === 0) { container.innerHTML = ''; return; }
 
-  for (const [userId, username] of Object.entries(requests)) {
-    //grab status
-    const res    = await fetch(`${API_BASE}/api/users/${username}`);
-    const user   = await res.json();
-    const status = user.status === 'Online'   ? 'online'
-                 : user.status === 'In Game'  ? 'in-game'
-                 : 'offline';
-    const prefix = user.userPrefix;
+  // fetch all at once
+  const users = await Promise.all(
+    entries.map(([userId, username]) =>
+      fetch(`${API_BASE}/api/users/${username}`).then(r => r.json())
+    )
+  );
+
+  container.innerHTML = '';
+  entries.forEach(([userId, username], i) => {
+    const user        = users[i];
+    const status      = user.status === 'Online'  ? 'online'
+                      : user.status === 'In Game' ? 'in-game'
+                      : 'offline';
+    const prefix      = user.userPrefix;
     const prefixColor = user.prefixColor;
-    const userColor = user.usernameColor;
+    const userColor   = user.usernameColor;
+    const initials    = username.slice(0, 2).toUpperCase();
 
-    const initials = username.slice(0, 2).toUpperCase();
     container.insertAdjacentHTML('beforeend', `
       <div class="friend-row" id="request-${userId}">
         <div class="f-avatar">${initials}<div class="status-dot ${status}"></div></div>
         <div class="friend-info">
           <div class="friend-name">
-            <span style="color:${prefixColor}">[${prefix}]</span> 
+            <span style="color:${prefixColor}">[${prefix}]</span>
             <span style="color:${userColor}">${username}</span>
           </div>
           <div class="friend-status-text">Sent you a request</div>
@@ -398,41 +406,45 @@ async function displayFriendRequests(requests) {
         </div>
       </div>
     `);
-  };
+  });
 }
 
 async function displayFriends(friends) {
   const onlineContainer  = document.getElementById('online-friends');
   const offlineContainer = document.getElementById('offline-friends');
 
-  //wipe previous
+  onlineContainer.innerHTML  = '<div class="friend-section-label" style="color:#555;">loading...</div>';
+  offlineContainer.innerHTML = '';
+
+  const entries = Object.keys(friends); // ← just usernames now
+  if (entries.length === 0) { onlineContainer.innerHTML = ''; return; }
+
+  const users = await Promise.all(
+    entries.map(username =>
+      fetch(`${API_BASE}/api/users/${username}`).then(r => r.json())
+    )
+  );
+
   onlineContainer.innerHTML  = '';
   offlineContainer.innerHTML = '';
 
-  for (const [userId, username] of Object.entries(friends)) {
-    const res    = await fetch(`${API_BASE}/api/users/${username}`);
-    const user   = await res.json();
-    const status = user.status === 'Online'  ? 'online'
-                 : user.status === 'In Game' ? 'in-game'
-                 : 'offline';
+  entries.forEach((username, i) => {
+    const user        = users[i];
+    const status      = user.status === 'Online'  ? 'online'
+                      : user.status === 'In Game' ? 'in-game'
+                      : 'offline';
+    const statusText  = user.status === 'In Game' ? 'in game · 1v1'
+                      : user.status === 'Online'  ? 'online · in lobby'
+                      : 'offline';
+    const initials    = username.slice(0, 2).toUpperCase();
 
-    const statusText = user.status === 'In Game' ? 'in game · 1v1' 
-                     : user.status === 'Online'  ? 'online · in lobby'
-                     : 'offline';
-
-    const prefix = user.userPrefix;
-    const prefixColor = user.prefixColor;
-    const userColor = user.usernameColor;
-
-
-    const initials = username.slice(0, 2).toUpperCase();
     const html = `
-      <div class="friend-row" id="friend-${userId}" onclick="openChat('${username}')">
+      <div class="friend-row" id="friend-${username}" onclick="openChat('${username}')">
         <div class="f-avatar">${initials}<div class="status-dot ${status}"></div></div>
         <div class="friend-info">
           <div class="friend-name">
-            <span style="color:${prefixColor}">[${prefix}]</span> 
-            <span style="color:${userColor}">${username}</span>
+            <span style="color:${user.prefixColor}">[${user.userPrefix}]</span>
+            <span style="color:${user.usernameColor}">${username}</span>
           </div>
           <div class="friend-status-text ${status}">${statusText}</div>
         </div>
@@ -442,12 +454,9 @@ async function displayFriends(friends) {
       </div>
     `;
 
-    if (status === 'offline') {
-      offlineContainer.insertAdjacentHTML('beforeend', html);
-    } else {
-      onlineContainer.insertAdjacentHTML('beforeend', html);
-    }
-  }
+    if (status === 'offline') offlineContainer.insertAdjacentHTML('beforeend', html);
+    else onlineContainer.insertAdjacentHTML('beforeend', html);
+  });
 }
 
 async function loadFriendRequests() {
@@ -476,6 +485,15 @@ async function loadFriends() {
   displayFriends(friends);
 }
 
+async function loadMessages(target) {
+  const authUser = JSON.parse(localStorage.getItem('auth_user'));
+  const res = await fetch(`${API_BASE}/api/users/${target}/messages`, {
+    headers: { 'Authorization': `Bearer ${authUser.token}` }
+  });
+  const data = await res.json();
+  return data.messages || [];
+}
+
 loadFriendRequests();
 loadFriends();
 
@@ -489,19 +507,159 @@ document.querySelector('.friend-action-btn').addEventListener('click', () => {
   loadFriends();
 })
 
+// ── Chat ─────────────────────────────────────────────────────
+let activeChatUser = null;
+
+async function openChat(username) {
+  activeChatUser = username;
+
+  // fetch their profile for display info
+  const res  = await fetch(`${API_BASE}/api/users/${username}`);
+  const user = await res.json();
+
+  const status      = user.status === 'Online'  ? 'online'
+                    : user.status === 'In Game' ? 'in-game'
+                    : 'offline';
+  const statusText  = user.status === 'In Game' ? '● in game · 1v1'
+                    : user.status === 'Online'  ? '● online · in lobby'
+                    : '● offline';
+  const initials    = username.slice(0, 2).toUpperCase();
+
+  // update header
+  const av = document.getElementById('chatHeaderAvatar');
+  av.textContent   = initials;
+  av.style.background = 'rgba(60,80,120,0.7)';
+
+  document.getElementById('chatHeaderName').innerHTML = `
+    <span style="color:${user.prefixColor}">[${user.userPrefix}]</span>
+    <span style="color:${user.usernameColor}">${username}</span>
+  `;
+  document.getElementById('chatMenuTitle').textContent = username;
+
+  const st = document.getElementById('chatHeaderStatus');
+  st.textContent = statusText;
+  st.style.color = status === 'online'  ? '#00cc6a'
+                 : status === 'in-game' ? '#cc8800'
+                 : '#666';
+
+  document.getElementById('chatMenu').style.display = 'flex';
+  document.getElementById('msgInput').focus();
+
+  await renderMessages(username);
+}
+
+async function renderMessages(username) {
+  const scroll = document.getElementById('msgScroll');
+  scroll.innerHTML = '<div style="text-align:center;color:#555;font-size:11px;font-family:\'Space Mono\',monospace;margin:auto;padding-top:20px;">loading...</div>';
+
+  const authUser = JSON.parse(localStorage.getItem('auth_user'));
+  const res      = await fetch(`${API_BASE}/api/users/${username}/messages`, {
+    headers: { 'Authorization': `Bearer ${authUser.token}` }
+  });
+  const data     = await res.json();
+  const messages = data.messages || [];
+
+  scroll.innerHTML = '';
+
+  if (messages.length === 0) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'text-align:center;color:#555;font-size:11px;font-family:"Space Mono",monospace;margin:auto;padding-top:20px;';
+    empty.textContent = 'no messages yet';
+    scroll.appendChild(empty);
+    return;
+  }
+
+  messages.forEach(m => {
+    const mine = m.from === authUser.username;
+    const time = new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const wrap = document.createElement('div');
+    wrap.className = 'msg ' + (mine ? 'mine' : 'theirs');
+    wrap.innerHTML = `<div class="msg-bubble">${m.text}</div><div class="msg-time">${time}</div>`;
+    scroll.appendChild(wrap);
+  });
+
+  scroll.scrollTop = scroll.scrollHeight;
+}
+
+async function sendMessage() {
+  const input    = document.getElementById('msgInput');
+  const text     = input.value.trim();
+  if (!text || !activeChatUser) return;
+
+  input.value    = '';
+  input.disabled = true;
+
+  const authUser = JSON.parse(localStorage.getItem('auth_user'));
+  await fetch(`${API_BASE}/api/users/${activeChatUser}/messages`, {
+    method:  'POST',
+    headers: {
+      'Authorization': `Bearer ${authUser.token}`,
+      'Content-Type':  'application/json'
+    },
+    body: JSON.stringify({ text })
+  });
+
+  input.disabled = false;
+  input.focus();
+  await renderMessages(activeChatUser);
+}
+
+document.getElementById('msgInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+
+document.querySelector('.send-btn').addEventListener('click', sendMessage);
+
+// expose to HTML onclick handlers
+window.openChat = openChat;
+window.acceptRequest = acceptRequest;
+window.declineRequest = declineRequest;
+
+// handle real-time incoming messages via presence room
+// call this after joinPresence() sets up presenceRoom
+function setupMessageListener() {
+  if (!presenceRoom) return;
+  presenceRoom.onMessage('newMessage', async (data) => {
+    if (activeChatUser === data.from) {
+      await renderMessages(data.from); // ← just this
+    }
+  });
+}
+
+function showMessageNotification(fromUsername) {
+  // find the friend row and add a dot or badge
+  const row = document.getElementById(`friend-${fromUsername}`);
+  if (row && !row.querySelector('.notif-dot')) {
+    const dot = document.createElement('div');
+    dot.className = 'notif-dot';
+    dot.style.cssText = 'width:8px;height:8px;border-radius:50%;background:#00ff88;flex-shrink:0;';
+    row.appendChild(dot);
+  }
+}
+
 // ── Presence ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-let presenceRoom = null;
 
 async function joinPresence() {
   const authUser = JSON.parse(localStorage.getItem('auth_user'));
   if (!authUser) return;
   try {
-    const client = new Colyseus.Client(
-      location.protocol === 'https:' 
-        ? `wss://${location.hostname}` 
-        : `ws://${location.hostname}:3000`
-    );
-    presenceRoom = await client.joinOrCreate('lobby', { token: authUser.token });
+    presenceRoom = await colyseus.joinOrCreate('lobby', { token: authUser.token });
+
+    // listen for incoming messages
+    presenceRoom.onMessage('newMessage', (data) => {
+      console.log('new message from', data.from);
+
+      // if chat is open with this person, reload the thread
+      if (activeChatUser === data.from) {
+        loadMessages(data.from).then(msgs => renderMessages(data.from, msgs));
+      } else {
+        //  send notification or something might add later
+      }
+    });
+
   } catch (e) {
     console.warn('Presence room failed:', e);
   }

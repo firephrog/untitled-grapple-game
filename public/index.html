@@ -1023,7 +1023,7 @@
     }
     .send-btn:hover { background: rgba(100, 100, 180, 0.9); transform: scale(1.05); }
   </style>
-  <script type="module" crossorigin src="/assets/index-DqqSmZvu.js"></script>
+  <script type="module" crossorigin src="/assets/index-DmFDDiBQ.js"></script>
 </head>
 <body>
 
@@ -1629,84 +1629,7 @@
 
     // ── chat ─────────────────────────────────────────────────
 
-    // Stub message history per friend (replace with real data)
-    const chatHistory = {
-      test1:   [
-        { mine: false, text: 'otherPersonMessage',                     time: '4:12 PM' },
-        { mine: true,  text: 'MyMessage',                              time: '4:13 PM' },
-      ],
-      test2:   [
-        { mine: false, text: 'otherPersonMessage',                     time: '4:12 PM' },
-        { mine: true,  text: 'MyMessage',                              time: '4:13 PM' },
-      ],
-    };
-
-    let activeChatUser = null;
-
-    function openChat(username, initials, avatarBg, statusClass, statusText) {
-      activeChatUser = username;
-
-      // update header
-      const av = document.getElementById('chatHeaderAvatar');
-      av.textContent = initials;
-      av.style.background = avatarBg;
-      document.getElementById('chatHeaderName').textContent   = username;
-      document.getElementById('chatMenuTitle').textContent    = username;
-      const st = document.getElementById('chatHeaderStatus');
-      st.textContent  = statusText;
-      st.style.color  = statusClass === 'online' ? '#00cc6a'
-                      : statusClass === 'in-game' ? '#cc8800'
-                      : '#666';
-
-      // render messages
-      renderMessages(username);
-
-      document.getElementById('chatMenu').style.display = 'flex';
-      document.getElementById('msgInput').focus();
-    }
-
-    function renderMessages(username) {
-      const scroll = document.getElementById('msgScroll');
-      scroll.innerHTML = '';
-      const history = chatHistory[username] || [];
-      if (history.length === 0) {
-        const empty = document.createElement('div');
-        empty.style.cssText = 'text-align:center; color:#555; font-size:11px; font-family:"Space Mono",monospace; margin:auto; padding-top:20px;';
-        empty.textContent = 'no messages yet';
-        scroll.appendChild(empty);
-        return;
-      }
-      history.forEach(m => {
-        const wrap = document.createElement('div');
-        wrap.className = 'msg ' + (m.mine ? 'mine' : 'theirs');
-        wrap.innerHTML = `<div class="msg-bubble">${m.text}</div><div class="msg-time">${m.time}</div>`;
-        scroll.appendChild(wrap);
-      });
-      scroll.scrollTop = scroll.scrollHeight;
-    }
-
-    function sendMessage() {
-      const input = document.getElementById('msgInput');
-      const text  = input.value.trim();
-      if (!text || !activeChatUser) return;
-
-      const now = new Date();
-      const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
-      if (!chatHistory[activeChatUser]) chatHistory[activeChatUser] = [];
-      chatHistory[activeChatUser].push({ mine: true, text, time });
-
-      renderMessages(activeChatUser);
-      input.value = '';
-      input.focus();
-    }
-
-    document.getElementById('msgInput').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        sendMessage();
-      }
-    });
+    //moved to main
 
   </script>
 </body>

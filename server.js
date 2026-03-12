@@ -11,8 +11,10 @@ const jwt                    = require('jsonwebtoken');
 
 const { PrivateRoom }     = require('./rooms/PrivateRoom');
 const { MatchmakingRoom } = require('./rooms/MatchmakingRoom');
-const { Lobby } = require('./rooms/Lobby');
+const { Lobby, getLobby } = require('./rooms/Lobby');
 const CFG                 = require('./config');
+const User = require('./models/User'); 
+
 
 //mango db
 mongoose.connect(CFG.MONGO_URI)
@@ -20,16 +22,22 @@ mongoose.connect(CFG.MONGO_URI)
     console.log('✅  MongoDB connected');
     
     // one-time migration — remove after running once
-    const result = await User.updateMany(
-      { status: { $exists: false } },
-      { $set: { status: 'Offline' } }
-    );
-    console.log(`Migrated ${result.modifiedCount} users`);
+    const users = await User.find({ 'friends.list': { $exists: true } });
+    for (const user of users) {
+      const oldList = user.friends?.list || {};
+      const newList = {};
+      for (const [key, value] of Object.entries(oldList)) {
+        if (typeof value === 'string') {
+          newList[value] = { messages: [] };
+        } else {
+          newList[key] = value;
+        }
+      }
+      await User.findByIdAndUpdate(user._id, { $set: { 'friends.list': newList } });
+    }
+    console.log('✅  Friends list migration done');
   })
   .catch(err => { console.error('❌  MongoDB:', err); process.exit(1); });
-
-const User = require('./models/User'); 
-
 // ── end MongoDB block ────────────────────────────────────────
 
 const app        = express();
@@ -146,11 +154,11 @@ app.post('/api/friends/accept', async (req, res) => {
     });
 
     await User.findByIdAndUpdate(userId, {
-      $set: { [`friends.list.${requesterId}`]: requesterUsername }
+      $set: { [`friends.list.${requesterUsername}`]: { messages: [] } }
     });
     const me = await User.findById(userId).select('username');
     await User.findByIdAndUpdate(requesterId, {
-      $set: { [`friends.list.${userId}`]: me.username }
+      $set: { [`friends.list.${me.username}`]: { messages: [] } }
     });
 
     res.json({ ok: true });
@@ -172,6 +180,85 @@ app.post('/api/friends/decline', async (req, res) => {
     });
 
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error.' });
+  }
+});
+
+//message api
+
+//send a message
+
+app.post('/api/users/:username/messages', async (req, res) => {
+  const header = req.headers.authorization || '';
+  const token  = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'No token.' });
+
+  try {
+    const { userId, username } = jwt.verify(token, CFG.JWT_SECRET);
+    const targetUsername = req.params.username;
+    const { text } = req.body;
+    if (!text) return res.status(400).json({ error: 'Missing text.' });
+    if (text.length > 500) return res.status(400).json({ error: 'Message too long.' });
+
+    const target = await User.findOne({ username: targetUsername });
+    if (!target) return res.status(404).json({ error: 'User not found.' });
+
+    const message = {
+      from:      username,
+      text:      text.trim(),
+      timestamp: new Date(),
+      read:      false,
+    };
+
+    // push into sender's thread
+    const sender = await User.findById(userId);
+    const senderList = sender.friends?.list || {};
+    if (!senderList[targetUsername]) return res.status(400).json({ error: 'Not friends.' });
+    if (!senderList[targetUsername].messages) senderList[targetUsername].messages = [];
+    senderList[targetUsername].messages.push(message);
+    await User.findByIdAndUpdate(userId, { $set: { 'friends.list': senderList } });
+
+    // push into target's thread
+    const targetUser = await User.findById(target._id);
+    const targetList = targetUser.friends?.list || {};
+    if (!targetList[username]) return res.status(400).json({ error: 'Not friends.' });
+    if (!targetList[username].messages) targetList[username].messages = [];
+    targetList[username].messages.push(message);
+    await User.findByIdAndUpdate(target._id, { $set: { 'friends.list': targetList } });
+    
+    const lobby = getLobby();
+    if (lobby) {
+      lobby.notifyUser(target._id.toString(), 'newMessage', {
+        from:      username,
+        text:      message.text,
+        timestamp: message.timestamp,
+      });
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error.' });
+  }
+});
+
+//grab messages from database
+
+app.get('/api/users/:username/messages', async (req, res) => {
+  const header = req.headers.authorization || '';
+  const token  = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'No token.' });
+
+  try {
+    const { userId } = jwt.verify(token, CFG.JWT_SECRET);
+    const targetUsername = req.params.username;
+
+    const user = await User.findById(userId).select('friends');
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+
+    const thread = user.friends?.list?.[targetUsername]?.messages || [];
+    res.json({ messages: thread });
   } catch (err) {
     res.status(500).json({ error: 'Server error.' });
   }
