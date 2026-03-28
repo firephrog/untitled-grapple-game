@@ -12,6 +12,7 @@ const jwt                    = require('jsonwebtoken');
 const { PrivateRoom }     = require('./rooms/PrivateRoom');
 const { MatchmakingRoom } = require('./rooms/MatchmakingRoom');
 const { Lobby, getLobby } = require('./rooms/Lobby');
+const { skinRoutes, unlockSkin } = require('./routes/skins');
 const CFG                 = require('./config');
 const User = require('./models/User'); 
 
@@ -46,6 +47,7 @@ const httpServer = createServer(app);
 const PUBLIC_DIR = path.resolve(process.cwd(), 'public');
 app.use(express.static(PUBLIC_DIR));
 app.use(express.json());
+app.use('/api/skins', skinRoutes);
 
 // ── Auth routes ──────────────────────────────────────────── // ← ADD BLOCK
 app.post('/auth/signup', async (req, res) => {

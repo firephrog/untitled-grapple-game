@@ -9,6 +9,9 @@ import RAPIER                    from '@dimforge/rapier3d-compat';
 import Colyseus                  from 'colyseus.js';
 
 import { initBackground, hideBackground, showBackground } from './background.js';
+import { SkinManager } from './SkinManager.js';
+
+
 
 // ── Auth ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 const API_BASE = location.protocol === 'https:'
@@ -649,14 +652,15 @@ async function joinPresence() {
     presenceRoom = await colyseus.joinOrCreate('lobby', { token: authUser.token });
 
     // listen for incoming messages
-    presenceRoom.onMessage('newMessage', (data) => {
-      console.log('new message from', data.from);
-
-      // if chat is open with this person, reload the thread
+    presenceRoom.onMessage('newMessage', async (data) => {
       if (activeChatUser === data.from) {
-        loadMessages(data.from).then(msgs => renderMessages(data.from, msgs));
-      } else {
-        //  send notification or something might add later
+        await renderMessages(data.from);
+      }
+    });
+
+    window.addEventListener('beforeunload', () => {
+      if (presenceRoom) {
+        presenceRoom.leave();
       }
     });
 
@@ -791,14 +795,15 @@ function pushOppSnap(pos) {
 }
 
 function interpolateOpp() {
-  if (!oppMesh || oppBuffer.length < 2) return;
+  if (oppBuffer.length < 2) return;
   const rt = performance.now() - INTERP_DELAY;
   while (oppBuffer.length >= 2 && oppBuffer[1].time <= rt) oppBuffer.shift();
   if (oppBuffer.length < 2) return;
   const a = oppBuffer[0], b = oppBuffer[1];
   let t = (rt - a.time) / (b.time - a.time);
   t = Math.max(0, Math.min(1, t));
-  oppMesh.position.set(
+  skinMgr.setPosition(
+    oppId,
     a.position.x + (b.position.x - a.position.x) * t,
     a.position.y + (b.position.y - a.position.y) * t,
     a.position.z + (b.position.z - a.position.z) * t
@@ -807,6 +812,8 @@ function interpolateOpp() {
 
 // Scene objets
 const gltfLoader = new GLTFLoader();
+const skinMgr = new SkinManager(scene, gltfLoader);
+let oppYaw = 0;
 let   currentMapRoot = null;   // the THREE.Group added to scene
 
 async function loadMapGLB(glbPath) {
@@ -846,15 +853,9 @@ async function loadMapGLB(glbPath) {
   }
 }
 
-function makeSphere(color) {
-  return new THREE.Mesh(
-    new THREE.SphereGeometry(1),
-    new THREE.MeshStandardMaterial({ color })
-  );
-}
 
-let myMesh  = null;
-let oppMesh = null;
+
+
 
 // ── grapple visuals ───────────────────────────────────────────
 function makeHook(color) {
@@ -1062,6 +1063,8 @@ async function setupRoom(r) {
   });
 
   // ── One-time messages ──────────────────────────────────────
+
+
   room.onMessage('loadMap', async ({ glb, collision, spawnPoints }) => {
     // Load visual mesh
     await loadMapGLB(glb);
@@ -1091,12 +1094,24 @@ async function setupRoom(r) {
     showWaiting();
   });
 
-  room.onMessage('gameStart', (data) => {
+  let _pendingSkinInfo = null;
+
+  room.onMessage('skinInfo', (data) => {
+    _pendingSkinInfo = data;
+  });
+
+  
+  room.onMessage('gameStart', async (data) => {
     
     oppId = myId === data.hostId ? data.guestId : data.hostId;
 
-    myMesh  = makeSphere(0x00ff00); scene.add(myMesh);
-    oppMesh = makeSphere(0xff0000); scene.add(oppMesh);
+    if (_pendingSkinInfo) {
+      const oppSkinData = _pendingSkinInfo[oppId];
+      if (oppSkinData) await skinMgr.assignSkin(oppId, oppSkinData, false);
+      _pendingSkinInfo = null;
+    }
+
+
 
     showGame();
     gameStarted = true;
@@ -1132,6 +1147,7 @@ async function setupRoom(r) {
   room.onMessage('gameEnd', (data) => {
     if (controls.isLocked) controls.unlock();
     gameStarted = false;
+    skinMgr.removeAll(); 
 
     const won = data.winner === myId;
 
@@ -1148,6 +1164,7 @@ async function setupRoom(r) {
   });
 
   room.onMessage('opponentDisconnected', () => {
+    skinMgr.removeAll(); 
     alert('Opponent disconnected!');
     location.reload();
   });
@@ -1316,9 +1333,9 @@ function animate() {
     }
 
     // ── Camera & my mesh ──────────────────────────────────────
-    const p = cBody.translation();
-    camera.position.set(p.x, p.y + 1, p.z);
-    if (myMesh) myMesh.position.set(p.x, p.y, p.z);
+    const p      = cBody.translation();
+    const eyeOff = 1
+    camera.position.set(p.x, p.y + eyeOff, p.z);
 
     updateBarrelPos();
 
@@ -1336,15 +1353,17 @@ function animate() {
     interpolateOpp();
 
     // Opponent grapple visuals
-    if (os && oppMesh) {
+    const oppRoot = skinMgr.getRoot(oppId);
+    if (os && oppRoot) {
+      oppYaw = SkinManager.yawFromVelocity(os.velocity.x, os.velocity.z, oppYaw);
+      skinMgr.setRotationY(oppId, oppYaw);
       const active = os.grapple.active;
       oppHook.visible = active;
       oppRope.visible = active;
       if (active) {
         oppHook.position.set(os.grapple.hx, os.grapple.hy, os.grapple.hz);
-        // Pass raw world coords — not oppHook.position which is local to the mesh
         const oppHookWorld = { x: os.grapple.hx, y: os.grapple.hy, z: os.grapple.hz };
-        updateRope(oppRope, oppMesh.position, oppHookWorld);
+        updateRope(oppRope, oppRoot.position, oppHookWorld);
       }
     }
   }

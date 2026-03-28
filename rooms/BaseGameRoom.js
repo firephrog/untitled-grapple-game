@@ -8,6 +8,12 @@
 //   'voting'   → map vote (VOTE_TIMEOUT_MS to submit, then resolves)
 //   'playing'  → physics loop running
 //   'ended'    → game over, room closes after 5s
+//
+// Skin system additions:
+//   - Each client's equipped skin is fetched from MongoDB when they join.
+//   - After voting resolves, before 'gameStart', the server sends each client
+//     a 'skinInfo' message containing BOTH players' skin data so the client
+//     can pre-load GLB files before rendering begins.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const { Room }           = require('colyseus');
@@ -17,11 +23,12 @@ const { applyMovement }  = require('../game/PlayerController');
 const { GrappleSystem }  = require('../game/GrappleSystem');
 const { BombSystem }     = require('../game/BombSystem');
 const { MAP_LIST, getMap, resolveVotes } = require('../maps');
+const { getSkin }        = require('../skins');
 const CFG                = require('../config');
 
 const mongoose = require('mongoose');
 const jwt      = require('jsonwebtoken');
-const User = require('../models/User');
+const User     = require('../models/User');
 
 // How long to wait for votes before auto-resolving (ms)
 const VOTE_TIMEOUT_MS = 30_000;
@@ -42,6 +49,9 @@ class BaseGameRoom extends Room {
     this._bodies   = new Map();   // sid → RAPIER.RigidBody
     this._grapples = new Map();   // sid → GrappleSystem
 
+    // Skin data fetched at join time: sid → { skinId, glb, scale, eyeOffset }
+    this._skins    = new Map();
+
     // Vote phase state — server only, never sent to clients until resolved
     this._votes    = new Map();   // sid → mapId string
     this._voteTimer = null;
@@ -58,30 +68,47 @@ class BaseGameRoom extends Room {
   }
 
   async onJoin(client, opts = {}) {
+    const isFirst = this.clients.length === 1;
+
+    let skinData = { skinId: 'default', glb: null, scale: 1.0, eyeOffset: 1.0 };
     if (opts.token) {
       try {
         const { userId } = jwt.verify(opts.token, CFG.JWT_SECRET);
         client._userId = userId;
-        await User.findByIdAndUpdate(userId, { status: 'In Game' });
-      } catch {}
-    }
-    const isFirst = this.clients.length === 1;
 
-    // Input state (needed before game starts so no null checks later)
+        const { unlockSkin } = require('../routes/skins');
+        await unlockSkin(userId, 'cube');
+        await User.findByIdAndUpdate(userId, { equippedSkin: 'cube', status: 'In Game' });
+
+        const user = await User.findById(userId).select('equippedSkin unlockedSkins');
+        if (user) {
+          const equippedId      = user.equippedSkin || 'default';
+          const owned           = user.unlockedSkins || [];
+          const effectiveSkinId = owned.includes(equippedId) ? equippedId : 'default';
+          const skin            = getSkin(effectiveSkinId);
+          skinData = {
+            skinId:    skin.id,
+            glb:       skin.glb,
+            scale:     skin.scale,
+            eyeOffset: skin.eyeOffset,
+          };
+        }
+      } catch (e) { console.error('[onJoin] skin error:', e); }
+    }
+    this._skins.set(client.sessionId, skinData);
+
     this._input.set(client.sessionId, {
       inputs:  { w: false, a: false, s: false, d: false, space: false },
       camDir:  { x: 0, y: 0, z: -1 },
       lastSeq: 0,
     });
 
-    // Schema entry
     const ps = new PlayerState();
     ps.health = CFG.START_HEALTH;
     this.state.players.set(client.sessionId, ps);
 
     client.send('init', { myId: client.sessionId, isHost: isFirst });
 
-    // Both players present → start the vote phase
     if (this.clients.length === this.maxClients) {
       this._startVotePhase();
     }
@@ -90,7 +117,6 @@ class BaseGameRoom extends Room {
   async onLeave(client, consented) {
     if (client._userId) {
       await User.findByIdAndUpdate(client._userId, { status: 'Online' });
-      // back to Online not Offline — they're still in the presence room
     }
     if (this._physics) {
       const body = this._bodies.get(client.sessionId);
@@ -100,6 +126,7 @@ class BaseGameRoom extends Room {
     this._grapples.delete(client.sessionId);
     this._input.delete(client.sessionId);
     this._votes.delete(client.sessionId);
+    this._skins.delete(client.sessionId);
     this.state.players.delete(client.sessionId);
 
     if (this.state.phase === 'playing') {
@@ -108,24 +135,10 @@ class BaseGameRoom extends Room {
   }
 
   // ── Vote phase ───────────────────────────────────────────────
-  //
-  // How it works:
-  //   1. Server sends 'mapVote' with the full map list so clients
-  //      can render the picker without needing to hard-code anything.
-  //   2. Each client sends back 'vote' with their chosen mapId.
-  //   3. As soon as BOTH votes arrive, resolveVotes() picks the map.
-  //   4. If only one (or zero) votes arrive within VOTE_TIMEOUT_MS,
-  //      the clock fires and resolves with whatever is there.
-  //   5. Server broadcasts 'mapChosen' and calls _beginGame(map).
 
   _startVotePhase() {
     this.state.phase = 'voting';
-
-    // Send the map list so the client can build the UI dynamically.
-    // Clients don't need the block data — just id/name/description.
     this.broadcast('mapVote', { maps: MAP_LIST, timeoutMs: VOTE_TIMEOUT_MS });
-
-    // Auto-resolve after timeout in case a player never votes
     this._voteTimer = this.clock.setTimeout(
       () => this._resolveVotes(),
       VOTE_TIMEOUT_MS
@@ -134,60 +147,38 @@ class BaseGameRoom extends Room {
 
   _handleVote(client, data) {
     if (this.state.phase !== 'voting') return;
-
     const mapId = typeof data.mapId === 'string' ? data.mapId : null;
     this._votes.set(client.sessionId, mapId);
-
     console.log(`[Room ${this.roomId}] Vote from ${client.sessionId}: ${mapId}`);
-
-    // Resolve immediately once all connected players have voted
     if (this._votes.size === this.clients.length) {
       this._resolveVotes();
     }
   }
 
   _resolveVotes() {
-    // Guard: only resolve once
     if (this.state.phase !== 'voting') return;
+    if (this._voteTimer) { this._voteTimer.clear(); this._voteTimer = null; }
 
-    // Cancel the timeout if votes came in early
-    if (this._voteTimer) {
-      this._voteTimer.clear();
-      this._voteTimer = null;
-    }
-
-    // Pull out the two votes (may be undefined if a player never voted)
     const [sidA, sidB] = [...this.clients.map(c => c.sessionId)];
     const voteA = this._votes.get(sidA);
     const voteB = this._votes.get(sidB);
-
-    // resolveVotes handles all cases: same, different, missing
     const mapId = resolveVotes(voteA, voteB);
     const map   = getMap(mapId);
 
-    console.log(`[Room ${this.roomId}] Map resolved: ${mapId} (votes: ${voteA}, ${voteB})`);
-
-    // Tell both clients which map was chosen BEFORE starting the game,
-    // so they can load assets / show a "loading..." screen if needed.
+    console.log(`[Room ${this.roomId}] Map resolved: ${mapId}`);
     this.broadcast('mapChosen', { mapId: map.id, mapName: map.name });
-
-    // Small delay so clients have time to process mapChosen before game messages start
     this.clock.setTimeout(() => this._beginGame(map), 500);
   }
 
-  // ── Begin game (called after vote resolves) ──────────────────
+  // ── Begin game ───────────────────────────────────────────────
 
   _beginGame(map) {
-    // Build physics world from the chosen map
     this._physics = new PhysicsWorld(map);
 
-    // Bomb system
     this._bombs = new BombSystem(this._physics, (id, pos, ownerId) => {
       this._handleExplosion(id, pos, ownerId);
     });
 
-
-    // Create player bodies at map spawn points
     const sessions = this.clients.map(c => c.sessionId);
     sessions.forEach((sid, index) => {
       const body = this._physics.createPlayerBody(index);
@@ -195,26 +186,31 @@ class BaseGameRoom extends Room {
       this._grapples.set(sid, new GrappleSystem());
     });
 
-    // Tell each client which files to load.
-    // glb        → Three.js loads the visual mesh
-    // collision  → client Rapier loads the same trimesh as the server
-    // spawnPoints→ so client body spawns at the right position
+    // ── Send map load payload ──────────────────────────────────
     this.broadcast('loadMap', {
       glb:         map.glb,
       collision:   map.collision,
       spawnPoints: map.spawnPoints,
     });
 
-    // Register game message handlers now that physics exists
+    // ── Send skin info to each player ──────────────────────────
+    // Each client receives their OWN skin and their OPPONENT's skin.
+    // This lets the client pre-load both GLBs before gameStart fires.
+    for (const client of this.clients) {
+      const oppSid  = this._getOpponentId(client.sessionId);
+      const oppSkin = (oppSid && this._skins.get(oppSid)) || { skinId: 'default', glb: null, scale: 1.0, eyeOffset: 1.0 };
+
+      client.send('skinInfo', {
+        [oppSid]: oppSkin,
+      });
+    }
+
+    // Register game message handlers
     this.onMessage('input',     (c, d) => this._handleInput(c, d));
     this.onMessage('grapple',   (c)    => this._handleGrapple(c));
     this.onMessage('spawnBomb', (c, d) => this._handleSpawnBomb(c, d));
 
-
-
-    // Start the 60Hz physics loop
     this.setSimulationInterval(() => this._tick(), 1000 / CFG.TICK_RATE);
-
     this._startGame();
   }
 
