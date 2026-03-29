@@ -23,7 +23,7 @@ const { applyMovement }  = require('../game/PlayerController');
 const { GrappleSystem }  = require('../game/GrappleSystem');
 const { BombSystem }     = require('../game/BombSystem');
 const { MAP_LIST, getMap, resolveVotes } = require('../maps');
-const { getSkin }        = require('../skins');
+const { getSkin, getGrapple }        = require('../skins');
 const CFG                = require('../config');
 
 const mongoose = require('mongoose');
@@ -70,27 +70,41 @@ class BaseGameRoom extends Room {
   async onJoin(client, opts = {}) {
     const isFirst = this.clients.length === 1;
 
-    let skinData = { skinId: 'default', glb: null, scale: 1.0, eyeOffset: 1.0 };
+    let skinData = { skinId: 'default', glb: null, scale: 1.0, eyeOffset: 1.0, grapple: { image: null, scale: 0.6, color: 0x00ffff } };
     if (opts.token) {
       try {
         const { userId } = jwt.verify(opts.token, CFG.JWT_SECRET);
         client._userId = userId;
 
+        const { unlockGrapple } = require('../routes/skins');
+
         const { unlockSkin } = require('../routes/skins');
         await unlockSkin(userId, 'cube');
-        await User.findByIdAndUpdate(userId, { equippedSkin: 'cube', status: 'In Game' });
+        await unlockGrapple(userId, 'cyan');
+        await User.findByIdAndUpdate(userId, { equippedSkin: 'cube', equippedGrapple: 'cyan', status: 'In Game' });
 
-        const user = await User.findById(userId).select('equippedSkin unlockedSkins');
+        const user = await User.findById(userId).select('equippedSkin unlockedSkins equippedGrapple unlockedGrapples');
         if (user) {
           const equippedId      = user.equippedSkin || 'default';
           const owned           = user.unlockedSkins || [];
           const effectiveSkinId = owned.includes(equippedId) ? equippedId : 'default';
           const skin            = getSkin(effectiveSkinId);
+          const grappleId  = user.equippedGrapple || 'default';
+          const ownedG     = user.unlockedGrapples || [];
+          const effectiveGrappleId = ownedG.includes(grappleId) ? grappleId : 'default';
+          const grappleDef = getGrapple(effectiveGrappleId);
+
           skinData = {
             skinId:    skin.id,
             glb:       skin.glb,
             scale:     skin.scale,
             eyeOffset: skin.eyeOffset,
+            grapple: {
+              image: grappleDef.image,
+              localImage: grappleDef.localImage,
+              scale: grappleDef.scale,
+              color: grappleDef.color,
+            },
           };
         }
       } catch (e) { console.error('[onJoin] skin error:', e); }

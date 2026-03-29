@@ -12,7 +12,7 @@ const jwt                    = require('jsonwebtoken');
 const { PrivateRoom }     = require('./rooms/PrivateRoom');
 const { MatchmakingRoom } = require('./rooms/MatchmakingRoom');
 const { Lobby, getLobby } = require('./rooms/Lobby');
-const { skinRoutes, unlockSkin } = require('./routes/skins');
+const { skinRoutes, unlockSkin, unlockGrapple } = require('./routes/skins');
 const CFG                 = require('./config');
 const User = require('./models/User'); 
 

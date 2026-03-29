@@ -1,234 +1,292 @@
 // ── client/src/SkinManager.js ─────────────────────────────────────────────────
-// Manages player skin meshes in the Three.js scene.
+// Manages player skin meshes AND grapple hook visuals in the Three.js scene.
 //
-// Responsibilities:
-//   - Load GLB skin files (with caching so the same GLB is never fetched twice)
-//   - Swap a player's visible mesh between skins on demand
-//   - Rotate each skin mesh to match the owning player's camera yaw
-//   - Dispose of old meshes/geometries/materials to avoid memory leaks
+// SkinManager  — GLB player models, position, yaw rotation
+// HookManager  — X-cross sprite hooks + colored rope, one per player
 //
-// Usage inside main.js:
+// Both follow the same pattern:
+//   assign*(id, data)          called once when skinInfo arrives
+//   update*(id, ...)           called every frame in animate()
+//   removeAll()                called on game end
 //
-//   import { SkinManager } from './SkinManager.js';
+// Usage in main.js:
+//
+//   import { SkinManager, HookManager } from './SkinManager.js';
 //   const skinMgr = new SkinManager(scene, gltfLoader);
+//   const hookMgr = new HookManager(scene);
 //
-//   // When 'skinInfo' arrives from the server:
-//   room.onMessage('skinInfo', async (data) => {
-//     await skinMgr.assignSkin(myId,  data[myId],  true);   // true = local player
-//     await skinMgr.assignSkin(oppId, data[oppId], false);
-//   });
+//   // gameStart handler:
+//   await skinMgr.assignSkin(oppId, oppSkinData, false);
+//   hookMgr.assignHook('local', mySkinData.grapple);
+//   hookMgr.assignHook(oppId,   oppSkinData.grapple);
 //
-//   // Every frame in animate():
-//   skinMgr.setPosition(myId,  p.x, p.y, p.z);
-//   skinMgr.setRotationY(myId, camera.rotation.y);          // local player yaw
+//   // animate():
+//   skinMgr.setPosition(oppId, x, y, z);
+//   skinMgr.setRotationY(oppId, oppYaw);
+//   hookMgr.update('local', barrelPos, hookPos, ms.grapple.active);
+//   hookMgr.update(oppId,   oppRoot.position, hookWorld, os.grapple.active);
 //
-//   skinMgr.setPosition(oppId,  interp.x, interp.y, interp.z);
-//   skinMgr.setRotationY(oppId, oppYaw);    // server sends this (see note below)
-//
-// ── Opponent yaw note ─────────────────────────────────────────────────────────
-// The server doesn't track yaw yet. Two practical options:
-//   A) Add a `yaw` field to the input message and echo it back in PlayerState —
-//      cheapest, already synced with inputs.
-//   B) Derive yaw client-side from the opponent's velocity direction each frame.
-//      Works without any schema changes:
-//
-//        const v = oppState.velocity;
-//        if (Math.abs(v.x) + Math.abs(v.z) > 0.5) {
-//          oppYaw = Math.atan2(v.x, v.z);
-//        }
-//        skinMgr.setRotationY(oppId, oppYaw);
-//
-//   Option B is implemented at the bottom of this file as a helper:
-//     SkinManager.yawFromVelocity(vx, vz, fallback)
+//   // game end:
+//   skinMgr.removeAll();
+//   hookMgr.removeAll();
 // ─────────────────────────────────────────────────────────────────────────────
 
 import * as THREE from 'three';
 
+// ── Shared texture cache (across all HookManager instances) ───
+const _texCache = new Map();
+function _loadTex(path) {
+  if (_texCache.has(path)) return _texCache.get(path);
+  const t = new THREE.TextureLoader().load(path);
+  t.colorSpace = THREE.SRGBColorSpace;
+  _texCache.set(path, t);
+  return t;
+}
+
+// ── Reusable math (never allocated per-frame) ─────────────────
+const _dir   = new THREE.Vector3();
+const _up    = new THREE.Vector3(0, 1, 0);
+const _right = new THREE.Vector3(1, 0, 0);
+const _fwd   = new THREE.Vector3(0, 0, 1);
+const _q     = new THREE.Quaternion();
+
+const ROPE_RADIUS = 0.04;
+const ROPE_SEGS   = 4;
+
+// ═══════════════════════════════════════════════════════════════
+//  SkinManager — player GLB meshes
+// ═══════════════════════════════════════════════════════════════
 export class SkinManager {
-  /**
-   * @param {THREE.Scene}  scene
-   * @param {GLTFLoader}   gltfLoader  same instance used for maps
-   */
   constructor(scene, gltfLoader) {
     this._scene   = scene;
     this._loader  = gltfLoader;
-
-    // sessionId → { root: THREE.Group, eyeOffset: number, isLocal: boolean }
-    this._players = new Map();
-
-    // glbPath → Promise<THREE.Group>  (template, never added to scene directly)
-    this._cache   = new Map();
+    this._players = new Map();  // id → { root, eyeOffset, isLocal }
+    this._cache   = new Map();  // glbPath → Promise<Group>
   }
 
-  // ── Public API ────────────────────────────────────────────────
+  // ── Public ───────────────────────────────────────────────────
 
-  /**
-   * Assign (or re-assign) a skin to a player session.
-   * Removes and disposes any previously assigned mesh first.
-   *
-   * @param {string}  sessionId
-   * @param {{ skinId, glb, scale, eyeOffset }} skinData
-   * @param {boolean} isLocal  true = local player (mesh hidden, first-person)
-   * @returns {Promise<THREE.Group>}
-   */
   async assignSkin(sessionId, skinData, isLocal = false) {
     this._removeMesh(sessionId);
-
     const root = await this._loadSkinMesh(skinData);
-
-    // Local player mesh stays invisible — we're in first-person.
-    // It still exists so grapple rope anchors work correctly.
     if (isLocal) root.visible = false;
-
     this._scene.add(root);
-    this._players.set(sessionId, {
-      root,
-      eyeOffset: skinData.eyeOffset ?? 1.0,
-      isLocal,
-    });
-
+    this._players.set(sessionId, { root, eyeOffset: skinData.eyeOffset ?? 1.0, isLocal });
     return root;
   }
 
-  /**
-   * Update the world-space XZ position of a player's mesh.
-   * Call every frame.
-   */
   setPosition(sessionId, x, y, z) {
-    const entry = this._players.get(sessionId);
-    if (entry) entry.root.position.set(x, y, z);
+    this._players.get(sessionId)?.root.position.set(x, y, z);
   }
 
-  /**
-   * Rotate the skin mesh around Y to match the player's camera yaw.
-   * Call every frame with camera.rotation.y for the local player,
-   * or a derived yaw for the opponent (see SkinManager.yawFromVelocity).
-   *
-   * @param {string} sessionId
-   * @param {number} yaw  radians, same convention as THREE camera rotation Y
-   */
   setRotationY(sessionId, yaw) {
-    const entry = this._players.get(sessionId);
-    if (entry) entry.root.rotation.y = yaw;
+    const e = this._players.get(sessionId);
+    if (e) e.root.rotation.y = yaw;
   }
 
-  /**
-   * Returns the eye-height offset for a player (used to position the camera).
-   */
-  getEyeOffset(sessionId) {
-    return this._players.get(sessionId)?.eyeOffset ?? 1.0;
-  }
+  getEyeOffset(sessionId) { return this._players.get(sessionId)?.eyeOffset ?? 1.0; }
+  getRoot(sessionId)      { return this._players.get(sessionId)?.root ?? null; }
 
-  /**
-   * Returns the root Group for a player (use as grapple rope anchor, etc.)
-   */
-  getRoot(sessionId) {
-    return this._players.get(sessionId)?.root ?? null;
-  }
+  removePlayer(sessionId) { this._removeMesh(sessionId); this._players.delete(sessionId); }
 
-  /**
-   * Fully remove a player's mesh and free GPU memory.
-   */
-  removePlayer(sessionId) {
-    this._removeMesh(sessionId);
-    this._players.delete(sessionId);
-  }
-
-  /**
-   * Remove all tracked players (call on game end / room leave).
-   */
   removeAll() {
-    for (const sid of [...this._players.keys()]) {
-      this._removeMesh(sid);
-    }
+    for (const sid of [...this._players.keys()]) this._removeMesh(sid);
     this._players.clear();
   }
 
-  // ── Static helpers ────────────────────────────────────────────
-
-  /**
-   * Derive a yaw angle (radians) from a velocity vector.
-   * Use this to rotate the opponent skin without a dedicated yaw field:
-   *
-   *   oppYaw = SkinManager.yawFromVelocity(oppState.velocity.x,
-   *                                         oppState.velocity.z, oppYaw);
-   *   skinMgr.setRotationY(oppId, oppYaw);
-   *
-   * @param {number} vx
-   * @param {number} vz
-   * @param {number} fallback  previous yaw — returned unchanged when speed is low
-   * @param {number} [threshold=0.5]  min horizontal speed to update
-   */
-  static yawFromVelocity(vx, vz, fallback, threshold = 0.5) {
+  static yawFromVelocity(vx, vz, fallback, threshold = 0.01) {
     if (Math.abs(vx) + Math.abs(vz) < threshold) return fallback;
     return Math.atan2(vx, vz);
   }
 
-  // ── Internal ──────────────────────────────────────────────────
+  // ── Internal ─────────────────────────────────────────────────
 
   async _loadSkinMesh(skinData) {
     if (!skinData.glb) return this._makeSphereRoot(skinData.scale ?? 1.0);
-
-    if (!this._cache.has(skinData.glb)) {
-      this._cache.set(skinData.glb, this._fetchGLB(skinData.glb));
-    }
-
-    const template = await this._cache.get(skinData.glb);
-    return this._cloneGLB(template, skinData.scale ?? 1.0);
+    if (!this._cache.has(skinData.glb)) this._cache.set(skinData.glb, this._fetchGLB(skinData.glb));
+    return this._cloneGLB(await this._cache.get(skinData.glb), skinData.scale ?? 1.0);
   }
 
-  _fetchGLB(glbPath) {
-    return new Promise((resolve) => {
-      this._loader.load(
-        glbPath,
-        (gltf) => {
-          gltf.scene.traverse(obj => {
-            if (obj.isMesh) { obj.castShadow = true; obj.receiveShadow = true; }
-          });
-          resolve(gltf.scene);
-        },
-        undefined,
-        (err) => {
-          console.warn(`[SkinManager] GLB load failed: ${glbPath}`, err);
-          resolve(null);   // fall back to sphere in _cloneGLB
-        }
-      );
+  _fetchGLB(path) {
+    return new Promise(resolve => {
+      this._loader.load(path, gltf => {
+        gltf.scene.traverse(o => { if (o.isMesh) { o.castShadow = o.receiveShadow = true; } });
+        resolve(gltf.scene);
+      }, undefined, err => { console.warn('[SkinManager] GLB failed:', path, err); resolve(null); });
     });
   }
 
   _cloneGLB(template, scale) {
     if (!template) return this._makeSphereRoot(scale);
-
     const clone = template.clone(true);
     clone.scale.setScalar(scale);
-    clone.traverse(obj => {
-      if (obj.isMesh) { obj.castShadow = true; obj.receiveShadow = true; }
-    });
+    clone.rotation.y = Math.PI;
+    clone.traverse(o => { if (o.isMesh) { o.castShadow = o.receiveShadow = true; } });
     return clone;
   }
 
   _makeSphereRoot(scale) {
-    const mesh = new THREE.Mesh(
+    const m = new THREE.Mesh(
       new THREE.SphereGeometry(1 * scale),
       new THREE.MeshStandardMaterial({ color: 0x888888 })
     );
-    mesh.castShadow    = true;
-    mesh.receiveShadow = true;
-    const root = new THREE.Group();
-    root.add(mesh);
-    return root;
+    m.castShadow = m.receiveShadow = true;
+    const g = new THREE.Group(); g.add(m); return g;
   }
 
   _removeMesh(sessionId) {
-    const entry = this._players.get(sessionId);
-    if (!entry) return;
-    this._scene.remove(entry.root);
-    entry.root.traverse(obj => {
-      if (obj.isMesh) {
-        obj.geometry?.dispose();
-        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-        mats.forEach(m => m?.dispose());
+    const e = this._players.get(sessionId);
+    if (!e) return;
+    this._scene.remove(e.root);
+    e.root.traverse(o => {
+      if (o.isMesh) {
+        o.geometry?.dispose();
+        (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m?.dispose());
       }
     });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  HookManager — grapple hook sprites + rope, same API shape
+// ═══════════════════════════════════════════════════════════════
+export class HookManager {
+  constructor(scene) {
+    this._scene = scene;
+    this._hooks = new Map();  // id → { hookPivot, ropePivot, ropeMesh }
+  }
+
+  // ── Public ───────────────────────────────────────────────────
+
+  /**
+   * Assign a grapple skin. Call once when skinInfo arrives.
+   * @param {string} id              sessionId or 'local'
+   * @param {{ image, scale, color }} grappleData  from skinData.grapple
+   */
+  setCamera(id, camera) {
+    const h = this._hooks.get(id);
+    if (h) h._camera = camera;
+  }
+
+  assignHook(id, grappleData = {}, isLocal = false) {
+    this._removeHook(id);
+    const { image = null, scale = 0.6, color = 0x00ffff } = grappleData;
+
+    const hookPivot = new THREE.Group();
+    hookPivot.visible = false;
+
+    if (image) {
+      const tex = isLocal
+        ? _loadTex(grappleData.localImage || image)
+        : _loadTex(image);
+      const mat = new THREE.MeshBasicMaterial({
+        map: tex, transparent: true, alphaTest: 0.05,
+        depthWrite: false, side: THREE.DoubleSide,
+      });
+      const geo = new THREE.PlaneGeometry(scale, scale);
+
+      if (isLocal) {
+        // Single plane, always faces the camera via billboard in update()
+        const plane = new THREE.Mesh(geo, mat);
+        hookPivot.add(plane);
+        hookPivot._isBillboard = true;  // flag so update() knows to billboard it
+        console.log('[assignHook] isLocal:', isLocal, 'image:', image, 'localImage:', grappleData.localImage);
+      } else {
+        // X cross for opponent
+        const planeA = new THREE.Mesh(geo, mat);
+        const planeB = new THREE.Mesh(geo, mat);
+        planeB.rotation.x = Math.PI / 2;
+        planeA.rotation.y = Math.PI / 2;
+        planeA.rotation.z = Math.PI / 2;
+        hookPivot.add(planeA, planeB);
+        hookPivot._isBillboard = false;
+      }
+    } else {
+      hookPivot.add(new THREE.Mesh(
+        new THREE.BoxGeometry(0.3, 0.3, 0.3),
+        new THREE.MeshBasicMaterial({ color })
+      ));
+      hookPivot._isBillboard = false;
+    }
+
+    this._scene.add(hookPivot);
+
+    const ropeMesh  = new THREE.Mesh(
+      new THREE.CylinderGeometry(ROPE_RADIUS, ROPE_RADIUS, 1, ROPE_SEGS),
+      new THREE.MeshBasicMaterial({ color, depthWrite: true })
+    );
+    const ropePivot = new THREE.Object3D();
+    ropePivot.add(ropeMesh);
+    ropePivot.visible = false;
+    this._scene.add(ropePivot);
+
+    this._hooks.set(id, { hookPivot, ropePivot, ropeMesh, _camera: null });
+
+  }
+
+  /**
+   * Update hook + rope every frame.
+   * @param {string}      id
+   * @param {{ x,y,z }}   fromPos   rope start (barrelPos or player world pos)
+   * @param {{ x,y,z }}   toPos     hook anchor world pos
+   * @param {boolean}     isActive
+   */
+  update(id, fromPos, toPos, isActive) {
+    const h = this._hooks.get(id);
+    if (!h) return;
+
+    h.hookPivot.visible = isActive;
+    h.ropePivot.visible = isActive;
+    if (!isActive) return;
+
+    const ax = fromPos.x, ay = fromPos.y, az = fromPos.z;
+    const bx = toPos.x,   by = toPos.y,   bz = toPos.z;
+
+    // Rope
+    h.ropePivot.position.set((ax+bx)*0.5, (ay+by)*0.5, (az+bz)*0.5);
+    _dir.set(bx-ax, by-ay, bz-az);
+    const len = _dir.length();
+    if (len > 0.001) {
+      _dir.divideScalar(len);
+      const dot = _up.dot(_dir);
+      if      (dot >  0.9999) _q.identity();
+      else if (dot < -0.9999) _q.setFromAxisAngle(_right, Math.PI);
+      else                    _q.setFromUnitVectors(_up, _dir);
+      h.ropePivot.quaternion.copy(_q);
+      h.ropeMesh.scale.y = len;
+    }
+
+    // Hook position
+    h.hookPivot.position.set(bx, by, bz);
+
+    // Billboard for local, rope-direction for opponent
+    if (h.hookPivot._isBillboard && h._camera) {
+      h.hookPivot.quaternion.copy(h._camera.quaternion);
+    } else if (len > 0.001) {
+      const fx = ax-bx, fy = ay-by, fz = az-bz;
+      const fl = Math.sqrt(fx*fx + fy*fy + fz*fz);
+      _dir.set(fx/fl, fy/fl, fz/fl);
+      _q.setFromUnitVectors(_fwd, _dir);
+      h.hookPivot.quaternion.copy(_q);
+    }
+  }
+
+  removeHook(id) { this._removeHook(id); this._hooks.delete(id); }
+
+  removeAll() {
+    for (const id of [...this._hooks.keys()]) this._removeHook(id);
+    this._hooks.clear();
+  }
+
+  // ── Internal ─────────────────────────────────────────────────
+
+  _removeHook(id) {
+    const h = this._hooks.get(id);
+    if (!h) return;
+    this._scene.remove(h.hookPivot);
+    this._scene.remove(h.ropePivot);
+    h.hookPivot.traverse(o => { if (o.isMesh) { o.geometry?.dispose(); o.material?.dispose(); } });
+    h.ropeMesh.geometry?.dispose();
+    h.ropeMesh.material?.dispose();
   }
 }

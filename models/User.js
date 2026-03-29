@@ -29,6 +29,8 @@ const userSchema = new mongoose.Schema({
   // ── Skins ────────────────────────────────────────────────────
   equippedSkin:  { type: String, default: 'default' },
   unlockedSkins: { type: [String], default: () => ['default'] },
+  equippedGrapple: { type: String, default: 'default' },
+  unlockedGrapples:{ type: [String], default: () => ['default'] },
 
   // ── Presence ────────────────────────────────────────────────
   status:   { type: String, default: 'Offline' },

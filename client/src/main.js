@@ -9,7 +9,7 @@ import RAPIER                    from '@dimforge/rapier3d-compat';
 import Colyseus                  from 'colyseus.js';
 
 import { initBackground, hideBackground, showBackground } from './background.js';
-import { SkinManager } from './SkinManager.js';
+import { SkinManager, HookManager } from './SkinManager.js';
 
 
 
@@ -813,6 +813,7 @@ function interpolateOpp() {
 // Scene objets
 const gltfLoader = new GLTFLoader();
 const skinMgr = new SkinManager(scene, gltfLoader);
+const hookMgr = new HookManager(scene);
 let oppYaw = 0;
 let   currentMapRoot = null;   // the THREE.Group added to scene
 
@@ -902,7 +903,8 @@ function updateBarrelPos() {
   
   barrelPos.copy(camera.position)
     .addScaledVector(_camForward, 0.5)
-    .addScaledVector(right, 0.15); // nudge right
+    .addScaledVector(right, 0.5) // nudge right
+    .addScaledVector(camera.up, -0.2);
 }
 
 function updateRope(pivot, a, b) {
@@ -1102,16 +1104,26 @@ async function setupRoom(r) {
 
   
   room.onMessage('gameStart', async (data) => {
-    
     oppId = myId === data.hostId ? data.guestId : data.hostId;
 
     if (_pendingSkinInfo) {
       const oppSkinData = _pendingSkinInfo[oppId];
-      if (oppSkinData) await skinMgr.assignSkin(oppId, oppSkinData, false);
+      if (oppSkinData) {
+        await skinMgr.assignSkin(oppId, oppSkinData, false);
+        hookMgr.assignHook(oppId, oppSkinData.grapple, false);
+      }
       _pendingSkinInfo = null;
     }
 
-
+    const authUser = JSON.parse(localStorage.getItem('auth_user'));
+    if (authUser) {
+      fetch(`${API_BASE}/api/skins/player/${authUser.username}`)
+        .then(r => r.json())
+        .then(d => {
+          hookMgr.assignHook('local', d.grapple, true);  // ← true for isLocal
+          hookMgr.setCamera('local', camera);             // ← after assignHook
+        });
+    }
 
     showGame();
     gameStarted = true;
@@ -1148,6 +1160,7 @@ async function setupRoom(r) {
     if (controls.isLocked) controls.unlock();
     gameStarted = false;
     skinMgr.removeAll(); 
+    hookMgr.removeAll();
 
     const won = data.winner === myId;
 
@@ -1357,14 +1370,9 @@ function animate() {
     if (os && oppRoot) {
       oppYaw = SkinManager.yawFromVelocity(os.velocity.x, os.velocity.z, oppYaw);
       skinMgr.setRotationY(oppId, oppYaw);
-      const active = os.grapple.active;
-      oppHook.visible = active;
-      oppRope.visible = active;
-      if (active) {
-        oppHook.position.set(os.grapple.hx, os.grapple.hy, os.grapple.hz);
-        const oppHookWorld = { x: os.grapple.hx, y: os.grapple.hy, z: os.grapple.hz };
-        updateRope(oppRope, oppRoot.position, oppHookWorld);
-      }
+      hookMgr.update(oppId, oppRoot.position,
+        { x: os.grapple.hx, y: os.grapple.hy, z: os.grapple.hz },
+        os.grapple.active);
     }
   }
 
@@ -1373,16 +1381,9 @@ function animate() {
     const ms = room.state.players.get(myId);
     if (!ms) return;
 
-    if (ms.grapple.active) {
-      const hookPos = { x: ms.grapple.hx, y: ms.grapple.hy, z: ms.grapple.hz };
-      myHook.visible = true; 
-      myHook.position.set(hookPos.x, hookPos.y, hookPos.z);
-      myRope.visible = true;
-      updateRope(myRope, barrelPos, hookPos); // barrelPos is camera-relative, feels perfect
-    } else {
-      myHook.visible = false;
-      myRope.visible = false;
-    }
+    hookMgr.update('local', barrelPos,
+      { x: ms.grapple.hx, y: ms.grapple.hy, z: ms.grapple.hz },
+      ms.grapple.active);
   }
 
   // ── Bombs ────────────────────────────
