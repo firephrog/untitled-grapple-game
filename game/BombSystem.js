@@ -119,6 +119,13 @@ class BombSystem {
     return hits;
   }
 
+  clear(physicsWorld) {
+    for (const [id, bomb] of this._bombs) {
+      physicsWorld.removeBody(bomb.body);
+    }
+    this._bombs.clear();
+  }
+
   get size() { return this._bombs.size; }
 }
 

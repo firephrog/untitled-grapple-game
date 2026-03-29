@@ -52,9 +52,16 @@ class BaseGameRoom extends Room {
     // Skin data fetched at join time: sid → { skinId, glb, scale, eyeOffset }
     this._skins    = new Map();
 
+    // Player nametag info: sid → { username, userPrefix, prefixColor, usernameColor }
+    this._playerNames = new Map();
+
     // Vote phase state — server only, never sent to clients until resolved
     this._votes    = new Map();   // sid → mapId string
     this._voteTimer = null;
+
+    // Rematch votes after game ends
+    this._rematches = new Map(); // sid → boolean
+    this._rematchTimer = null;
 
     // Physics and bombs are created AFTER the vote resolves
     this._physics = null;
@@ -63,6 +70,7 @@ class BaseGameRoom extends Room {
     // Messages that are always valid
     this.onMessage('vote', (c, d) => this._handleVote(c, d));
     this.onMessage('ping', (c, d) => c.send('pong', { t: d.t }));
+    this.onMessage('rematch', (c, d) => this._handleRematch(c, d));
 
     // Game messages registered once voting is done (in _beginGame)
   }
@@ -71,6 +79,8 @@ class BaseGameRoom extends Room {
     const isFirst = this.clients.length === 1;
 
     let skinData = { skinId: 'default', glb: null, scale: 1.0, eyeOffset: 1.0, grapple: { image: null, scale: 0.6, color: 0x00ffff } };
+    let nametagInfo = { sessionId: client.sessionId, username: 'Player', userPrefix: '', prefixColor: '#00ffcc', usernameColor: '#ffffff' };
+    
     if (opts.token) {
       try {
         const { userId } = jwt.verify(opts.token, CFG.JWT_SECRET);
@@ -83,7 +93,7 @@ class BaseGameRoom extends Room {
         await unlockGrapple(userId, 'cyan');
         await User.findByIdAndUpdate(userId, { equippedSkin: 'cube', equippedGrapple: 'cyan', status: 'In Game' });
 
-        const user = await User.findById(userId).select('equippedSkin unlockedSkins equippedGrapple unlockedGrapples');
+        const user = await User.findById(userId).select('equippedSkin unlockedSkins equippedGrapple unlockedGrapples username userPrefix prefixColor usernameColor');
         if (user) {
           const equippedId      = user.equippedSkin || 'default';
           const owned           = user.unlockedSkins || [];
@@ -106,10 +116,19 @@ class BaseGameRoom extends Room {
               color: grappleDef.color,
             },
           };
+
+          nametagInfo = {
+            sessionId: client.sessionId,
+            username: user.username || 'Player',
+            userPrefix: user.userPrefix || '',
+            prefixColor: user.prefixColor || '#00ffcc',
+            usernameColor: user.usernameColor || '#ffffff',
+          };
         }
       } catch (e) { console.error('[onJoin] skin error:', e); }
     }
     this._skins.set(client.sessionId, skinData);
+    this._playerNames.set(client.sessionId, nametagInfo);
 
     this._input.set(client.sessionId, {
       inputs:  { w: false, a: false, s: false, d: false, space: false },
@@ -140,11 +159,20 @@ class BaseGameRoom extends Room {
     this._grapples.delete(client.sessionId);
     this._input.delete(client.sessionId);
     this._votes.delete(client.sessionId);
+    this._rematches.delete(client.sessionId);
     this._skins.delete(client.sessionId);
+    this._playerNames.delete(client.sessionId);
     this.state.players.delete(client.sessionId);
 
     if (this.state.phase === 'playing') {
       this.broadcast('opponentDisconnected');
+    } else if (this.state.phase === 'ended') {
+      // Disconnect the room if someone leaves during results screen
+      if (this._rematchTimer) {
+        this._rematchTimer.clear();
+        this._rematchTimer = null;
+      }
+      this.disconnect();
     }
   }
 
@@ -233,6 +261,18 @@ class BaseGameRoom extends Room {
   _startGame() {
     this.state.phase = 'playing';
     const ids = this.clients.map(c => c.sessionId);
+    
+    // Send nametag info to each player about their opponent
+    for (const client of this.clients) {
+      const oppId = this._getOpponentId(client.sessionId);
+      if (oppId) {
+        const oppNametagInfo = this._playerNames.get(oppId);
+        if (oppNametagInfo) {
+          client.send('nametagInfo', oppNametagInfo);
+        }
+      }
+    }
+    
     this.broadcast('gameStart', { hostId: ids[0], guestId: ids[1] });
   }
 
@@ -240,7 +280,13 @@ class BaseGameRoom extends Room {
     this.state.phase = 'ended';
     this.broadcast('gameEnd', { winner: winnerId, loser: loserId });
     this.onGameEnd(winnerId, loserId);
-    this.clock.setTimeout(() => this.disconnect(), 5000);
+    
+    // Clear rematch votes and start timeout
+    this._rematches.clear();
+    if (this._rematchTimer) this._rematchTimer.clear();
+    this._rematchTimer = this.clock.setTimeout(() => {
+      this.disconnect();
+    }, 30000); // 30 second timeout for rematch decision
   }
 
   onGameEnd(winnerId, loserId) { /* hook for subclasses */ }
@@ -267,6 +313,73 @@ class BaseGameRoom extends Room {
   _handleSpawnBomb(client, data) {
     const id = this._bombs.spawn(data.position, data.impulse, client.sessionId);
     this.state.bombs.set(id, new BombState(id));
+  }
+
+  _handleRematch(client, data) {
+    if (this.state.phase !== 'ended') return;
+    
+    this._rematches.set(client.sessionId, true);
+    console.log(`[Room ${this.roomId}] Rematch vote from ${client.sessionId}. Votes: ${this._rematches.size}/${this.clients.length}`);
+    
+    // If both players voted for rematch, start a new game
+    if (this._rematches.size === this.clients.length) {
+      if (this._rematchTimer) {
+        this._rematchTimer.clear();
+        this._rematchTimer = null;
+      }
+      this._resetForRematch();
+    }
+  }
+
+  _resetForRematch() {
+    // Reset phase and clear old state
+    this.state.phase = 'playing';
+    this._rematches.clear();
+
+    // Reset player health and positions
+    const sessions = [...this.clients.map(c => c.sessionId)];
+    sessions.forEach((sid, index) => {
+      const ps = this.state.players.get(sid);
+      if (ps) {
+        ps.health = CFG.START_HEALTH;
+        const body = this._bodies.get(sid);
+        if (body) {
+          const spawnPoint = this._physics.getSpawnPoint(index);
+          body.setTranslation({ x: spawnPoint.x, y: spawnPoint.y, z: spawnPoint.z }, true);
+          body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+        }
+      }
+    });
+
+    // Clear bombs from physics and state
+    this._bombs.clear(this._physics);
+    this.state.bombs.clear();
+
+    // Reset grapple systems
+    for (const [sid, grapple] of this._grapples) {
+      grapple.reset();
+    }
+
+    // Reload the map for clients
+    const map = this._physics.map;
+    this.broadcast('loadMap', {
+      glb:         map.glb,
+      collision:   map.collision,
+      spawnPoints: map.spawnPoints,
+    });
+
+    // Resend skin info to each player
+    for (const client of this.clients) {
+      const oppSid  = this._getOpponentId(client.sessionId);
+      const oppSkin = (oppSid && this._skins.get(oppSid)) || { skinId: 'default', glb: null, scale: 1.0, eyeOffset: 1.0 };
+
+      client.send('skinInfo', {
+        [oppSid]: oppSkin,
+      });
+    }
+
+    // Tell clients to reset UI and prepare for new game
+    this.broadcast('rematchStart');
   }
 
   // ── Physics tick (60 Hz) ─────────────────────────────────────

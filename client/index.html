@@ -225,6 +225,7 @@
       border-radius: 10px;
       object-fit: cover;
     }
+    
 
     /* Card overlay (bottom gradient + buttons) */
     .gamemodeWrap .overlay {
@@ -547,6 +548,12 @@
     .map-card.selected       { border-color: #00ff88; background: #0a1f14; }
     .map-card .map-name      { font-size: 14px; font-weight: bold; margin-bottom: 6px; letter-spacing: 1px; font-family: 'Space Mono', monospace; }
     .map-card .map-desc      { font-size: 11px; color: #888; line-height: 1.5; }
+
+    
+    .skin-card.selected       { border-color: #00ff88; background: 
+        linear-gradient(to left, rgba(0,0,0,0.7), rgba(0,0,0,0.2)), 
+        url("https://upload.wikimedia.org/wikipedia/commons/4/4d/Cheeseburger.jpg") center/cover;
+       }
 
     #voteStatus    { font-size: 12px; color: #aaa; min-height: 18px; }
     #confirmVoteBtn { margin-top: 4px; }
@@ -1023,6 +1030,107 @@
       flex-shrink: 0;
     }
     .send-btn:hover { background: rgba(100, 100, 180, 0.9); transform: scale(1.05); }
+
+    .skins {
+      position: relative;
+      display: flex;
+      height:70vh;
+      width: 400px;
+      left: -30vw;
+      top: -6vh;
+      overflow: hidden;
+    }
+
+    .gear {
+      position: absolute;
+      display: flex;
+      height: 200px;
+      width: 35vw;
+      left: 35vw;
+      top: 9vh;
+    }
+    .prefixes {
+      position: absolute;
+      display: flex;
+      height:50vh;
+      width: 350px;
+      top: 36vh;
+      left: 35vw;
+    }
+    .preview {
+      position: absolute;
+      display: flex;
+      height: 500px;
+      width: 350px;
+      left: 65vw;
+      top: 25vh;
+    }
+
+    .skin-card {
+      width: 100%;
+      height: 150px;
+      box-sizing: border-box;
+      border-radius: 10px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      text-align: right;
+      
+      /* Initial State */
+      border: 2px solid rgba(168, 173, 168, 1);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      background: 
+        linear-gradient(to left, rgba(0,0,0,0.7), transparent), 
+        url("https://upload.wikimedia.org/wikipedia/commons/4/4d/Cheeseburger.jpg") center/cover;
+      transition: background 0.3s ease;
+
+      margin-bottom: 10px;
+    }
+
+    .skin-card:hover {
+      /* Darken the gradient stops to "filter" the image behind them */
+      background: 
+        linear-gradient(to left, rgba(0,0,0,0.9), rgba(0,0,0,0.4)), 
+        url("https://upload.wikimedia.org/wikipedia/commons/4/4d/Cheeseburger.jpg") center/cover;
+      
+      /* Border is NOT redeclared, so it stays exactly as it was */
+    }
+
+    .title-row {
+      background: 
+        linear-gradient(rgba(95, 95, 95, 0.8), rgba(77, 77, 77, 0.8));
+      display: flex;
+      width: 350px;
+      justify-content: center;
+      align-items: center;
+      border-bottom: 2px solid #888;
+      flex-direction: column;
+      padding: 10px 0px;
+    }
+
+    .title-row.selected {
+      background: 
+        linear-gradient(rgba(160, 160, 160, 0.8), rgba(109, 108, 108, 0.8));
+    }
+    .title-row.locked {
+      background: 
+        linear-gradient(rgba(61, 61, 61, 0.8), rgba(34, 34, 34, 0.8));
+    }
+
+    .title-description {
+      max-height: 0;
+      overflow: hidden;
+      font-size: 15px;
+      transition: max-height 0.3s ease-in;
+    }
+
+    .title-row:hover .title-description{
+      max-height: 200px;
+    }
+
+
+
   </style>
 </head>
 <body>
@@ -1100,9 +1208,9 @@
             <span class="control minimize"></span>
             <span class="control expand"></span>
           </div>
-          <div class='menu-title'>Skins</div>
+          <div class='menu-title'>Customization</div>
         </div>
-        <img src='https://theeburgerdude.com/wp-content/uploads/2021/01/Big-Mac-300x300.jpg' alt="player">
+        <img src='https://theeburgerdude.com/wp-content/uploads/2021/01/Big-Mac-300x300.jpg' alt="player" onclick="document.getElementById('menu').style.display='none';document.getElementById('customization').style.display='flex';">
       </div>
 
       <!-- options window -->
@@ -1340,7 +1448,7 @@
     </div>
   </div>
 
-  <!-- ── CLICK-TO-PLAY OVERLAY ─────────────────────────────── -->
+  <!-- ── PAUSE OVERLAY ─────────────────────────────────────── -->
   <div id="lockOverlay">
     <p>click to play</p>
     <small>esc to release mouse</small>
@@ -1402,6 +1510,77 @@
     <div style="display:flex;gap:16px;margin-top:40px;">
       <button class="btn" id="playAgainBtn">play again</button>
       <button class="btn btn-outline" id="menuBtn">menu</button>
+    </div>
+  </div>
+
+  <!-- ── CUSTOMIZATION ──────────────────────────────────────── -->
+
+  <div id="customization" class="overlay" style="display:none;">
+    <div class="MainUI skins" style="padding-bottom: 0;">
+      <div class="title-bar">
+        <div class="controls">
+          <span class="control close" onclick="document.getElementById('customization').style.display='none'; document.getElementById('menu').style.display='flex';" style="cursor:pointer;" title="close"></span>
+          <span class="control none"></span>
+          <span class="control none"></span>
+        </div>
+        <div class="menu-title">Skins</div>
+      </div>
+      <div style="display:flex; width:100%; flex:1; overflow:hidden; border-radius:0 0 10px 10px; height:100%;">
+        <div style="display:flex; flex-direction:column; width:130px; border-right:1px solid rgba(255,255,255,0.07); padding:12px 0; gap:2px; flex-shrink:0; background:rgba(0,0,0,0.15); height:100%;">
+          <button class="settings-tab active" onclick="settingsTabSwitch(this,'general')">player</button>
+          <button class="settings-tab" onclick="settingsTabSwitch(this,'controls')">grapple</button>
+          <button class="settings-tab" onclick="settingsTabSwitch(this,'account')">bomb</button>
+          <button class="settings-tab" onclick="settingsTabSwitch(this,'account')">gear</button>
+        </div>
+        <div style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
+          <div class="settings-scroll" id="skinCards">
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="MainUI gear">
+      <div class="title-bar">
+        <div class="controls">
+          <span class="control close" onclick="document.getElementById('customization').style.display='none'; document.getElementById('menu').style.display='flex';" style="cursor:pointer;" title="close"></span>
+          <span class="control none"></span>
+          <span class="control none"></span>
+        </div>
+        <div class="menu-title">Gear</div>
+      </div>
+    </div>
+    <div class="MainUI prefixes" style="padding-bottom: 0; overflow: clip;">
+      <div class="title-bar">
+        <div class="controls">
+          <span class="control close" onclick="document.getElementById('customization').style.display='none'; document.getElementById('menu').style.display='flex';" style="cursor:pointer;" title="close"></span>
+          <span class="control none"></span>
+          <span class="control none"></span>
+        </div>
+        <div class="menu-title">Titles</div>
+      </div>
+      <div style="max-height: 100%; overflow-y: auto; overflow-x: hidden; width: 100%; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.1) transparent;">
+        <div class="title-row">
+          <span>[Title Goes Here] User Goes Here</span>
+          <div class="title-description">description goes here</div>
+        </div>
+        <div class="title-row selected">
+          <span>[Title Goes Here] User Goes Here</span>
+          <div class="title-description">description goes here</div>
+        </div>
+        <div class="title-row locked">
+          <span>[Title Goes Here] User Goes Here</span>
+          <div class="title-description">description goes here</div>
+        </div>
+      </div>
+    </div>
+    <div class="MainUI preview">
+      <div class="title-bar">
+        <div class="controls">
+          <span class="control close" onclick="document.getElementById('friendsMenu').style.display='none';" style="cursor:pointer;" title="close"></span>
+          <span class="control none"></span>
+          <span class="control none"></span>
+        </div>
+        <div class="menu-title">Preview</div>
+      </div>
     </div>
   </div>
 

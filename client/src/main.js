@@ -10,6 +10,7 @@ import Colyseus                  from 'colyseus.js';
 
 import { initBackground, hideBackground, showBackground } from './background.js';
 import { SkinManager, HookManager } from './SkinManager.js';
+import { Nametags } from './Nametags.js';
 
 
 
@@ -228,8 +229,9 @@ let gameStarted = false;
 
 // Results buttons
 document.getElementById('playAgainBtn').onclick = () => {
-  location.reload();
-  showBackground();
+  if (room) {
+    room.send('rematch', {});
+  }
 }
 document.getElementById('menuBtn').onclick      = () => {
   location.reload();
@@ -643,6 +645,64 @@ function showMessageNotification(fromUsername) {
   }
 }
 
+// load skin cards
+
+async function forEachUnlockedSkin(skinCallback, grappleCallback) {
+  const authUser = JSON.parse(localStorage.getItem('auth_user'));
+  if (!authUser) return;
+  const res  = await fetch(`${API_BASE}/api/skins`, {
+    headers: { Authorization: `Bearer ${authUser.token}` }
+  });
+  const { skins, unlockedSkins, equippedSkin, grapples, unlockedGrapples, equippedGrapple } = await res.json();
+
+  for (const skin of skins) {
+    skinCallback(skin, unlockedSkins.includes(skin.id), skin.id === equippedSkin);
+  }
+
+  if (grappleCallback) {
+    for (const grapple of grapples) {
+      grappleCallback(grapple, unlockedGrapples.includes(grapple.id), grapple.id === equippedGrapple);
+    }
+  }
+}
+
+function createSkinCard(skin, unlocked, equipped) {
+  const container = document.getElementById('skinCards');
+  const card = document.createElement('div');
+  card.className = 'skin-card';
+  card.style.background = `linear-gradient(to left, rgba(0,0,0,0.7), transparent), url(${skin.thumbnail}) center/cover`;
+
+  if (!unlocked) {
+    const lock = document.createElement('div');
+    lock.className = 'skin-lock';
+    lock.innerHTML = '<span style="font-size:12px;color:#fff;">locked</span>';
+    card.appendChild(lock);
+  } else {
+    card.innerHTML = `<h2>${skin.name}</h2> <p style="font-size: 12px; color: #dde">${skin.description}</p>`;
+    card.addEventListener('click', async () => {
+      await fetch(`${API_BASE}/api/skins/equip`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${JSON.parse(localStorage.getItem('auth_user')).token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ skinId: skin.id })
+      });
+      // update UI
+      document.querySelectorAll('.skin-card').forEach(c => c.classList.remove('equipped'));
+      card.classList.add('selected');
+    }
+    );
+  }
+
+  if (equipped) {
+    card.classList.add('selected');
+  }
+  container.appendChild(card);
+}
+
+forEachUnlockedSkin(createSkinCard);
+
 // ── Presence ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 async function joinPresence() {
@@ -814,6 +874,11 @@ function interpolateOpp() {
 const gltfLoader = new GLTFLoader();
 const skinMgr = new SkinManager(scene, gltfLoader);
 const hookMgr = new HookManager(scene);
+
+//nametags --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+const nametags = new Nametags(scene);
+const playerMeshMap = new Map();  
+
 let oppYaw = 0;
 let   currentMapRoot = null;   // the THREE.Group added to scene
 
@@ -1102,6 +1167,13 @@ async function setupRoom(r) {
     _pendingSkinInfo = data;
   });
 
+  let _pendingNametagInfo = null;
+
+  room.onMessage('nametagInfo', (data) => {
+    _pendingNametagInfo = data;
+    nametags.register(data);
+  });
+
   
   room.onMessage('gameStart', async (data) => {
     oppId = myId === data.hostId ? data.guestId : data.hostId;
@@ -1110,6 +1182,9 @@ async function setupRoom(r) {
       const oppSkinData = _pendingSkinInfo[oppId];
       if (oppSkinData) {
         await skinMgr.assignSkin(oppId, oppSkinData, false);
+        // Add opponent mesh to playerMeshMap for nametag positioning
+        const oppMesh = skinMgr.getRoot(oppId);
+        if (oppMesh) playerMeshMap.set(oppId, oppMesh);
         hookMgr.assignHook(oppId, oppSkinData.grapple, false);
       }
       _pendingSkinInfo = null;
@@ -1161,6 +1236,8 @@ async function setupRoom(r) {
     gameStarted = false;
     skinMgr.removeAll(); 
     hookMgr.removeAll();
+    nametags.dispose();
+    playerMeshMap.clear();
 
     const won = data.winner === myId;
 
@@ -1178,8 +1255,57 @@ async function setupRoom(r) {
 
   room.onMessage('opponentDisconnected', () => {
     skinMgr.removeAll(); 
+    nametags.dispose();
+    playerMeshMap.clear();
     alert('Opponent disconnected!');
     location.reload();
+  });
+
+  room.onMessage('rematchStart', async () => {
+    // Recreate opponent skins and grapples
+    if (_pendingSkinInfo) {
+      const oppSkinData = _pendingSkinInfo[oppId];
+      if (oppSkinData) {
+        await skinMgr.assignSkin(oppId, oppSkinData, false);
+        const oppMesh = skinMgr.getRoot(oppId);
+        if (oppMesh) playerMeshMap.set(oppId, oppMesh);
+        hookMgr.assignHook(oppId, oppSkinData.grapple, false);
+      }
+    }
+
+    // Recreate local player's grapple hook
+    const authUser = JSON.parse(localStorage.getItem('auth_user'));
+    if (authUser) {
+      fetch(`${API_BASE}/api/skins/player/${authUser.username}`)
+        .then(r => r.json())
+        .then(d => {
+          hookMgr.assignHook('local', d.grapple, true);  // ← true for isLocal
+          hookMgr.setCamera('local', camera);             // ← after assignHook
+        })
+        .catch(e => console.warn('Failed to fetch local skin during rematch:', e));
+    }
+    
+    // Recreate nametags if we have the info
+    if (_pendingNametagInfo) {
+      nametags.register(_pendingNametagInfo);
+    }
+    
+    // Hide results screen and reset game state
+    document.getElementById('page-results').style.display = 'none';
+    showGame();
+    gameStarted = true;
+    controls.lock();
+    
+    // Clear HUD and reset values
+    const health = document.getElementById('health');
+    const oppHP = document.getElementById('opponentHP');
+    if (health) health.textContent = 100;
+    if (oppHP) oppHP.textContent = 100;
+    
+    const myHpFill = document.getElementById('myHpFill');
+    const oppHpFill = document.getElementById('oppHpFill');
+    if (myHpFill) myHpFill.style.width = '100%';
+    if (oppHpFill) oppHpFill.style.width = '100%';
   });
 }
 
@@ -1374,6 +1500,11 @@ function animate() {
         { x: os.grapple.hx, y: os.grapple.hy, z: os.grapple.hz },
         os.grapple.active);
     }
+  }
+
+  // ── Update nametags ────────────────────────────────────────
+  if (gameStarted && playerMeshMap.size > 0) {
+    nametags.update(playerMeshMap, myId, camera);
   }
 
   // ── My grapple visuals ───────────

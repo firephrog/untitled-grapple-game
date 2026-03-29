@@ -53,6 +53,13 @@ router.get('/', requireAuth, async (req, res) => {
   });
 });
 
+// ── description API ────────────────────────────────────────────────────
+router.get('/description/:skinId', async (req, res) => {
+  const skin = getSkin(req.params.skinId);
+  if (skin.id !== req.params.skinId) return res.status(404).json({ error: 'Unknown skin.' });
+  res.json({ name: skin.name, description: skin.description });
+});
+
 // ── POST /api/skins/equip ─────────────────────────────────────
 router.post('/equip', requireAuth, async (req, res) => {
   const { skinId } = req.body;
