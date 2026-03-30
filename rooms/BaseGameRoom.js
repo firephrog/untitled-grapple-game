@@ -91,7 +91,7 @@ class BaseGameRoom extends Room {
         const { unlockSkin } = require('../routes/skins');
         await unlockSkin(userId, 'cube');
         await unlockGrapple(userId, 'cyan');
-        await User.findByIdAndUpdate(userId, { equippedSkin: 'cube', equippedGrapple: 'cyan', status: 'In Game' });
+        await User.findByIdAndUpdate(userId, { status: 'In Game' });
 
         const user = await User.findById(userId).select('equippedSkin unlockedSkins equippedGrapple unlockedGrapples username userPrefix prefixColor usernameColor');
         if (user) {
@@ -214,7 +214,41 @@ class BaseGameRoom extends Room {
 
   // ── Begin game ───────────────────────────────────────────────
 
-  _beginGame(map) {
+  async _beginGame(map) {
+    // Refresh skin data from database before starting the game
+    for (const client of this.clients) {
+      try {
+        if (client._userId) {
+          const user = await User.findById(client._userId).select('equippedSkin unlockedSkins equippedGrapple unlockedGrapples');
+          if (user) {
+            const equippedId      = user.equippedSkin || 'default';
+            const owned           = user.unlockedSkins || [];
+            const effectiveSkinId = owned.includes(equippedId) ? equippedId : 'default';
+            const skin            = getSkin(effectiveSkinId);
+            const grappleId  = user.equippedGrapple || 'default';
+            const ownedG     = user.unlockedGrapples || [];
+            const effectiveGrappleId = ownedG.includes(grappleId) ? grappleId : 'default';
+            const grappleDef = getGrapple(effectiveGrappleId);
+
+            this._skins.set(client.sessionId, {
+              skinId:    skin.id,
+              glb:       skin.glb,
+              scale:     skin.scale,
+              eyeOffset: skin.eyeOffset,
+              grapple: {
+                image: grappleDef.image,
+                localImage: grappleDef.localImage,
+                scale: grappleDef.scale,
+                color: grappleDef.color,
+              },
+            });
+          }
+        }
+      } catch (e) {
+        console.error('[_beginGame] Failed to refresh skin:', e);
+      }
+    }
+
     this._physics = new PhysicsWorld(map);
 
     this._bombs = new BombSystem(this._physics, (id, pos, ownerId) => {
@@ -331,7 +365,41 @@ class BaseGameRoom extends Room {
     }
   }
 
-  _resetForRematch() {
+  async _resetForRematch() {
+    // Refresh skin data from database before rematch
+    for (const client of this.clients) {
+      try {
+        if (client._userId) {
+          const user = await User.findById(client._userId).select('equippedSkin unlockedSkins equippedGrapple unlockedGrapples');
+          if (user) {
+            const equippedId      = user.equippedSkin || 'default';
+            const owned           = user.unlockedSkins || [];
+            const effectiveSkinId = owned.includes(equippedId) ? equippedId : 'default';
+            const skin            = getSkin(effectiveSkinId);
+            const grappleId  = user.equippedGrapple || 'default';
+            const ownedG     = user.unlockedGrapples || [];
+            const effectiveGrappleId = ownedG.includes(grappleId) ? grappleId : 'default';
+            const grappleDef = getGrapple(effectiveGrappleId);
+
+            this._skins.set(client.sessionId, {
+              skinId:    skin.id,
+              glb:       skin.glb,
+              scale:     skin.scale,
+              eyeOffset: skin.eyeOffset,
+              grapple: {
+                image: grappleDef.image,
+                localImage: grappleDef.localImage,
+                scale: grappleDef.scale,
+                color: grappleDef.color,
+              },
+            });
+          }
+        }
+      } catch (e) {
+        console.error('[_resetForRematch] Failed to refresh skin:', e);
+      }
+    }
+
     // Reset phase and clear old state
     this.state.phase = 'playing';
     this._rematches.clear();

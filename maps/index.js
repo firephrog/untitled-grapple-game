@@ -17,6 +17,18 @@ const MAPS = {
 
         ],
     },
+    stonelands: {
+        id:             'stonelands',
+        name:           'Stonelands',
+        description:    'Void and rocks',
+        glb:            '/maps/stonelands.glb',
+        collision:      '/maps/stonelands.collision.json',
+        spawnPoints: [
+          { x: 0, y: 2, z: -50 },
+          { x: 0, y: 2, z: 40 },
+        ],
+    },
+    // Add more maps here,
 }
 
 function getMap(id)    { return MAPS[id] || MAPS.default; }

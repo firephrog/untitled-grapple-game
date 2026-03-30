@@ -23,10 +23,10 @@ const userSchema = new mongoose.Schema({
 
   // ── Cosmetics ───────────────────────────────────────────────
   userPrefix:    { type: String, default: 'player' },
-  prefixColor:   { type: String, default: '#00ffcc' },
+  prefixColor:   { type: String, default: '#bababa' },
   usernameColor: { type: String, default: '#ffffff' },
+  unlockedTitles: { type: [String], default: () => ['player'] },
 
-  // ── Skins ────────────────────────────────────────────────────
   equippedSkin:  { type: String, default: 'default' },
   unlockedSkins: { type: [String], default: () => ['default'] },
   equippedGrapple: { type: String, default: 'default' },

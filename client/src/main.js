@@ -667,7 +667,7 @@ async function forEachUnlockedSkin(skinCallback, grappleCallback) {
 }
 
 function createSkinCard(skin, unlocked, equipped) {
-  const container = document.getElementById('skinCards');
+  const container = document.getElementById('panel-skinCards');
   const card = document.createElement('div');
   card.className = 'skin-card';
   card.style.background = `linear-gradient(to left, rgba(0,0,0,0.7), transparent), url(${skin.thumbnail}) center/cover`;
@@ -689,7 +689,7 @@ function createSkinCard(skin, unlocked, equipped) {
         body: JSON.stringify({ skinId: skin.id })
       });
       // update UI
-      document.querySelectorAll('.skin-card').forEach(c => c.classList.remove('equipped'));
+      document.querySelectorAll('#panel-skinCards .skin-card').forEach(c => c.classList.remove('selected'));
       card.classList.add('selected');
     }
     );
@@ -701,8 +701,91 @@ function createSkinCard(skin, unlocked, equipped) {
   container.appendChild(card);
 }
 
-forEachUnlockedSkin(createSkinCard);
+function createGrappleCard(grapple, unlocked, equipped) {
+  const container = document.getElementById('panel-grappleSkinCards');
+  const card = document.createElement('div');
+  card.className = 'skin-card';
+  card.style.background = `linear-gradient(to left, rgba(0,0,0,0.7), transparent), url(${grapple.thumbnail}) center/cover`;
 
+  if (!unlocked) {
+    const lock = document.createElement('div');
+    lock.className = 'skin-lock';
+    lock.innerHTML = '<span style="font-size:12px;color:#fff;">locked</span>';
+    card.appendChild(lock);
+  } else {
+    card.innerHTML = `<h2>${grapple.name}</h2> <p style="font-size: 12px; color: #dde">${grapple.description}</p>`;
+    card.addEventListener('click', async () => {
+      await fetch(`${API_BASE}/api/skins/equip-grapple`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${JSON.parse(localStorage.getItem('auth_user')).token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ grappleId: grapple.id })
+      });
+      // update UI
+      document.querySelectorAll('#panel-grappleSkinCards .skin-card').forEach(c => c.classList.remove('selected'));
+      card.classList.add('selected');
+    }
+    );
+  }
+
+  if (equipped) {
+    card.classList.add('selected');
+  }
+  container.appendChild(card);
+}
+
+forEachUnlockedSkin(createSkinCard, createGrappleCard);
+
+//load title cards
+
+function forEachTitleCard(titleCallback) {
+  const authUser = JSON.parse(localStorage.getItem('auth_user'));
+  if (!authUser) return;
+  fetch(`${API_BASE}/api/titles`, {
+    headers: { Authorization: `Bearer ${authUser.token}` }
+  })
+  .then(res => res.json())
+  .then(({ titles, unlockedTitles }) => {
+    for (const title of titles) {
+      titleCallback(title, unlockedTitles.includes(title.id));
+    }
+  });
+}
+
+function createTitleCard(title, unlocked) {
+  const container = document.getElementById('titleCardsUnlocked');
+  const containerLocked = document.getElementById('titleCardsLocked');
+  const card = document.createElement('div');
+  const authUser = JSON.parse(localStorage.getItem('auth_user'));
+  card.className = 'title-row';
+  
+  if (!unlocked) {
+    card.classList.add('locked');
+    card.innerHTML = `<span style="color:${title.prefixColor};">[${title.name}] <span style="color:${title.usernameColor};">${authUser.username}</span></span> <div class="title-description">${title.description} You do not own this title.</div>`;
+    containerLocked.appendChild(card);
+  } else {
+    card.innerHTML = `<span style="color:${title.prefixColor};">[${title.name}] <span style="color:${title.usernameColor};">${authUser.username}</span></span> <div class="title-description">${title.description}</div>`;
+    card.addEventListener('click', async () => {
+      await fetch(`${API_BASE}/api/titles/equip`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${JSON.parse(localStorage.getItem('auth_user')).token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ titleId: title.id })
+      });
+      // update UI
+      document.querySelectorAll('.title-row').forEach(c => c.classList.remove('selected'));
+      card.classList.add('selected');
+      fetchAndDisplayStats(authUser.token); // to update title display in stats
+    });
+    container.appendChild(card);
+  }
+}
+
+forEachTitleCard(createTitleCard);
 // ── Presence ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 async function joinPresence() {

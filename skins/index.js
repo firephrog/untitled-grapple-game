@@ -37,6 +37,16 @@ const SKINS = {
     scale:       0.9,
     eyeOffset:   1.0,
   },
+  missingTexture: {
+    id:          'missingTexture',
+    name:        'Missing Texture',
+    description: '"Click FIX to Fix Problem" Given to you by [Developer] phrog when you discover a bug',
+    glb:         '/skins/missingTextureSkin.glb',
+    thumbnail:   '/skins/missingTextureSkin_thunb.png',
+    scale:       1.0,
+    eyeOffset:   1.0,
+  },
+  // Add more player skins her
 };
 
 // ── Grapple skins ─────────────────────────────────────────────
@@ -49,9 +59,11 @@ const GRAPPLES = {
   default: {
     id:    'default',
     name:  'Default',
-    image: null,         // null = plain box fallback
+    image: '/skins/grapple_default.png',
+    localImage: '/skins/grapple_default_local.png',         // fall back to defaault
     scale: 0.6,
-    color: 0x00ffff,
+    color: 0xffffff,
+    description: "The standard grapple skin."
   },
   cyan: {
     id:    'cyan',
@@ -60,6 +72,7 @@ const GRAPPLES = {
     localImage: '/skins/grapple_cyan_local.png',
     scale: 0.8,
     color: 0x28364f,
+    description: "A cyan grapple skin."
   },
   ghost: {
     id:    'ghost',
@@ -75,6 +88,15 @@ const GRAPPLES = {
     scale: 0.6,
     color: 0xff4400,
   },
+  cheese: {
+    id:    'cheese',
+    name:  'Cheese Hook',
+    image: '/skins/grapple_cheese.png',
+    localImage: '/skins/grapple_cheese_local.png',
+    scale: 0.6,
+    color: 0xffcc00,
+    description: "its cheese."
+  },
   // Add more grapple skins here
 };
 
@@ -83,7 +105,7 @@ const TITLES = {
     id:          'player',
     name:        'Player',
     prefixColor: '#b3b3b3',
-    userColor:   '#ffffff',
+    usernameColor:   '#ffffff',
     description: "Standard issue title",
   },
   tester: {
@@ -97,7 +119,7 @@ const TITLES = {
     id:          'developer',
     name:        'Developer',
     prefixColor: '#ba2323',
-    userColor:   '#e8a92a',
+    usernameColor:   '#e8a92a',
     description: "phrog's own title. If you contribute enough code you can possibly recieve it",
   },
 }
@@ -108,8 +130,8 @@ function getSkin(id)    { return SKINS[id]    || SKINS.default; }
 function getGrapple(id) { return GRAPPLES[id] || GRAPPLES.default; }
 function getTitle(id)   { return TITLES[id]   || TITLES.player; }
 
-const TITLE_LIST   = Object.values(TITLES).map(({ id, prefix, prefixColor, userColor }) => ({ id, prefix, prefixColor, userColor}))
+const TITLE_LIST   = Object.values(TITLES).map(({ id, name, prefixColor, usernameColor, description }) => ({ id, name, prefixColor, usernameColor, description }));
 const SKIN_LIST    = Object.values(SKINS).map(({ id, name, description, glb, thumbnail }) => ({ id, name, description, glb, thumbnail }));
-const GRAPPLE_LIST = Object.values(GRAPPLES).map(({ id, name, image }) => ({ id, name, image }));
+const GRAPPLE_LIST = Object.values(GRAPPLES).map(({ id, name, image, scale, color, description }) => ({ id, name, image, scale, color, description }));
 
-module.exports = { SKINS, GRAPPLES, SKIN_LIST, GRAPPLE_LIST, getSkin, getGrapple };
+module.exports = { SKINS, GRAPPLES, TITLES, SKIN_LIST, GRAPPLE_LIST, TITLE_LIST, getSkin, getGrapple, getTitle };

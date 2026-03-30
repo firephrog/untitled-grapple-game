@@ -107,4 +107,20 @@ router.get('/player/:username', async (req, res) => {
   });
 });
 
+//title api
+router.get('/titles/:username', async (req, res) => {
+  const user = await User.findOne({ username: req.params.username })
+    .select('unlockedTitles userPrefix prefixColor usernameColor');
+  if (!user) return res.status(404).json({ error: 'User not found.' });
+
+  res.json({
+    titles:            TITLE_LIST,
+    unlockedTitles:    user.unlockedTitles,
+    equippedTitle:     user.equippedTitle,
+    userPrefix:        user.userPrefix,
+    prefixColor:       user.prefixColor,
+    usernameColor:     user.usernameColor,
+  });
+});
+
 module.exports = { skinRoutes: router, unlockSkin, unlockGrapple };

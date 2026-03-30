@@ -15,6 +15,7 @@ const { Lobby, getLobby } = require('./rooms/Lobby');
 const { skinRoutes, unlockSkin, unlockGrapple } = require('./routes/skins');
 const CFG                 = require('./config');
 const User = require('./models/User'); 
+const { TITLES, TITLE_LIST, getTitle } = require('./skins'); 
 
 
 //mango db
@@ -22,21 +23,40 @@ mongoose.connect(CFG.MONGO_URI)
   .then(async () => {
     console.log('✅  MongoDB connected');
     
-    // one-time migration — remove after running once
-    const users = await User.find({ 'friends.list': { $exists: true } });
+    // one-time migration — initialize skins and titles for all users
+    const users = await User.find({});
     for (const user of users) {
-      const oldList = user.friends?.list || {};
-      const newList = {};
-      for (const [key, value] of Object.entries(oldList)) {
-        if (typeof value === 'string') {
-          newList[value] = { messages: [] };
-        } else {
-          newList[key] = value;
-        }
+      const updates = {};
+      
+      // Set default skin and grapple if not already set
+      if (!user.equippedSkin) updates.equippedSkin = 'default';
+      if (!user.equippedGrapple) updates.equippedGrapple = 'default';
+      if (!user.userPrefix) updates.userPrefix = 'player';
+      updates.status = 'Offline';
+      
+      // Ensure 'default' is in unlocked skins
+      if (!user.unlockedSkins?.includes('default')) {
+        updates.$addToSet = updates.$addToSet || {};
+        updates.$addToSet.unlockedSkins = 'default';
       }
-      await User.findByIdAndUpdate(user._id, { $set: { 'friends.list': newList } });
+      
+      // Ensure 'default' is in unlocked grapples
+      if (!user.unlockedGrapples?.includes('default')) {
+        updates.$addToSet = updates.$addToSet || {};
+        updates.$addToSet.unlockedGrapples = 'default';
+      }
+      
+      // Ensure 'player' is in unlocked titles
+      if (!user.unlockedTitles?.includes('player')) {
+        updates.$addToSet = updates.$addToSet || {};
+        updates.$addToSet.unlockedTitles = 'player';
+      }
+      
+      if (Object.keys(updates).length > 0) {
+        await User.findByIdAndUpdate(user._id, updates);
+      }
     }
-    console.log('✅  Friends list migration done');
+    console.log('✅  Necessary Migrations done!');
   })
   .catch(err => { console.error('❌  MongoDB:', err); process.exit(1); });
 // ── end MongoDB block ────────────────────────────────────────
@@ -281,6 +301,59 @@ app.post('/find-room', async (req, res) => {
   } catch (e) {
     console.error('find-room error:', e);
     res.status(500).json({ error: 'Server error' });
+  }
+});
+
+//update title api
+app.post('/api/titles/unlock', async (req, res) => {
+  const header = req.headers.authorization || '';
+  const token  = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'No token.' });
+  try {
+    const { userId } = jwt.verify(token, CFG.JWT_SECRET);
+    const { titleId } = req.body;
+    const title = getTitle(titleId);
+    if (title.id !== titleId) return res.status(400).json({ error: 'Invalid title ID.' });
+    await User.findByIdAndUpdate(userId, { $addToSet: { unlockedTitles: titleId } });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error.' });
+  }
+});
+
+app.post('/api/titles/equip', async (req, res) => {
+  const header = req.headers.authorization || '';
+  const token  = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'No token.' });
+  try {
+    const { userId } = jwt.verify(token, CFG.JWT_SECRET);
+    const { titleId } = req.body;
+    const title = getTitle(titleId);
+    if (title.id !== titleId) return res.status(400).json({ error: 'Invalid title ID.' });
+    const user = await User.findById(userId).select('unlockedTitles');
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+    if (!user.unlockedTitles.includes(titleId)) return res.status(403).json({ error: 'Title not unlocked.' });
+    await User.findByIdAndUpdate(userId, { userPrefix: titleId, prefixColor: title.prefixColor, usernameColor: title.usernameColor });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error.' });
+  }
+});
+
+app.get('/api/titles', async (req, res) => {
+  const header = req.headers.authorization || '';
+  const token  = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'No token.' });
+  try {
+    const { userId } = jwt.verify(token, CFG.JWT_SECRET);
+    const user = await User.findById(userId).select('unlockedTitles');
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+    res.json({
+      titles: TITLE_LIST,
+      unlockedTitles: user.unlockedTitles || [],
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error.' });
   }
 });
 

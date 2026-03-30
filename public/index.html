@@ -1131,7 +1131,7 @@
 
 
   </style>
-  <script type="module" crossorigin src="/assets/index-BfaLUM0z.js"></script>
+  <script type="module" crossorigin src="/assets/index-BqkVMSE8.js"></script>
 </head>
 <body>
 
@@ -1508,7 +1508,7 @@
     <h1 id="resultTitle" style="font-size:64px;letter-spacing:4px;">you won</h1>
     <p id="resultSub" style="color:#aaa;font-size:18px;">opponent eliminated</p>
     <div style="display:flex;gap:16px;margin-top:40px;">
-      <button class="btn" id="playAgainBtn">play again</button>
+      <button class="btn" id="playAgainBtn">rematch</button>
       <button class="btn btn-outline" id="menuBtn">menu</button>
     </div>
   </div>
@@ -1527,13 +1527,17 @@
       </div>
       <div style="display:flex; width:100%; flex:1; overflow:hidden; border-radius:0 0 10px 10px; height:100%;">
         <div style="display:flex; flex-direction:column; width:130px; border-right:1px solid rgba(255,255,255,0.07); padding:12px 0; gap:2px; flex-shrink:0; background:rgba(0,0,0,0.15); height:100%;">
-          <button class="settings-tab active" onclick="settingsTabSwitch(this,'general')">player</button>
-          <button class="settings-tab" onclick="settingsTabSwitch(this,'controls')">grapple</button>
-          <button class="settings-tab" onclick="settingsTabSwitch(this,'account')">bomb</button>
-          <button class="settings-tab" onclick="settingsTabSwitch(this,'account')">gear</button>
+          <button class="settings-tab active" onclick="skinsTabSwitch(this,'skinCards')">player</button>
+          <button class="settings-tab" onclick="skinsTabSwitch(this,'grappleSkinCards')">grapple</button>
+          <button class="settings-tab" onclick="skinsTabSwitch(this,'bombSkinCards')">bomb</button>
+          <button class="settings-tab" onclick="skinsTabSwitch(this,'gearSkinCards')">gear</button>
         </div>
         <div style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
-          <div class="settings-scroll" id="skinCards">
+          <div class="settings-scroll">
+            <div class="skins-panel" id="panel-skinCards"></div>
+            <div class="skins-panel" id="panel-grappleSkinCards"></div>
+            <div class="skins-panel" id="panel-bombSkinCards"></div>
+            <div class="skins-panel" id="panel-gearSkinCards"></div>
           </div>
         </div>
       </div>
@@ -1558,18 +1562,8 @@
         <div class="menu-title">Titles</div>
       </div>
       <div style="max-height: 100%; overflow-y: auto; overflow-x: hidden; width: 100%; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.1) transparent;">
-        <div class="title-row">
-          <span>[Title Goes Here] User Goes Here</span>
-          <div class="title-description">description goes here</div>
-        </div>
-        <div class="title-row selected">
-          <span>[Title Goes Here] User Goes Here</span>
-          <div class="title-description">description goes here</div>
-        </div>
-        <div class="title-row locked">
-          <span>[Title Goes Here] User Goes Here</span>
-          <div class="title-description">description goes here</div>
-        </div>
+        <div id="titleCardsUnlocked"></div>
+        <div id="titleCardsLocked"></div>
       </div>
     </div>
     <div class="MainUI preview">
@@ -1617,28 +1611,6 @@
           <div class="friend-info">
             <div class="friend-name">test3</div>
             <div class="friend-status-text in-game">in game · 1v1</div>
-          </div>
-          <div class="friend-actions">
-            <div class="friend-action-btn" title="message" onclick="event.stopPropagation(); openChat()">💬</div>
-          </div>
-        </div>
-
-        <div class="friend-row" onclick="openChat('kraken_mv', 'KR', 'rgba(60,100,70,0.7)', 'online', '● online · in lobby')">
-          <div class="f-avatar" style="background:rgba(60,100,70,0.6);">KR<div class="status-dot online"></div></div>
-          <div class="friend-info">
-            <div class="friend-name">test4</div>
-            <div class="friend-status-text online">online · in lobby</div>
-          </div>
-          <div class="friend-actions">
-            <div class="friend-action-btn" title="message" onclick="event.stopPropagation(); openChat()">💬</div>
-          </div>
-        </div>
-
-        <div class="friend-row" onclick="openChat('zzephyr', 'ZZ', 'rgba(90,70,100,0.7)', 'online', '● online · menu')">
-          <div class="f-avatar" style="background:rgba(90,70,100,0.6);">ZZ<div class="status-dot online"></div></div>
-          <div class="friend-info">
-            <div class="friend-name">burger</div>
-            <div class="friend-status-text online">online · menu</div>
           </div>
           <div class="friend-actions">
             <div class="friend-action-btn" title="message" onclick="event.stopPropagation(); openChat()">💬</div>
@@ -1753,6 +1725,12 @@
     function settingsTabSwitch(btn, id) {
       document.querySelectorAll('.settings-tab').forEach(b => b.classList.remove('active'));
       document.querySelectorAll('.settings-panel').forEach(p => p.style.display = 'none');
+      btn.classList.add('active');
+      document.getElementById('panel-' + id).style.display = 'block';
+    }
+    function skinsTabSwitch(btn, id) {
+      document.querySelectorAll('.settings-tab').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.skins-panel').forEach(p => p.style.display = 'none');
       btn.classList.add('active');
       document.getElementById('panel-' + id).style.display = 'block';
     }
