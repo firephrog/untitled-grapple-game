@@ -101,6 +101,7 @@ const GRAPPLES = {
 };
 
 const TITLES = {
+  //standard
   player: {
     id:          'player',
     name:        'Player',
@@ -108,12 +109,36 @@ const TITLES = {
     usernameColor:   '#ffffff',
     description: "Standard issue title",
   },
+  sweat: {
+    id:          'sweat',
+    name:        'Sweat',
+    prefixColor: 'c7211a',
+    usernameColor:'7a1c18',
+    description: 'Go touch some grass. Get this by getting 50 wins',
+  },
+  champion: {
+    id:            'champion',
+    name:          'Champion',
+    prefixColor:   '',
+    usernameColor: '',
+    description:   'You should really consider touching grass. Get this by getting 250 wins',
+  },
+  chosenone: {
+  },
+  //staff
   tester: {
     id:         'tester',
     name:       'Tester',
     prefixColor:'#35f0ae',
     usernameColor:'#10c4ga',
-    description:"Given to people who test the game"
+    description:"Given to people who test the game,
+  },
+  mapdesign: {
+    id:         'mapdesign',
+    name:       'Map Designer',
+    prefixColor:'00ffc3',
+    usernameColor:'07dbaa',
+    description:'Given to people who design maps. Currently: Mihoi, HELLO',
   },
   developer: {
     id:          'developer',
