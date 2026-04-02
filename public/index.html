@@ -294,6 +294,27 @@
     .statsDisplay { font-size: 15px; }
     #stat-user    { font-weight: bolder; }
 
+    /*Notifications menu */
+    .notifications {
+      position: absolute;
+      bottom: 25vh; left: 60vw;
+      width: 25vh; height: 30vh;
+      transform: rotateX(-0.5deg) rotateY(-5deg) rotateZ(-2deg);
+      align-items: left;
+      justify-content: center;
+      padding: 0 20px;
+      background-color: rgba(104, 101, 101, 0.95);
+      border-radius: 10px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.3);
+      transition: transform 0.3s ease;
+      padding-top: 35px;
+    }
+
+    .notificationContent:empty::before {
+      content: "You have no notifications";
+      color: #888;
+    }
+
     /* ── Options bar (bottom-right floating panel) ── */
     .options {
       position: absolute;
@@ -1130,8 +1151,9 @@
 
 
 
+
   </style>
-  <script type="module" crossorigin src="/assets/index-BqkVMSE8.js"></script>
+  <script type="module" crossorigin src="/assets/index-C6W2Thm0.js"></script>
 </head>
 <body>
 
@@ -1256,7 +1278,7 @@
       <div class='splashWindow'>
         <div class='gamemode-bar'>
           <div class="controls mini">
-            <span class="control close"></span>
+            <span class="control close" id="clearNotifications"></span>
             <span class="control minimize"></span>
             <span class="control expand"></span>
           </div>
@@ -1264,6 +1286,20 @@
         </div>
         <div class='splashText'>If you see this, the splash text script broke FAAH</div>
       </div>
+
+      <div class='notifications'>
+        <div class="gamemode-bar">
+          <div class="controls mini">
+            <span class="control close"></span>
+            <span class="control none"></span>
+            <span class="control none"></span>
+          </div>
+          <div class='menu-title'>Notifications</div>
+        </div> 
+        <div class='notificationContent'>
+        </div>
+      </div>
+
     </div>
   </div><!-- /menu -->
 
@@ -1320,6 +1356,22 @@
         <label>share this code</label>
         <div id="joinCodeDisplay">------</div>
       </div>
+    </div>
+    <div class="MainUI" style="width:280px; padding-bottom:0; margin-top:20px; position:absolute; left:25%; transform:translateX(-50%); height:400px; flex-direction:column;">
+      <div class="title-bar">
+        <div class="controls">
+          <span class="control close"
+            onclick="document.getElementById('waitingRoom').style.display='none'; document.getElementById('menu').style.display='flex';"
+            style="cursor:pointer;" title="exit"></span>
+          <span class="control none"></span>
+          <span class="control none"></span>
+        </div>
+        <div class="menu-title">Invite friends</div>
+      </div>
+      <div class="friend-list" style="flex:1; overflow-y:auto; width:100%; padding-bottom:10px;">
+        <!-- friend cards go here -->
+      </div>
+
     </div>
   </div>
 
@@ -1535,9 +1587,9 @@
         <div style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
           <div class="settings-scroll">
             <div class="skins-panel" id="panel-skinCards"></div>
-            <div class="skins-panel" id="panel-grappleSkinCards"></div>
-            <div class="skins-panel" id="panel-bombSkinCards"></div>
-            <div class="skins-panel" id="panel-gearSkinCards"></div>
+            <div class="skins-panel" id="panel-grappleSkinCards" style="display: none;"></div>
+            <div class="skins-panel" id="panel-bombSkinCards" style="display: none;"></div>
+            <div class="skins-panel" id="panel-gearSkinCards" style="display: none;"></div>
           </div>
         </div>
       </div>

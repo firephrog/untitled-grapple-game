@@ -42,11 +42,9 @@ class GrappleSystem {
       this.direction  = { x: camDir.x, y: camDir.y, z: camDir.z };
       this.travelDist = 0;
     } else if (this.status === STATUS.STUCK) {
-      // Second press starts reeling
       this.status = STATUS.REELING;
     } else {
-      // Third press (or any other state) cancels
-      this.reset();
+      this.reset(playerBody);  // ← pass body so velocity is bled on cancel
     }
   }
 
@@ -66,7 +64,17 @@ class GrappleSystem {
     return this.status !== STATUS.IDLE && this.hookPos !== null;
   }
 
-  reset() {
+  // GrappleSystem.js
+  reset(body = null) {
+    if (body) {
+      // 1. Explicitly clear all internal Rapier forces to prevent "Force Leaks"
+      body.resetForces(true); 
+      
+      const v = body.linvel();
+      // 2. Keep 90% of velocity for the "Slingshot" (don't kill it to 5% or 30%)
+      // The PlayerController drag (below) will handle the eventual stop.
+      body.setLinvel({ x: v.x * 0.9, y: v.y, z: v.z * 0.9 }, true);
+    }
     this.status     = STATUS.IDLE;
     this.hookPos    = null;
     this.direction  = null;
@@ -130,6 +138,11 @@ class GrappleSystem {
     if (this.status === STATUS.REELING) {
       this.ropeLength = Math.max(CFG.MIN_ROPE_LEN, this.ropeLength - CFG.REEL_SPEED * DT);
     }
+    
+    if (this.status === STATUS.REELING && this.ropeLength <= CFG.MIN_ROPE_LEN) {
+      this.reset(playerBody);
+      return; // Exit early so no more velocity/force is applied this tick
+    }
 
     const pos  = playerBody.translation();
     const dx   = this.hookPos.x - pos.x;
@@ -165,7 +178,7 @@ class GrappleSystem {
 
     // Release when fully reeled in
     if (this.status === STATUS.REELING && this.ropeLength <= CFG.MIN_ROPE_LEN) {
-      this.reset();
+      this.reset(playerBody);  // ← was this.reset()
     }
   }
 }

@@ -85,7 +85,7 @@ class PhysicsWorld {
     // Create a single fixed trimesh body for the entire map
     const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
     this.world.createCollider(
-      RAPIER.ColliderDesc.trimesh(vertices, indices),
+      RAPIER.ColliderDesc.trimesh(vertices, indices).setRestitution(0.0).setFriction(0.0),
       body
     );
 
@@ -108,7 +108,11 @@ class PhysicsWorld {
         .lockRotations()
         .setLinearDamping(CFG.LINEAR_DAMPING)
     );
-    this.world.createCollider(RAPIER.ColliderDesc.ball(CFG.PLAYER_RADIUS), body);
+    // Capsule: half-height 0.5, radius 0.5 → total height 2, same as ball radius 1
+    this.world.createCollider(
+      RAPIER.ColliderDesc.capsule(0.5, 0.5).setRestitution(0.0).setFriction(0.0),
+      body
+    );
     return body;
   }
 

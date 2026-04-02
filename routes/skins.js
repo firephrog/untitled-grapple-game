@@ -116,8 +116,7 @@ router.get('/titles/:username', async (req, res) => {
   res.json({
     titles:            TITLE_LIST,
     unlockedTitles:    user.unlockedTitles,
-    equippedTitle:     user.equippedTitle,
-    userPrefix:        user.userPrefix,
+    equippedTitle:     user.userPrefix,
     prefixColor:       user.prefixColor,
     usernameColor:     user.usernameColor,
   });

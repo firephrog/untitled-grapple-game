@@ -157,6 +157,15 @@ app.post('/api/users/:username/friend-request', async (req, res) => {
     await User.findByIdAndUpdate(target._id, {
       $set: { [`friends.requests.${userId}`]: username }
     });
+    
+    // Send notification to target user
+    const lobby = getLobby();
+    if (lobby) {
+      lobby.notifyUser(target._id.toString(), 'friendRequest', {
+        from: username
+      });
+    }
+    
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: `Server error: ${err}` });
@@ -182,6 +191,14 @@ app.post('/api/friends/accept', async (req, res) => {
     await User.findByIdAndUpdate(requesterId, {
       $set: { [`friends.list.${me.username}`]: { messages: [] } }
     });
+
+    // Send notification to requester
+    const lobby = getLobby();
+    if (lobby) {
+      lobby.notifyUser(requesterId.toString(), 'friendAccepted', {
+        from: me.username
+      });
+    }
 
     res.json({ ok: true });
   } catch (err) {
@@ -333,7 +350,7 @@ app.post('/api/titles/equip', async (req, res) => {
     const user = await User.findById(userId).select('unlockedTitles');
     if (!user) return res.status(404).json({ error: 'User not found.' });
     if (!user.unlockedTitles.includes(titleId)) return res.status(403).json({ error: 'Title not unlocked.' });
-    await User.findByIdAndUpdate(userId, { userPrefix: titleId, prefixColor: title.prefixColor, usernameColor: title.usernameColor });
+    await User.findByIdAndUpdate(userId, { userPrefix: title.name, prefixColor: title.prefixColor, usernameColor: title.usernameColor });
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: 'Server error.' });
@@ -346,12 +363,24 @@ app.get('/api/titles', async (req, res) => {
   if (!token) return res.status(401).json({ error: 'No token.' });
   try {
     const { userId } = jwt.verify(token, CFG.JWT_SECRET);
-    const user = await User.findById(userId).select('unlockedTitles');
+    const user = await User.findById(userId).select('unlockedTitles userPrefix');
     if (!user) return res.status(404).json({ error: 'User not found.' });
     res.json({
       titles: TITLE_LIST,
       unlockedTitles: user.unlockedTitles || [],
+      equippedTitle: user.userPrefix,
     });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error.' });
+  }
+});
+
+// ── GET /api/users-by-id/:userId ─────────────────────────
+app.get('/api/users-by-id/:userId', async (req, res) => {
+  try {
+    const user = await User.findById(req.params.userId).select('username userPrefix prefixColor usernameColor');
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+    res.json({ username: user.username, userPrefix: user.userPrefix, prefixColor: user.prefixColor, usernameColor: user.usernameColor });
   } catch (err) {
     res.status(500).json({ error: 'Server error.' });
   }

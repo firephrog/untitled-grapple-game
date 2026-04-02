@@ -48,6 +48,7 @@ class BaseGameRoom extends Room {
     this._input    = new Map();   // sid → { inputs, camDir, lastSeq }
     this._bodies   = new Map();   // sid → RAPIER.RigidBody
     this._grapples = new Map();   // sid → GrappleSystem
+    this._grappleLastInput = new Map();  // sid → frame number of last grapple button press
 
     // Skin data fetched at join time: sid → { skinId, glb, scale, eyeOffset }
     this._skins    = new Map();
@@ -66,6 +67,9 @@ class BaseGameRoom extends Room {
     // Physics and bombs are created AFTER the vote resolves
     this._physics = null;
     this._bombs   = null;
+    
+    // Frame counter for grapple timeout detection
+    this._tickCount = 0;
 
     // Messages that are always valid
     this.onMessage('vote', (c, d) => this._handleVote(c, d));
@@ -157,6 +161,7 @@ class BaseGameRoom extends Room {
     }
     this._bodies.delete(client.sessionId);
     this._grapples.delete(client.sessionId);
+    this._grappleLastInput.delete(client.sessionId);
     this._input.delete(client.sessionId);
     this._votes.delete(client.sessionId);
     this._rematches.delete(client.sessionId);
@@ -312,7 +317,20 @@ class BaseGameRoom extends Room {
 
   _endGame(winnerId, loserId) {
     this.state.phase = 'ended';
-    this.broadcast('gameEnd', { winner: winnerId, loser: loserId });
+    
+    // Convert session IDs to database user IDs
+    const winnerClient = this.clients.find(c => c.sessionId === winnerId);
+    const loserClient = this.clients.find(c => c.sessionId === loserId);
+    const winnerDbId = winnerClient?._userId;
+    const loserDbId = loserClient?._userId;
+    
+    // Update stats immediately on server
+    if (winnerDbId && loserDbId) {
+      User.findByIdAndUpdate(winnerDbId, { $inc: { wins: 1 } }).catch(e => console.error('Failed to update winner stats:', e));
+      User.findByIdAndUpdate(loserDbId, { $inc: { deaths: 1 } }).catch(e => console.error('Failed to update loser stats:', e));
+    }
+    
+    this.broadcast('gameEnd', { winner: winnerDbId, loser: loserDbId });
     this.onGameEnd(winnerId, loserId);
     
     // Clear rematch votes and start timeout
@@ -341,6 +359,10 @@ class BaseGameRoom extends Room {
     const body    = this._bodies.get(sid);
     const pi      = this._input.get(sid);
     if (!grapple || !body || !pi) return;
+    
+    // Record that we received grapple input on this frame
+    this._grappleLastInput.set(sid, this._tickCount);
+    
     grapple.activate(body, pi.camDir);
   }
 
@@ -454,11 +476,24 @@ class BaseGameRoom extends Room {
 
   _tick() {
     if (this.state.phase !== 'playing') return;
+    
+    this._tickCount++;
 
     for (const [sid, body] of this._bodies) {
       const pi      = this._input.get(sid);
       const grapple = this._grapples.get(sid);
       if (!pi || !grapple) continue;
+
+      // Auto-reset grapple timeouts:
+      // - SHOOTING: 30 frames (~500ms, lets hook travel ~60 units at 120 u/s)
+      // - STUCK/REELING: 120 frames (2 seconds, player held grapple too long)
+      const lastInput = this._grappleLastInput.get(sid) || 0;
+      const framesSinceInput = this._tickCount - lastInput;
+      if (grapple.status === 'SHOOTING' && framesSinceInput > 30) {
+        grapple.reset();
+      } else if ((grapple.status === 'STUCK' || grapple.status === 'REELING') && framesSinceInput > 120) {
+        grapple.reset();
+      }
 
       const grounded = this._physics.isGrounded(body);
       applyMovement(body, pi.inputs, pi.camDir, grounded, grapple.status, 1 / CFG.TICK_RATE);

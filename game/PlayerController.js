@@ -18,43 +18,61 @@ const CFG = require('../config');
  * @param {string}  grappleStatus  'IDLE' | 'SHOOTING' | 'STUCK' | 'REELING'
  */
 function applyMovement(body, inputs, camDir, grounded, grappleStatus) {
-  // Flatten camera forward onto XZ plane and normalise
   const horizLen = Math.sqrt(camDir.x ** 2 + camDir.z ** 2);
   const fx = horizLen > 0 ? camDir.x / horizLen : 0;
   const fz = horizLen > 0 ? camDir.z / horizLen : 0;
-  // Strafe direction is 90° rotation of forward on XZ
   const sx = -fz;
   const sz =  fx;
 
-  // Accumulate desired XZ velocity direction
   let vx = 0, vz = 0;
   if (inputs.w) { vx += fx; vz += fz; }
   if (inputs.s) { vx -= fx; vz -= fz; }
   if (inputs.d) { vx += sx; vz += sz; }
   if (inputs.a) { vx -= sx; vz -= sz; }
 
-  // Jump — must happen before we overwrite Y velocity below
   const curVel = body.linvel();
   if (inputs.space && grounded) {
     body.setLinvel({ x: curVel.x, y: CFG.JUMP_VEL, z: curVel.z }, true);
   }
 
-  // Preserve current Y so gravity/jump aren't disrupted
   const newVel = body.linvel();
   const grappling = grappleStatus === 'STUCK' || grappleStatus === 'REELING';
-  const moving    = inputs.w || inputs.s || inputs.a || inputs.d;
+  const moving = inputs.w || inputs.s || inputs.a || inputs.d;
 
   if (moving) {
     if (grappling) {
-      // Air-strafe style: additive force rather than set velocity,
-      // so the grapple spring can still do its job
+      // While grappling, we add force to "swing"
       body.addForce({ x: vx * 0.3, y: 0, z: vz * 0.3 }, true);
     } else {
-      body.setLinvel({ x: vx * CFG.WALK_SPEED, y: newVel.y, z: vz * CFG.WALK_SPEED }, true);
+      // Normal walking should use setLinvel to OVERRIDE old forces/velocities
+      body.setLinvel({ x: vx * CFG.WALK_SPEED, y: body.linvel().y, z: vz * CFG.WALK_SPEED }, true);
     }
+  // PlayerController.js -> inside applyMovement
   } else {
-    // Friction-style horizontal damping when no keys held
-    body.setLinvel({ x: newVel.x * 0.8, y: newVel.y, z: newVel.z * 0.8 }, true);
+    // --- THIS SECTION REPLACES YOUR OLD FRICTION LOGIC ---
+    const vel = body.linvel();
+    const speed = Math.sqrt(vel.x**2 + vel.z**2);
+    const STOP_THRESHOLD = 0.1;
+
+    if (speed > STOP_THRESHOLD) {
+      // Ground drag is high (stops you), Air drag is low (slingshot)
+      const dragCoefficient = grounded ? 12.0 : 1.5; 
+      
+      // Calculate how much speed to "drop" this tick
+      // This is "Active Drag" - it fights the acceleration you feel
+      const drop = speed * dragCoefficient * (1 / 60); 
+      const newSpeed = Math.max(0, speed - drop);
+      const factor = newSpeed / speed;
+
+      body.setLinvel({
+        x: vel.x * factor,
+        y: vel.y,
+        z: vel.z * factor,
+      }, true);
+    } else {
+      // Snap to zero if below threshold to kill the "slow creep"
+      body.setLinvel({ x: 0, y: vel.y, z: 0 }, true);
+    }
   }
 }
 

@@ -19,6 +19,18 @@ const API_BASE = location.protocol === 'https:'
   ? `https://${location.hostname}`
   : `http://${location.hostname}:3000`;
 
+// Helper to extract userId from JWT token
+function getUserIdFromToken(token) {
+  try {
+    const payload = token.split('.')[1];
+    const decoded = JSON.parse(atob(payload));
+    return decoded.userId;
+  } catch (e) {
+    console.warn('Failed to decode token:', e);
+    return null;
+  }
+}
+
 function getUser() {
   try { return JSON.parse(localStorage.getItem('auth_user')); }
   catch { return null; }
@@ -207,6 +219,8 @@ let myId        = null;
 let oppId       = null;
 let isHost      = false;
 let presenceRoom = null;
+let currentRoomCode = null;
+let notifications = new Set(); // Track notification IDs to avoid duplicates
 
 // Page helpers
 function showMenu()        { document.getElementById('menu').style.display = 'flex'; }
@@ -490,6 +504,88 @@ async function loadFriends() {
   displayFriends(friends);
 }
 
+async function displayInviteFriends(friends) {
+  const container = document.querySelector('#waitingRoom .MainUI:last-child .friend-list');
+  if (!container) return;
+  
+  container.innerHTML = '';
+
+  const entries = Object.keys(friends);
+  if (entries.length === 0) {
+    container.innerHTML = '<div class="friend-section-label" style="color:#555; padding:14px;">no friends to invite</div>';
+    return;
+  }
+
+  const users = await Promise.all(
+    entries.map(username =>
+      fetch(`${API_BASE}/api/users/${username}`).then(r => r.json())
+    )
+  );
+
+  entries.forEach((username, i) => {
+    const user        = users[i];
+    const status      = user.status === 'Online'  ? 'online'
+                      : user.status === 'In Game' ? 'in-game'
+                      : 'offline';
+    const initials    = username.slice(0, 2).toUpperCase();
+
+    const html = `
+      <div class="friend-row" style="padding:7px 10px;">
+        <div class="f-avatar">${initials}<div class="status-dot ${status}"></div></div>
+        <div class="friend-info">
+          <div class="friend-name">
+            <span style="color:${user.prefixColor}">[${user.userPrefix}]</span>
+            <span style="color:${user.usernameColor}">${username}</span>
+          </div>
+        </div>
+        <div class="friend-actions" style="opacity:1;">
+          <div class="friend-action-btn" title="invite" onclick="sendInvite('${username}')">→</div>
+        </div>
+      </div>
+    `;
+
+    container.insertAdjacentHTML('beforeend', html);
+  });
+}
+
+async function sendInvite(friendUsername) {
+  if (!currentRoomCode) {
+    console.error('No room code available');
+    return;
+  }
+
+  const inviteMessage = `[CLICK TO JOIN] 1v1 Match with code: '${currentRoomCode}'`;
+  
+  const authUser = JSON.parse(localStorage.getItem('auth_user'));
+  try {
+    await fetch(`${API_BASE}/api/users/${friendUsername}/messages`, {
+      method:  'POST',
+      headers: {
+        'Authorization': `Bearer ${authUser.token}`,
+        'Content-Type':  'application/json'
+      },
+      body: JSON.stringify({ text: inviteMessage })
+    });
+  } catch (e) {
+    console.error('Failed to send invite:', e);
+  }
+}
+
+async function joinInvite(code) {
+  // Close chat menu and go to versusMenu
+  document.getElementById('chatMenu').style.display = 'none';
+  document.getElementById('menu').style.display = 'none';
+  document.getElementById('versusMenu').style.display = 'flex';
+  
+  // Fill in code and attempt join
+  document.getElementById('codeInput').value = code.toUpperCase();
+  
+  // Give it a moment to render, then click join
+  setTimeout(() => {
+    document.getElementById('joinBtn').click();
+  }, 100);
+}
+
 async function loadMessages(target) {
   const authUser = JSON.parse(localStorage.getItem('auth_user'));
   const res = await fetch(`${API_BASE}/api/users/${target}/messages`, {
@@ -579,7 +675,15 @@ async function renderMessages(username) {
     const time = new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const wrap = document.createElement('div');
     wrap.className = 'msg ' + (mine ? 'mine' : 'theirs');
-    wrap.innerHTML = `<div class="msg-bubble">${m.text}</div><div class="msg-time">${time}</div>`;
+    
+    // Check if message is an invite
+    if (m.text.includes('[CLICK TO JOIN]') && !mine) {
+      const codeMatch = m.text.match(/code: '([^']+)'/);
+      const code = codeMatch ? codeMatch[1] : '';
+      wrap.innerHTML = `<div class="msg-bubble" style="cursor:pointer; background:rgba(0,255,136,0.15); border:1px solid rgba(0,255,136,0.3);" onclick="joinInvite('${code}')" title="Click to join">${m.text}</div><div class="msg-time">${time}</div>`;
+    } else {
+      wrap.innerHTML = `<div class="msg-bubble">${m.text}</div><div class="msg-time">${time}</div>`;
+    }
     scroll.appendChild(wrap);
   });
 
@@ -622,6 +726,8 @@ document.querySelector('.send-btn').addEventListener('click', sendMessage);
 window.openChat = openChat;
 window.acceptRequest = acceptRequest;
 window.declineRequest = declineRequest;
+window.sendInvite = sendInvite;
+window.joinInvite = joinInvite;
 
 // handle real-time incoming messages via presence room
 // call this after joinPresence() sets up presenceRoom
@@ -643,6 +749,32 @@ function showMessageNotification(fromUsername) {
     dot.style.cssText = 'width:8px;height:8px;border-radius:50%;background:#00ff88;flex-shrink:0;';
     row.appendChild(dot);
   }
+}
+
+function addNotification(type, username, message, duration = 5000) {
+  // Create unique ID for this notification (simple hash to reduce collisions)
+  const notifId = `${type}-${username}-${message.length}-${Math.random().toString(36).substr(2, 9)}`;
+  
+  const container = document.querySelector('.notificationContent');
+  if (!container) return;
+  
+  const notifEl = document.createElement('div');
+  notifEl.id = `notif-${notifId}`;
+  notifEl.style.cssText = 'padding:8px 10px; margin:4px 0; background:rgba(0,0,0,0.3); border-left:3px solid #00ff88; padding-left:10px; word-break:break-word; font-size: 12px;';
+  notifEl.textContent = message;
+  
+  container.insertAdjacentElement('afterbegin', notifEl);
+  
+  // Auto-remove after duration
+  setTimeout(() => {
+    notifEl.remove();
+  }, duration);
+}
+
+function updateNotificationsDisplay() {
+  const container = document.querySelector('.notificationContent');
+  if (!container) return;
+  // Container will be updated by addNotification
 }
 
 // load skin cards
@@ -747,14 +879,14 @@ function forEachTitleCard(titleCallback) {
     headers: { Authorization: `Bearer ${authUser.token}` }
   })
   .then(res => res.json())
-  .then(({ titles, unlockedTitles }) => {
+  .then(({ titles, unlockedTitles, equippedTitle }) => {
     for (const title of titles) {
-      titleCallback(title, unlockedTitles.includes(title.id));
+      titleCallback(title, unlockedTitles.includes(title.id), title.name === equippedTitle);
     }
   });
 }
 
-function createTitleCard(title, unlocked) {
+function createTitleCard(title, unlocked, equipped) {
   const container = document.getElementById('titleCardsUnlocked');
   const containerLocked = document.getElementById('titleCardsLocked');
   const card = document.createElement('div');
@@ -783,6 +915,10 @@ function createTitleCard(title, unlocked) {
     });
     container.appendChild(card);
   }
+  if (equipped) {
+    card.classList.add('selected');
+  }
+
 }
 
 forEachTitleCard(createTitleCard);
@@ -796,9 +932,35 @@ async function joinPresence() {
 
     // listen for incoming messages
     presenceRoom.onMessage('newMessage', async (data) => {
-      if (activeChatUser === data.from) {
-        await renderMessages(data.from);
+      const { from, text } = data;
+      
+      if (activeChatUser === from) {
+        await renderMessages(from);
+      } else {
+        // Check if this is a game invite
+        if (text.includes('[CLICK TO JOIN]')) {
+          addNotification('game-invite', from, `[Game] ${from} has invited you to a 1v1 match`);
+        } else {
+          // Add regular message to notifications if not in active chat
+          addNotification('message', from, `[Message] ${from} - ${text.substring(0, 40)}${text.length > 40 ? '...' : ''}`);
+        }
       }
+    });
+
+    // listen for friend requests
+    presenceRoom.onMessage('friendRequest', async (data) => {
+      const { from } = data;
+      addNotification('friend-request', from, `[Friend] ${from} sent you a friend request`);
+      // Reload friend requests
+      await loadFriendRequests();
+    });
+
+    // listen for friend request acceptance
+    presenceRoom.onMessage('friendAccepted', async (data) => {
+      const { from } = data;
+      addNotification('friend-accepted', from, `[Friend] Your friend request to ${from} was accepted`);
+      // Reload friends list
+      await loadFriends();
     });
 
     window.addEventListener('beforeunload', () => {
@@ -844,7 +1006,12 @@ async function buildClientWorld(collisionPath, spawnX, spawnY, spawnZ) {
       .lockRotations()
       .setLinearDamping(0.1)
   );
-  cWorld.createCollider(RAPIER.ColliderDesc.ball(1), cBody);
+  cWorld.createCollider(
+  RAPIER.ColliderDesc.capsule(0.5, 0.5).setRestitution(0.0).setFriction(0.0),
+  cBody
+
+  //REVERT THIS PART BACK IF BROKEN
+);
 }
 
 // ground checker
@@ -1314,7 +1481,7 @@ async function setupRoom(r) {
     }
   });
 
-  room.onMessage('gameEnd', (data) => {
+  room.onMessage('gameEnd', async (data) => {
     if (controls.isLocked) controls.unlock();
     gameStarted = false;
     skinMgr.removeAll(); 
@@ -1322,8 +1489,29 @@ async function setupRoom(r) {
     nametags.dispose();
     playerMeshMap.clear();
 
-    const won = data.winner === myId;
+    // Get current user's database ID from token
+    const authUser = JSON.parse(localStorage.getItem('auth_user'));
+    const myDbId = authUser ? getUserIdFromToken(authUser.token) : null;
+    let oppUsername = 'opponent';
+    
+    if (!myDbId) {
+      console.error('Could not determine user ID from token');
+    }
+    
+    try {
+      // Fetch opponent's username
+      const oppId = data.winner === myDbId ? data.loser : data.winner;
+      const oppRes = await fetch(`${API_BASE}/api/users-by-id/${oppId}`);
+      if (oppRes.ok) {
+        const oppData = await oppRes.json();
+        oppUsername = oppData.username || 'opponent';
+      }
+    } catch (e) {
+      console.warn('Failed to fetch opponent username:', e);
+    }
 
+    const won = data.winner === myDbId;
+    console.log('gameEnd: myDbId=', myDbId, 'winner=', data.winner, 'loser=', data.loser, 'won=', won);
 
     const resultTitle = document.getElementById('resultTitle');
     if (resultTitle) {
@@ -1331,7 +1519,7 @@ async function setupRoom(r) {
       resultTitle.style.color = won ? '#00ff88' : '#ff4444';
     }
     const resultSub = document.getElementById('resultSub');
-    if (resultSub) resultSub.textContent = won ? 'opponent eliminated' : 'you were eliminated';
+    if (resultSub) resultSub.textContent = won ? 'opponent eliminated' : 'you were eliminated by ' + oppUsername;
 
     showResults(won);
   });
@@ -1461,8 +1649,17 @@ document.getElementById('hostBtn').onclick = async () => {
     setupRoom(r);
 
     // Server sends us the short code via message once metadata is ready
-    r.onMessage('roomCode', (code) => {
+    r.onMessage('roomCode', async (code) => {
+      currentRoomCode = code;
       document.getElementById('joinCodeDisplay').textContent = code;
+      
+      // Load and display friends for inviting
+      const res = await fetch(`${API_BASE}/auth/me`, {
+        headers: { 'Authorization': `Bearer ${authUser.token}` }
+      });
+      const user = await res.json();
+      const friends = user.friends?.list || {};
+      await displayInviteFriends(friends);
     });
 
     showWaiting();
@@ -1487,7 +1684,12 @@ document.getElementById('joinBtn').onclick = async () => {
     });
     const data = await res.json();
     if (!res.ok) {
-      if (errEl) { errEl.textContent = data.error || 'Room not found'; setTimeout(()=>errEl.textContent='',3000); }
+      if (errEl) {
+        errEl.textContent = data.error || 'Room not found';
+        // Show the join menu so user can try again
+        document.getElementById('waitingRoom').style.display = 'none';
+        document.getElementById('versusMenu').style.display = 'flex';
+      }
       return;
     }
     const authUser = JSON.parse(localStorage.getItem('auth_user'));
@@ -1495,7 +1697,12 @@ document.getElementById('joinBtn').onclick = async () => {
     setupRoom(r);
   } catch (e) {
     console.error('Failed to join room:', e);
-    if (errEl) { errEl.textContent = 'Failed to join room'; setTimeout(()=>errEl.textContent='',3000); }
+    if (errEl) {
+      errEl.textContent = 'Failed to join room';
+      // Show the join menu so user can try again
+      document.getElementById('waitingRoom').style.display = 'none';
+      document.getElementById('versusMenu').style.display = 'flex';
+    }
   }
 };
 
