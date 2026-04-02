@@ -484,19 +484,8 @@ class BaseGameRoom extends Room {
       const grapple = this._grapples.get(sid);
       if (!pi || !grapple) continue;
 
-      // Auto-reset grapple timeouts:
-      // - SHOOTING: 30 frames (~500ms, lets hook travel ~60 units at 120 u/s)
-      // - STUCK/REELING: 120 frames (2 seconds, player held grapple too long)
-      const lastInput = this._grappleLastInput.get(sid) || 0;
-      const framesSinceInput = this._tickCount - lastInput;
-      if (grapple.status === 'SHOOTING' && framesSinceInput > 30) {
-        grapple.reset();
-      } else if ((grapple.status === 'STUCK' || grapple.status === 'REELING') && framesSinceInput > 120) {
-        grapple.reset();
-      }
-
       const grounded = this._physics.isGrounded(body);
-      applyMovement(body, pi.inputs, pi.camDir, grounded, grapple.status, 1 / CFG.TICK_RATE);
+      applyMovement(body, pi.inputs, pi.camDir, grounded, grapple.status);
       grapple.tick(body, this._physics);
     }
 

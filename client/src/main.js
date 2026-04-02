@@ -1007,7 +1007,7 @@ async function buildClientWorld(collisionPath, spawnX, spawnY, spawnZ) {
       .setLinearDamping(0.1)
   );
   cWorld.createCollider(
-  RAPIER.ColliderDesc.capsule(0.5, 0.5).setRestitution(0.0).setFriction(0.0),
+  RAPIER.ColliderDesc.capsule(0.5, 0.5).setFriction(0.0),
   cBody
 
   //REVERT THIS PART BACK IF BROKEN
@@ -1040,8 +1040,10 @@ function applyInput(inputs, camDir) {
   if (inputs.d) { vx+=sx; vz+=sz; }
   if (inputs.a) { vx-=sx; vz-=sz; }
 
+  const grounded = clientGrounded();
   const vel = cBody.linvel();
-  if (inputs.space && clientGrounded()) {
+  
+  if (inputs.space && grounded) {
     cBody.setLinvel({ x:vel.x, y:15, z:vel.z }, true);
   }
 
@@ -1303,6 +1305,8 @@ const controls    = new PointerLockControls(camera, renderer.domElement);
 const keys        = { w:false, a:false, s:false, d:false, space:false };
 let   seq         = 0;
 let   lastSpawn   = 0;
+let   spacePressed = false;    // Track if space was just pressed this frame
+let   prevSpaceState = false;  // Track space state from previous frame
 
 document.addEventListener('keydown', e => {
   if (e.code === keybinds.fwd)   keys.w     = true;
@@ -1452,6 +1456,15 @@ async function setupRoom(r) {
 
     showGame();
     gameStarted = true;
+    
+    // Reset all key states to start with clean slate
+    keys.w = false;
+    keys.a = false;
+    keys.s = false;
+    keys.d = false;
+    keys.space = false;
+    prevSpaceState = false;
+    
     controls.lock();
     hideBackground();
   });
@@ -1484,6 +1497,15 @@ async function setupRoom(r) {
   room.onMessage('gameEnd', async (data) => {
     if (controls.isLocked) controls.unlock();
     gameStarted = false;
+    
+    // Reset all key states to prevent stuck keys
+    keys.w = false;
+    keys.a = false;
+    keys.s = false;
+    keys.d = false;
+    keys.space = false;
+    prevSpaceState = false;
+    
     skinMgr.removeAll(); 
     hookMgr.removeAll();
     nametags.dispose();
@@ -1565,6 +1587,20 @@ async function setupRoom(r) {
     document.getElementById('page-results').style.display = 'none';
     showGame();
     gameStarted = true;
+    
+    // Reset all key presses and forces
+    keys.w = false;
+    keys.a = false;
+    keys.s = false;
+    keys.d = false;
+    keys.space = false;
+    prevSpaceState = false;
+    
+    // Reset player body velocity
+    if (cBody) {
+      cBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    }
+    
     controls.lock();
     
     // Clear HUD and reset values
@@ -1735,9 +1771,13 @@ function animate() {
     const cd = { x:camDir.x, y:camDir.y, z:camDir.z };
 
     while (acc >= FT) {
+      // Detect if space was newly pressed this frame (false → true transition)
+      const spaceJustPressed = keys.space && !prevSpaceState;
+      prevSpaceState = keys.space; // Update for next frame
+      
       const inp = {
         seq: seq++,
-        inputs: { w:keys.w, a:keys.a, s:keys.s, d:keys.d, space:keys.space },
+        inputs: { w:keys.w, a:keys.a, s:keys.s, d:keys.d, space: spaceJustPressed },
         camDir: cd
       };
 

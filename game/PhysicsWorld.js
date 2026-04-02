@@ -85,7 +85,7 @@ class PhysicsWorld {
     // Create a single fixed trimesh body for the entire map
     const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
     this.world.createCollider(
-      RAPIER.ColliderDesc.trimesh(vertices, indices).setRestitution(0.0).setFriction(0.0),
+      RAPIER.ColliderDesc.trimesh(vertices, indices).setFriction(0.0),
       body
     );
 
@@ -107,10 +107,11 @@ class PhysicsWorld {
         .setTranslation(sp.x, sp.y, sp.z)
         .lockRotations()
         .setLinearDamping(CFG.LINEAR_DAMPING)
+        .setCcdEnabled(true)
     );
     // Capsule: half-height 0.5, radius 0.5 → total height 2, same as ball radius 1
     this.world.createCollider(
-      RAPIER.ColliderDesc.capsule(0.5, 0.5).setRestitution(0.0).setFriction(0.0),
+      RAPIER.ColliderDesc.capsule(0.5, 0.5).setFriction(0.0),
       body
     );
     return body;
@@ -119,7 +120,9 @@ class PhysicsWorld {
   // ── Bomb body factory ────────────────────────────────────────
   createBombBody(position, impulse) {
     const body = this.world.createRigidBody(
-      RAPIER.RigidBodyDesc.dynamic().setTranslation(position.x, position.y, position.z)
+      RAPIER.RigidBodyDesc.dynamic()
+        .setTranslation(position.x, position.y, position.z)
+        .setCcdEnabled(true)
     );
     this.world.createCollider(RAPIER.ColliderDesc.ball(CFG.BOMB_RADIUS), body);
     body.applyImpulse({ x: impulse.x, y: impulse.y, z: impulse.z }, true);

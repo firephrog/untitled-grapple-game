@@ -101,6 +101,7 @@ const GRAPPLES = {
 };
 
 const TITLES = {
+  //standard
   player: {
     id:          'player',
     name:        'Player',
@@ -108,12 +109,41 @@ const TITLES = {
     usernameColor:   '#ffffff',
     description: "Standard issue title",
   },
+  sweat: {
+    id:          'sweat',
+    name:        'Sweat',
+    prefixColor: '#c7211a',
+    usernameColor:'#7a1c18',
+    description: 'Go touch some grass. Get this by getting 50 wins',
+  },
+  champion: {
+    id:            'champion',
+    name:          'Champion',
+    prefixColor:   '#fa9e52',
+    usernameColor: '#a07236',
+    description:   'You should really consider touching grass. Get this by getting 250 wins',
+  },
+  chosenone: {
+    id:            'chosenone',
+    name:          'The Chosen One',
+    prefixColor:   '#fff8ac',
+    usernameColor: '#000000',
+    description:   'Get this title by beating [Developer] phrog in a 1v1 25 times. It is entirely up to him if you get this.',
+  },
+  //staff
   tester: {
     id:         'tester',
     name:       'Tester',
     prefixColor:'#35f0ae',
-    usernameColor:'#10c4ga',
-    description:"Given to people who test the game"
+    usernameColor: '#25ca90',
+    description:"Given to people who test the game",
+  },
+  mapdesign: {
+    id:         'mapdesign',
+    name:       'Map Designer',
+    prefixColor:'#00ffc3',
+    usernameColor:'#07dbaa',
+    description:'Given to people who design maps. Currently: Mihoi, HELLO',
   },
   developer: {
     id:          'developer',
@@ -121,6 +151,14 @@ const TITLES = {
     prefixColor: '#ba2323',
     usernameColor:   '#e8a92a',
     description: "phrog's own title. If you contribute enough code you can possibly recieve it",
+  },
+  //special titles
+  investor: {
+    id:          'investor',
+    name:        'Investor',
+    prefixColor: '#fff568',
+    usernameColor:   '#f8ea22',
+    description: 'W Leo. Given to people who donated to the creation of this game.',
   },
 }
 
