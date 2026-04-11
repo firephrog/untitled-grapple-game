@@ -63,8 +63,8 @@ module.exports = {
   BOMB_RADIUS:     0.5,
   BOMB_TTL_MS:     500,        // ms before detonation (longer = more fun to dodge)
   BOMB_SPAWN_COOLDOWN_MS: 3000,
-  BLAST_RADIUS:    150,          // units — was 150, way too large
-  BLAST_STRENGTH:  50,          // one-shot impulse magnitude
+  BLAST_RADIUS:    75,          // units — was 150, way too large
+  BLAST_STRENGTH:  25,          // one-shot impulse magnitude
   DAMAGE_RADIUS:   8,           // units to take damage
   BOMB_DAMAGE:     25,          // HP per hit (4 hits = dead)
 

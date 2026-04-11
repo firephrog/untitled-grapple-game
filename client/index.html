@@ -122,7 +122,6 @@
       border: 1px solid rgba(255,255,255,0.12);
       border-radius: 6px;
       text-align: center;
-      text-transform: uppercase;
       letter-spacing: 6px;
       width: 200px;
       outline: none;
@@ -860,7 +859,7 @@
       letter-spacing: normal;
       width: auto;
     }
-    .add-friend-input::placeholder { color: #444; }
+    .add-friend-input::placeholder { color: #6b6b6b; }
     .add-friend-input:focus { border-color: rgba(255,255,255,0.3); }
 
     .btn-sm {
@@ -1684,7 +1683,7 @@
 
     <!-- add friend bar -->
     <div class="add-friend-bar">
-      <input class="add-friend-input" type="text" placeholder="add by user /">
+      <input class="add-friend-input" type="text" placeholder="Add by user">
       <button class="btn-sm">add</button>
     </div>
 
@@ -1758,21 +1757,53 @@
 
     async function loadSettings() {
       const authUser = JSON.parse(localStorage.getItem('auth_user'));
-      if (!authUser) return;
-      const res  = await fetch(`${API_BASE}/auth/me`, {
-        headers: { 'Authorization': `Bearer ${authUser.token}` }
-      });
-      const user = await res.json();
-      if (user.settings) {
-        Object.assign(gameSettings.graphics,  user.settings.graphics  || {});
-        Object.assign(gameSettings.interface, user.settings.interface || {});
-        Object.assign(gameSettings.mouse,     user.settings.mouse     || {});
-        Object.assign(window.keybinds, user.settings.keybinds);
+      let settingsLoaded = false;
+      
+      // Try to load from database if authenticated
+      if (authUser) {
+        try {
+          const res  = await fetch(`${API_BASE}/auth/me`, {
+            headers: { 'Authorization': `Bearer ${authUser.token}` }
+          });
+          const user = await res.json();
+          if (user.settings) {
+            Object.assign(gameSettings.graphics,  user.settings.graphics  || {});
+            Object.assign(gameSettings.interface, user.settings.interface || {});
+            Object.assign(gameSettings.mouse,     user.settings.mouse     || {});
+            Object.assign(window.keybinds, user.settings.keybinds);
+            // Cache the loaded settings
+            try {
+              localStorage.setItem('cached_settings', JSON.stringify(user.settings));
+            } catch (e) {
+              console.warn('Failed to cache settings:', e);
+            }
+            settingsLoaded = true;
+          }
+        } catch (e) {
+          console.warn('Failed to load settings from database:', e);
+        }
+      }
+      
+      // Fall back to cached settings if DB load failed or user not authenticated
+      if (!settingsLoaded) {
+        try {
+          const cachedSettings = JSON.parse(localStorage.getItem('cached_settings'));
+          if (cachedSettings) {
+            Object.assign(gameSettings.graphics,  cachedSettings.graphics  || {});
+            Object.assign(gameSettings.interface, cachedSettings.interface || {});
+            Object.assign(gameSettings.mouse,     cachedSettings.mouse     || {});
+            Object.assign(window.keybinds, cachedSettings.keybinds || {});
+            settingsLoaded = true;
+          }
+        } catch (e) {
+          console.warn('Failed to load cached settings:', e);
+        }
+      }
+      
+      if (settingsLoaded) {
         displayStoredSettings();
       }
     }
-
-    loadSettings();
 
     function settingsTabSwitch(btn, id) {
       document.querySelectorAll('.settings-tab').forEach(b => b.classList.remove('active'));
@@ -1839,6 +1870,8 @@
     // ── chat ─────────────────────────────────────────────────
 
     //moved to main
+
+    loadSettings();
 
   </script>
 </body>

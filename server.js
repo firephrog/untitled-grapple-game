@@ -292,12 +292,20 @@ app.get('/api/users/:username/messages', async (req, res) => {
   try {
     const { userId } = jwt.verify(token, CFG.JWT_SECRET);
     const targetUsername = req.params.username;
+    
+    // Pagination: limit (default 20) and skip (default 0)
+    const limit = Math.min(parseInt(req.query.limit) || 20, 100); // Cap at 100
+    const skip = Math.max(parseInt(req.query.skip) || 0, 0);
 
     const user = await User.findById(userId).select('friends');
     if (!user) return res.status(404).json({ error: 'User not found.' });
 
     const thread = user.friends?.list?.[targetUsername]?.messages || [];
-    res.json({ messages: thread });
+    const total = thread.length;
+    
+    // Return paginated messages + total count
+    const messages = thread.slice(Math.max(0, total - skip - limit), total - skip);
+    res.json({ messages, total, skip, limit });
   } catch (err) {
     res.status(500).json({ error: 'Server error.' });
   }

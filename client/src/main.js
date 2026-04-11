@@ -145,6 +145,45 @@ function showAuthOverlay() {
       overlay.remove();
       document.getElementById('menu').style.display = 'flex';
       fetchAndDisplayStats(data.token);
+      
+      // Load and cache user settings after login
+      fetch(`${API_BASE}/auth/me`, {
+        headers: { 'Authorization': `Bearer ${data.token}` }
+      })
+      .then(r => r.json())
+      .then(user => {
+        console.log('[Login] Fetched user data, settings:', user.settings);
+        if (user.settings) {
+          // Update gameSettings with loaded values
+          Object.assign(gameSettings.graphics, user.settings.graphics || {});
+          Object.assign(gameSettings.interface, user.settings.interface || {});
+          Object.assign(gameSettings.mouse, user.settings.mouse || {});
+          Object.assign(window.keybinds, user.settings.keybinds || {});
+          
+          console.log('[Login] Updated gameSettings:', gameSettings);
+          
+          // Cache the settings
+          try {
+            localStorage.setItem('cached_settings', JSON.stringify(user.settings));
+            console.log('[Login] Cached settings to localStorage');
+          } catch (e) {
+            console.warn('Failed to cache settings after login:', e);
+          }
+          
+          // Wait for applySettings to be available (game to initialize)
+          const applySettingsWhenReady = () => {
+            if (window.applySettings && window.controls && window.camera) {
+              console.log('[Login] Game ready, applying loaded settings');
+              window.applySettings();
+            } else {
+              console.log('[Login] Waiting for game to initialize...');
+              setTimeout(applySettingsWhenReady, 100);
+            }
+          };
+          applySettingsWhenReady();
+        }
+      })
+      .catch(e => console.error('[Login] Failed to load settings after login:', e));
     } catch (err) {
       statusEl.textContent = err.message;
       btn.disabled = false;
@@ -292,26 +331,46 @@ async function databaseSave(info) {
 }
 
 function applySettings() {
-  const fov = parseInt(document.getElementById('fov').value);
-  const sensitivity = parseFloat(document.getElementById('sensitivity').value) / 10;
-  const invertY = document.getElementById('invertY').checked;
-  const showHints = document.getElementById('showInputs').checked;
-  const showSpeed = document.getElementById('showSpeed').checked;
-  const showPing = document.getElementById('showPing').checked;
+  console.log('[applySettings] Called, gameSettings object:', gameSettings);
   
+  // Read from gameSettings directly instead of DOM elements
+  const fov = gameSettings.graphics.fov || 75;
+  const sensitivity = gameSettings.mouse.sensitivity || 0.5;
+  const invertY = gameSettings.mouse.invertY || false;
+  const showHints = gameSettings.interface.showInputs !== false;
+  const showSpeed = gameSettings.interface.showSpeed !== false;
+  const showPing = gameSettings.interface.showPing !== false;
+
+  console.log('[applySettings] Parsed values - FOV:', fov, 'Sensitivity:', sensitivity, 'InvertY:', invertY, 'ShowHints:', showHints, 'ShowSpeed:', showSpeed, 'ShowPing:', showPing);
+
+  if (!controls) {
+    console.error('[applySettings] controls not initialized!');
+    return;
+  }
+  if (!camera) {
+    console.error('[applySettings] camera not initialized!');
+    return;
+  }
+
   controls.pointerSpeed = sensitivity;
   controls.invertYAxis = invertY;
   camera.fov = fov;
+
+  console.log('[applySettings] Set controls.pointerSpeed to', controls.pointerSpeed);
+  console.log('[applySettings] Set controls.invertYAxis to', controls.invertYAxis);
+  console.log('[applySettings] Set camera.fov to', camera.fov);
 
   if (showHints == false) { document.getElementById('controls-hint').style.display = 'none'; } else { document.getElementById('controls-hint').style.display = 'block'; }
   if (showSpeed == false) { document.getElementById('velocity').style.display = 'none'; } else { document.getElementById('velocity').style.display = 'block'; }
   if (showPing == false) { document.getElementById('ping').style.display = 'none'; } else { document.getElementById('ping').style.display = 'block'; }
 
   camera.updateProjectionMatrix();
+  console.log('[applySettings] Complete! Camera FOV is now:', camera.fov);
 }
 
 
 document.getElementById('saveBtn').addEventListener('click', () => {
+  console.log('[Save] User clicked save button');
   const settings = {
     graphics: {
       fov:      parseInt(document.getElementById('fov').value),
@@ -329,10 +388,36 @@ document.getElementById('saveBtn').addEventListener('click', () => {
     keybinds: { ...window.keybinds },
   };
 
+  console.log('[Save] Collected settings from DOM:', settings);
+
+  // Update gameSettings from form values
+  Object.assign(gameSettings.graphics, settings.graphics);
+  Object.assign(gameSettings.interface, settings.interface);
+  Object.assign(gameSettings.mouse, settings.mouse);
+
+  console.log('[Save] Updated gameSettings:', gameSettings);
+
+  // Cache settings in localStorage as backup
+  try {
+    localStorage.setItem('cached_settings', JSON.stringify(settings));
+    console.log('[Save] Cached settings to localStorage');
+  } catch (e) {
+    console.warn('Failed to cache settings in localStorage:', e);
+  }
+
+  console.log('[Save] Calling applySettings()');
   applySettings();
   databaseSave({ settings })
 })
 
+// Wrap displayStoredSettings to ensure settings are applied after loading
+if (window.displayStoredSettings) {
+  const originalDisplay = window.displayStoredSettings;
+  window.displayStoredSettings = function() {
+    originalDisplay.call(this);
+    applySettings();
+  };
+}
 
 document.addEventListener('click', () => {
   if (gameStarted && !controls.isLocked) {
@@ -586,15 +671,6 @@ async function joinInvite(code) {
   }, 100);
 }
 
-async function loadMessages(target) {
-  const authUser = JSON.parse(localStorage.getItem('auth_user'));
-  const res = await fetch(`${API_BASE}/api/users/${target}/messages`, {
-    headers: { 'Authorization': `Bearer ${authUser.token}` }
-  });
-  const data = await res.json();
-  return data.messages || [];
-}
-
 loadFriendRequests();
 loadFriends();
 
@@ -610,9 +686,16 @@ document.querySelector('.friend-action-btn').addEventListener('click', () => {
 
 // ── Chat ─────────────────────────────────────────────────────
 let activeChatUser = null;
+let messageState = {
+  skip: 0,
+  limit: 20,
+  total: 0,
+  isLoading: false
+};
 
 async function openChat(username) {
   activeChatUser = username;
+  messageState = { skip: 0, limit: 20, total: 0, isLoading: false };
 
   // fetch their profile for display info
   const res  = await fetch(`${API_BASE}/api/users/${username}`);
@@ -646,49 +729,89 @@ async function openChat(username) {
   document.getElementById('chatMenu').style.display = 'flex';
   document.getElementById('msgInput').focus();
 
-  await renderMessages(username);
+  await renderMessages(username, true);
 }
 
-async function renderMessages(username) {
+async function renderMessages(username, isInitial = false) {
   const scroll = document.getElementById('msgScroll');
-  scroll.innerHTML = '<div style="text-align:center;color:#555;font-size:11px;font-family:\'Space Mono\',monospace;margin:auto;padding-top:20px;">loading...</div>';
-
-  const authUser = JSON.parse(localStorage.getItem('auth_user'));
-  const res      = await fetch(`${API_BASE}/api/users/${username}/messages`, {
-    headers: { 'Authorization': `Bearer ${authUser.token}` }
-  });
-  const data     = await res.json();
-  const messages = data.messages || [];
-
-  scroll.innerHTML = '';
-
-  if (messages.length === 0) {
-    const empty = document.createElement('div');
-    empty.style.cssText = 'text-align:center;color:#555;font-size:11px;font-family:"Space Mono",monospace;margin:auto;padding-top:20px;';
-    empty.textContent = 'no messages yet';
-    scroll.appendChild(empty);
-    return;
+  
+  if (isInitial) {
+    scroll.innerHTML = '<div style="text-align:center;color:#555;font-size:11px;font-family:\'Space Mono\',monospace;margin:auto;padding-top:20px;">loading...</div>';
   }
 
-  messages.forEach(m => {
-    const mine = m.from === authUser.username;
-    const time = new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const wrap = document.createElement('div');
-    wrap.className = 'msg ' + (mine ? 'mine' : 'theirs');
-    
-    // Check if message is an invite
-    if (m.text.includes('[CLICK TO JOIN]') && !mine) {
-      const codeMatch = m.text.match(/code: '([^']+)'/);
-      const code = codeMatch ? codeMatch[1] : '';
-      wrap.innerHTML = `<div class="msg-bubble" style="cursor:pointer; background:rgba(0,255,136,0.15); border:1px solid rgba(0,255,136,0.3);" onclick="joinInvite('${code}')" title="Click to join">${m.text}</div><div class="msg-time">${time}</div>`;
-    } else {
-      wrap.innerHTML = `<div class="msg-bubble">${m.text}</div><div class="msg-time">${time}</div>`;
-    }
-    scroll.appendChild(wrap);
-  });
+  const authUser = JSON.parse(localStorage.getItem('auth_user'));
+  messageState.isLoading = true;
+  
+  const res = await fetch(
+    `${API_BASE}/api/users/${username}/messages?limit=${messageState.limit}&skip=${messageState.skip}`,
+    { headers: { 'Authorization': `Bearer ${authUser.token}` } }
+  );
+  const data = await res.json();
+  messageState.isLoading = false;
+  
+  const messages = data.messages || [];
+  messageState.total = data.total || 0;
 
-  scroll.scrollTop = scroll.scrollHeight;
+  if (isInitial) {
+    scroll.innerHTML = '';
+
+    if (messages.length === 0) {
+      const empty = document.createElement('div');
+      empty.style.cssText = 'text-align:center;color:#555;font-size:11px;font-family:"Space Mono",monospace;margin:auto;padding-top:20px;';
+      empty.textContent = 'no messages yet';
+      scroll.appendChild(empty);
+      _attachScrollListener();
+      return;
+    }
+
+    messages.forEach(m => _renderMessage(m, authUser.username, scroll));
+    scroll.scrollTop = scroll.scrollHeight;
+    _attachScrollListener();
+  } else {
+    // Prepend newer messages at top
+    const container = scroll.firstChild;
+    messages.reverse().forEach(m => {
+      const elem = _createMessageElement(m, authUser.username);
+      scroll.insertBefore(elem, container);
+    });
+  }
 }
+
+function _renderMessage(m, currentUser, container) {
+  container.appendChild(_createMessageElement(m, currentUser));
+}
+
+function _createMessageElement(m, currentUser) {
+  const mine = m.from === currentUser;
+  const time = new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const wrap = document.createElement('div');
+  wrap.className = 'msg ' + (mine ? 'mine' : 'theirs');
+  
+  if (m.text.includes('[CLICK TO JOIN]') && !mine) {
+    const codeMatch = m.text.match(/code: '([^']+)'/);
+    const code = codeMatch ? codeMatch[1] : '';
+    wrap.innerHTML = `<div class="msg-bubble" style="cursor:pointer; background:rgba(0,255,136,0.15); border:1px solid rgba(0,255,136,0.3);" onclick="joinInvite('${code}')" title="Click to join">${m.text}</div><div class="msg-time">${time}</div>`;
+  } else {
+    wrap.innerHTML = `<div class="msg-bubble">${m.text}</div><div class="msg-time">${time}</div>`;
+  }
+  return wrap;
+}
+
+function _attachScrollListener() {
+  const scroll = document.getElementById('msgScroll');
+  scroll.onscroll = async () => {
+    // Load more when scrolled to top
+    if (scroll.scrollTop === 0 && messageState.skip + messageState.limit < messageState.total && !messageState.isLoading) {
+      const prevHeight = scroll.scrollHeight;
+      messageState.skip += messageState.limit;
+      await renderMessages(activeChatUser, false);
+      // Adjust scroll to prevent jumping
+      scroll.scrollTop = scroll.scrollHeight - prevHeight;
+    }
+  };
+}
+
+
 
 async function sendMessage() {
   const input    = document.getElementById('msgInput');
@@ -710,7 +833,9 @@ async function sendMessage() {
 
   input.disabled = false;
   input.focus();
-  await renderMessages(activeChatUser);
+  // Reset to show latest messages after send
+  messageState = { skip: 0, limit: 20, total: 0, isLoading: false };
+  await renderMessages(activeChatUser, true);
 }
 
 document.getElementById('msgInput').addEventListener('keydown', (e) => {
@@ -735,7 +860,9 @@ function setupMessageListener() {
   if (!presenceRoom) return;
   presenceRoom.onMessage('newMessage', async (data) => {
     if (activeChatUser === data.from) {
-      await renderMessages(data.from); // ← just this
+      // Reset to show latest on new message
+      messageState = { skip: 0, limit: 20, total: 0, isLoading: false };
+      await renderMessages(data.from, true);
     }
   });
 }
@@ -1015,16 +1142,31 @@ async function buildClientWorld(collisionPath, spawnX, spawnY, spawnZ) {
 }
 
 // ground checker
+// ground checker
 function clientGrounded() {
   if (!cBody || !cWorld) return false;
+  
   const vel = cBody.linvel();
-  if (vel.y > 0.5) return false;
+  
+  // 1. STRICTURE VELOCITY CHECK
+  // If the player is falling or rising faster than a tiny threshold, 
+  // they are NOT grounded. This prevents jumping while falling.
+  if (Math.abs(vel.y) > 0.01) return false;
+
   const pos = cBody.translation();
+  
+  // 2. TIGHTER RAYCAST
+  // Your capsule has a radius of 0.5. 
+  // We start the ray 0.5 units below center (at the bottom curve).
+  // A distance of 0.6 is too "floaty." Reduce it to 0.52.
   const ray = new RAPIER.Ray(
     { x: pos.x, y: pos.y - 0.5, z: pos.z },
     { x: 0,     y: -1,          z: 0     }
   );
-  return cWorld.castRay(ray, 0.6, false) !== null;
+  
+  // 0.52 distance means we only trigger if we are within 0.02 units of the floor
+  const hit = cWorld.castRay(ray, 0.52, false); 
+  return hit !== null;
 }
 
 // ──  apply input frame onto client body
@@ -1746,7 +1888,11 @@ document.getElementById('codeInput')?.addEventListener('keypress', e => {
   if (e.key === 'Enter') document.getElementById('joinBtn').click();
 });
 
-applySettings();
+// Expose game objects globally so login handler can access them
+window.camera = camera;
+window.controls = controls;
+window.applySettings = applySettings;
+window.gameSettings = gameSettings;
 
 // ── Main loop ─────────────────────────────────────────────
 const FT   = 1 / 60;
