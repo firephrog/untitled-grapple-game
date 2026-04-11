@@ -339,9 +339,7 @@ dirLight.shadow.mapSize.width = 512;
 dirLight.shadow.mapSize.height = 512;
 dirLight.shadow.camera.far = 100;
 scene.add(dirLight);
-const defaultAmbientLight = new THREE.AmbientLight(0xffffff, 0.5);
-scene.add(defaultAmbientLight);
-const DEFAULT_LIGHTS = [dirLight, defaultAmbientLight];  // Reference to default lights
+scene.add(new THREE.AmbientLight(0xffffff, 0.5));
 
 const floor = new THREE.Mesh(
   new THREE.PlaneGeometry(100, 100),
@@ -1389,40 +1387,9 @@ async function loadMapGLB(glbPath) {
     currentMapRoot = null;
   }
 
-  // Remove lights from previous map
-  currentMapLights.forEach(light => scene.remove(light));
-  currentMapLights = [];
-
   try {
     const gltf = await gltfLoader.loadAsync(glbPath);
     currentMapRoot = gltf.scene;
-
-    // Extract and add lights from the GLB file
-    let foundLights = false;
-    currentMapRoot.traverse(obj => {
-      if (obj.isLight) {
-        // Clone the light to avoid issues with scene hierarchy
-        const clonedLight = obj.clone();
-        scene.add(clonedLight);
-        currentMapLights.push(clonedLight);
-        foundLights = true;
-        console.log(`[LoadMap] Found light in GLB: ${obj.type} at position`, obj.position);
-      }
-    });
-
-    // If no lights found in GLB, ensure default lights are visible
-    if (!foundLights) {
-      DEFAULT_LIGHTS.forEach(light => {
-        if (!scene.children.includes(light)) {
-          scene.add(light);
-        }
-        light.visible = true;
-      });
-      console.log('[LoadMap] No lights found in GLB, using default lights');
-    } else {
-      // Hide default lights when using map lights
-      DEFAULT_LIGHTS.forEach(light => light.visible = false);
-    }
 
     // Enable shadows on every mesh in the loaded scene
     currentMapRoot.traverse(obj => {
@@ -1439,8 +1406,6 @@ async function loadMapGLB(glbPath) {
 
   } catch (err) {
     console.error(`[Client] Failed to load map GLB: ${glbPath}`, err);
-    // On error, ensure default lights are visible
-    DEFAULT_LIGHTS.forEach(light => light.visible = true);
   }
 }
 
@@ -1576,7 +1541,7 @@ class Explosion {
 }
 
 // ── Input ─────────────────────────────────────────────────
-controls = new PointerLockControls(camera, renderer.domElement);
+const controls    = new PointerLockControls(camera, renderer.domElement);
 const keys        = { w:false, a:false, s:false, d:false, space:false };
 let   seq         = 0;
 let   lastSpawn   = 0;
