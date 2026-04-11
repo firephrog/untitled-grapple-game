@@ -25,7 +25,7 @@ module.exports = {
 
   // ── Physics ────────────────────────────────────────────────
   TICK_RATE:       60,          // Hz – physics simulation rate
-  PATCH_RATE_MS:   10,          // ms – Colyseus state delta rate (~30 Hz)
+  PATCH_RATE_MS:   16,          // ms – Colyseus state delta rate (slightly up from 10 for better perf)
   GRAVITY:         -20,
 
   // ── Map ────────────────────────────────────────────────────
@@ -65,7 +65,7 @@ module.exports = {
   BOMB_SPAWN_COOLDOWN_MS: 3000,
   BLAST_RADIUS:    75,          // units — was 150, way too large
   BLAST_STRENGTH:  25,          // one-shot impulse magnitude
-  DAMAGE_RADIUS:   8,           // units to take damage
-  BOMB_DAMAGE:     25,          // HP per hit (4 hits = dead)
+  DAMAGE_RADIUS:   25,           // units to take damage
+  BOMB_DAMAGE:     40,          // HP per hit (4 hits = dead)
 
 };

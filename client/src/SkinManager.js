@@ -127,7 +127,7 @@ export class SkinManager {
 
   _makeSphereRoot(scale) {
     const m = new THREE.Mesh(
-      new THREE.SphereGeometry(1 * scale),
+      new THREE.SphereGeometry(1 * scale, 16, 16),  // Reduced from default 32x32 to 16x16
       new THREE.MeshStandardMaterial({ color: 0x888888 })
     );
     m.castShadow = m.receiveShadow = true;

@@ -124,11 +124,19 @@ export class Nametags {
     if (!info || !info.sessionId) return;
 
     if (this._entries.has(info.sessionId)) {
-      // Update existing entry — redraw the texture
+      // Update existing entry — redraw the texture only if info changed
       const entry = this._entries.get(info.sessionId);
-      entry.info = info;
-      buildTexture(entry.canvas, entry.ctx, info);
-      entry.texture.needsUpdate = true;
+      const infoChanged = 
+        entry.info.username !== info.username ||
+        entry.info.userPrefix !== info.userPrefix ||
+        entry.info.prefixColor !== info.prefixColor ||
+        entry.info.usernameColor !== info.usernameColor;
+      
+      if (infoChanged) {
+        entry.info = info;
+        buildTexture(entry.canvas, entry.ctx, info);
+        entry.texture.needsUpdate = true;
+      }
       return;
     }
 

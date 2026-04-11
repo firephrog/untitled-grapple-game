@@ -112,8 +112,9 @@ class BombSystem {
       const dy = p.y - center.y;
       const dz = p.z - center.z;
       const d  = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const dmg = (CFG.BOMB_DAMAGE * Math.max(0, (CFG.DAMAGE_RADIUS - d) / CFG.DAMAGE_RADIUS)).toFixed(0);
       if (d < CFG.DAMAGE_RADIUS) {
-        hits.push({ sid, damage: CFG.BOMB_DAMAGE });
+        hits.push({ sid, damage: dmg });
       }
     }
     return hits;

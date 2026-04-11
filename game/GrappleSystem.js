@@ -97,9 +97,10 @@ class GrappleSystem {
     // This is simpler and more reliable than trying to filter by body in Rapier 0.12.
     const MIN_TRAVEL = 2.5;
     let hitPos = null;
+    // Optimize: reduce sample rate from 6 to 4 samples (33% fewer raycasts)
     if (this.travelDist > MIN_TRAVEL) {
-      for (let i = 0; i <= 5; i++) {
-        const t = i / 5;
+      for (let i = 0; i <= 3; i++) {  // Reduced from 5 to 3 (4 samples instead of 6)
+        const t = i / 3;
         const sample = {
           x: prev.x + (this.hookPos.x - prev.x) * t,
           y: prev.y + (this.hookPos.y - prev.y) * t,

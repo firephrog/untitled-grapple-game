@@ -11,6 +11,7 @@ import Colyseus                  from 'colyseus.js';
 import { initBackground, hideBackground, showBackground } from './background.js';
 import { SkinManager, HookManager } from './SkinManager.js';
 import { Nametags } from './Nametags.js';
+import { PerformanceMonitor } from './PerformanceMonitor.js';
 
 
 
@@ -29,6 +30,67 @@ function getUserIdFromToken(token) {
     console.warn('Failed to decode token:', e);
     return null;
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UI HELPER FUNCTIONS – defined early before they're called
+// ─────────────────────────────────────────────────────────────────────────────
+
+function showMenu()        { 
+  const menuEl = document.getElementById('menu');
+  if (!menuEl) {
+    console.error('[showMenu] Menu element not found');
+    return;
+  }
+  menuEl.style.display = 'flex';
+  menuEl.style.visibility = 'visible';
+  menuEl.style.opacity = '1';
+  menuEl.style.pointerEvents = 'auto';
+  console.log('[showMenu] Menu displayed');
+  showBackground();  // Show background behind menu
+  if (typeof renderer !== 'undefined' && renderer.domElement) {
+    renderer.domElement.style.display = 'none'; 
+    renderer.domElement.style.pointerEvents = 'none';
+  }
+}
+
+function hideMenu()        { 
+  const menuEl = document.getElementById('menu');
+  if (menuEl) menuEl.style.display = 'none'; 
+}
+
+function showWaiting()     { 
+  document.getElementById('versusMenu').style.display = 'none';
+  document.getElementById('waitingRoom').style.display = 'flex'; 
+}
+
+function showGame()        { 
+  hideMenu();
+  hideBackground();  // Hide background canvas so game is visible
+  if (typeof renderer !== 'undefined' && renderer.domElement) {
+    renderer.domElement.style.display = 'block';
+    renderer.domElement.style.visibility = 'visible';
+    renderer.domElement.style.opacity = '1';
+    renderer.domElement.style.pointerEvents = 'auto';
+    renderer.domElement.style.zIndex = '50';  // Ensure it's above everything
+    console.log('[showGame] Game canvas shown', {
+      display: renderer.domElement.style.display,
+      zIndex: renderer.domElement.style.zIndex,
+      backgroundColor: window.getComputedStyle(renderer.domElement).backgroundColor
+    });
+  }
+  document.getElementById('waitingRoom').style.display = 'none';
+  document.getElementById('hud').style.display = 'block'; 
+}
+
+function showMapVote()     { document.getElementById('mapVote').style.display = 'flex'; }
+function hideMapVote()     { document.getElementById('mapVote').style.display = 'none'; }
+
+function showResults(won)  {
+  document.getElementById('resultTitle').textContent = won ? 'you won' : 'you lost';
+  document.getElementById('resultTitle').style.color = won ? '#00ff88' : '#ff4444';
+  document.getElementById('resultSub').textContent   = won ? 'opponent eliminated' : 'you were eliminated';
+  document.getElementById('page-results').style.display = 'flex';
 }
 
 function getUser() {
@@ -198,15 +260,37 @@ function showAuthOverlay() {
   document.getElementById('authSubmit').addEventListener('click', submit);
 }
 
-// Check authentication
+// ─────────────────────────────────────────────────────────────────────────────
+// GLOBAL RENDERING STATE – declared here so they're accessible everywhere
+// ─────────────────────────────────────────────────────────────────────────────
+let scene    = null;
+let camera   = null;
+let renderer = null;
+let controls = null;
+
+// Check authentication and initialize background first
 const _savedUser = getUser();
+
+// Initialize background before showing menus
+initBackground();
+showBackground();
+
+// Now handle auth state
 if (!_savedUser) {
   showAuthOverlay();
 } else {
   fetchAndDisplayStats(_savedUser.token);
+  // Wait a bit to ensure DOM is ready, then show menu
+  setTimeout(() => {
+    const menuEl = document.getElementById('menu');
+    if (menuEl) {
+      console.log('[Init] Found menu element, showing...');
+      showMenu();
+    } else {
+      console.error('[Init] Menu element not found!');
+    }
+  }, 100);
 }
-initBackground();
-showBackground();
 
 
 async function init() {
@@ -219,19 +303,45 @@ const SERVER_URL = isSecure
 const colyseus   = new Colyseus.Client(SERVER_URL);
 
 // Three.js scene ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-const scene    = new THREE.Scene();
+scene    = new THREE.Scene();
 scene.background = new THREE.Color(0x87CEEB);
-const camera   = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 1000);
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+camera   = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 1000);
+
+// High resolution rendering: use device pixel ratio for crisp visuals
+const dpr = window.devicePixelRatio || 1;
+const targetDpr = Math.min(dpr, 2.0);  // Full device resolution, capped at 2.0 for performance
+renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(targetDpr);
 renderer.setSize(innerWidth, innerHeight);
+
+// Optimize shadow rendering
 renderer.shadowMap.enabled  = true;
+renderer.shadowMap.type = THREE.PCFShadowMap;  // Faster than PCFSoftShadowMap
+renderer.shadowMap.resolution = 512;  // Reduced from default 2048
+
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping      = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
+
+// Style the game canvas: hidden initially, z-index below menus
+renderer.domElement.id = 'gameCanvas';
+renderer.domElement.style.position = 'fixed';
+renderer.domElement.style.inset = '0';
+renderer.domElement.style.zIndex = '50';  // Above background (0) but below menus (1000)
+renderer.domElement.style.display = 'none';
+renderer.domElement.style.pointerEvents = 'none';
+console.log('[Init] Game canvas z-index:', renderer.domElement.style.zIndex, ', menu z-index: 1000');
 document.body.appendChild(renderer.domElement);
 
-scene.add(new THREE.DirectionalLight(0xffffff, 2));
-scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+// Store default lights for fallback when maps have no lights
+let dirLight = new THREE.DirectionalLight(0xffffff, 2);
+dirLight.shadow.mapSize.width = 512;
+dirLight.shadow.mapSize.height = 512;
+dirLight.shadow.camera.far = 100;
+scene.add(dirLight);
+const defaultAmbientLight = new THREE.AmbientLight(0xffffff, 0.5);
+scene.add(defaultAmbientLight);
+const DEFAULT_LIGHTS = [dirLight, defaultAmbientLight];  // Reference to default lights
 
 const floor = new THREE.Mesh(
   new THREE.PlaneGeometry(100, 100),
@@ -239,6 +349,8 @@ const floor = new THREE.Mesh(
 );
 floor.rotation.x = -Math.PI / 2;
 floor.position.y = -1;
+floor.receiveShadow = true;
+floor.castShadow = false;  // Fallback floor doesn't need to cast shadows
 scene.add(floor);
 
 // crosshair
@@ -261,23 +373,7 @@ let presenceRoom = null;
 let currentRoomCode = null;
 let notifications = new Set(); // Track notification IDs to avoid duplicates
 
-// Page helpers
-function showMenu()        { document.getElementById('menu').style.display = 'flex'; }
-function hideMenu()        { document.getElementById('menu').style.display = 'none'; }
-function showWaiting()     { document.getElementById('versusMenu').style.display = 'none';
-                             document.getElementById('waitingRoom').style.display = 'flex'; }
-function showGame()        { hideMenu();
-                             document.getElementById('waitingRoom').style.display = 'none';
-                             document.getElementById('hud').style.display = 'block'; }
-function showMapVote()     { document.getElementById('mapVote').style.display = 'flex'; }
-function hideMapVote()     { document.getElementById('mapVote').style.display = 'none'; }
-function showResults(won)  {
-  document.getElementById('resultTitle').textContent = won ? 'you won' : 'you lost';
-  document.getElementById('resultTitle').style.color = won ? '#00ff88' : '#ff4444';
-  document.getElementById('resultSub').textContent   = won ? 'opponent eliminated' : 'you were eliminated';
-  document.getElementById('page-results').style.display = 'flex';
-}
-
+// Menu and game state management
 let gameStarted = false;
 
 // Results buttons
@@ -1271,10 +1367,12 @@ const hookMgr = new HookManager(scene);
 
 //nametags --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 const nametags = new Nametags(scene);
+const perfMonitor = new PerformanceMonitor(scene, renderer);
 const playerMeshMap = new Map();  
 
 let oppYaw = 0;
-let   currentMapRoot = null;   // the THREE.Group added to scene
+let currentMapRoot = null;        // the THREE.Group added to scene
+let currentMapLights = [];        // Track lights from the current map
 
 async function loadMapGLB(glbPath) {
   // Remove previous map if any
@@ -1291,9 +1389,40 @@ async function loadMapGLB(glbPath) {
     currentMapRoot = null;
   }
 
+  // Remove lights from previous map
+  currentMapLights.forEach(light => scene.remove(light));
+  currentMapLights = [];
+
   try {
     const gltf = await gltfLoader.loadAsync(glbPath);
     currentMapRoot = gltf.scene;
+
+    // Extract and add lights from the GLB file
+    let foundLights = false;
+    currentMapRoot.traverse(obj => {
+      if (obj.isLight) {
+        // Clone the light to avoid issues with scene hierarchy
+        const clonedLight = obj.clone();
+        scene.add(clonedLight);
+        currentMapLights.push(clonedLight);
+        foundLights = true;
+        console.log(`[LoadMap] Found light in GLB: ${obj.type} at position`, obj.position);
+      }
+    });
+
+    // If no lights found in GLB, ensure default lights are visible
+    if (!foundLights) {
+      DEFAULT_LIGHTS.forEach(light => {
+        if (!scene.children.includes(light)) {
+          scene.add(light);
+        }
+        light.visible = true;
+      });
+      console.log('[LoadMap] No lights found in GLB, using default lights');
+    } else {
+      // Hide default lights when using map lights
+      DEFAULT_LIGHTS.forEach(light => light.visible = false);
+    }
 
     // Enable shadows on every mesh in the loaded scene
     currentMapRoot.traverse(obj => {
@@ -1310,6 +1439,8 @@ async function loadMapGLB(glbPath) {
 
   } catch (err) {
     console.error(`[Client] Failed to load map GLB: ${glbPath}`, err);
+    // On error, ensure default lights are visible
+    DEFAULT_LIGHTS.forEach(light => light.visible = true);
   }
 }
 
@@ -1329,7 +1460,7 @@ function makeHook(color) {
 }
 
 const ROPE_RADIUS   = 0.04;  // world-space thickness of rope
-const ROPE_SEGMENTS = 4;     // radial segments 
+const ROPE_SEGMENTS = 3;     // Reduced from 4 to 3 - still smooth, better perf
 
 function makeRopeLine(color) {
   const geo  = new THREE.CylinderGeometry(ROPE_RADIUS, ROPE_RADIUS, 1, ROPE_SEGMENTS);
@@ -1400,7 +1531,8 @@ const bombMeshes = new Map();
 const explosions = [];
 class Explosion {
   constructor(pos) {
-    this.N   = 250;
+    // Reduce particle count from 250 to 150 - still looks great, 40% fewer particles
+    this.N   = 150;
     const geo = new THREE.BufferGeometry();
     const arr = new Float32Array(this.N * 3);
     this.vel  = [];
@@ -1416,7 +1548,8 @@ class Explosion {
     this.mat  = new THREE.PointsMaterial({
       color:0xffaa00, size:0.1,
       transparent:true, opacity:1,
-      blending:THREE.AdditiveBlending
+      blending:THREE.AdditiveBlending,
+      sizeAttenuation:true  // Better perf on lower res displays
     });
     this.pts  = new THREE.Points(geo, this.mat);
     scene.add(this.pts);
@@ -1443,7 +1576,7 @@ class Explosion {
 }
 
 // ── Input ─────────────────────────────────────────────────
-const controls    = new PointerLockControls(camera, renderer.domElement);
+controls = new PointerLockControls(camera, renderer.domElement);
 const keys        = { w:false, a:false, s:false, d:false, space:false };
 let   seq         = 0;
 let   lastSpawn   = 0;
@@ -1900,8 +2033,28 @@ let   acc  = 0;
 let   last = performance.now();
 let   lastPingTime = Date.now();
 
+// FPS Counter
+let fpsFrameCount = 0;
+let fpsLastTime = performance.now();
+let fps = 0;
+
+function updateFPS() {
+  fpsFrameCount++;
+  const now = performance.now();
+  const elapsed = now - fpsLastTime;
+  
+  if (elapsed >= 1000) {  // Update every 1 second
+    fps = Math.round((fpsFrameCount * 1000) / elapsed);
+    const fpsEl = document.getElementById('fps-counter');
+    if (fpsEl) fpsEl.textContent = fps;
+    fpsFrameCount = 0;
+    fpsLastTime = now;
+  }
+}
+
 function animate() {
   requestAnimationFrame(animate);
+  updateFPS();
 
   const now = performance.now();
   const dt  = Math.min((now - last) / 1000, 0.1);
@@ -2000,7 +2153,7 @@ function animate() {
       liveIds.add(id);
       if (!bombMeshes.has(id)) {
         const m = new THREE.Mesh(
-          new THREE.SphereGeometry(0.5),
+          new THREE.SphereGeometry(0.5, 12, 12),
           new THREE.MeshStandardMaterial({ color:0x808080 })
         );
         scene.add(m);
@@ -2024,7 +2177,7 @@ function animate() {
     if (!explosions[i].alive) explosions.splice(i, 1);
   }
 
-
+  perfMonitor.update();
   renderer.render(scene, camera);
 }
 animate();
