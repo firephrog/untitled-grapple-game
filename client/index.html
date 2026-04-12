@@ -11,6 +11,7 @@
       jump:     'Space',
       grapple:  'KeyF',
       bomb:     'KeyQ',
+      parry:    'KeyE',
     };
     window.gameSettings = {
     graphics: {
@@ -446,6 +447,7 @@
       inset: 0;
       pointer-events: none;
       z-index: 100;
+      perspective: 500px;
     }
 
     .hp-bar-wrap {
@@ -502,7 +504,7 @@
       position: absolute;
       bottom: 40px;
       left: 50%;
-      transform: translateX(-50%);
+      transform: translateX(-120%);
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -510,6 +512,47 @@
     }
     #bombCooldown label { font-size: 10px; color: #888; letter-spacing: 1px; }
     #bombReady { font-size: 13px; color: #ffaa00; }
+
+    #parryCooldown {
+      position: absolute;
+      bottom: 40px;
+      right: 50%;
+      transform: translateX(120%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+    }
+    #parryCooldown label { font-size: 10px; color: #888; letter-spacing: 1px; }
+    #parryReady { font-size: 13px; color: #6699ff; }
+
+    @keyframes slideIn {
+      from {
+        opacity: 0;
+        transform: translateX(-20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateX(0);
+      }
+    }
+
+    .inGameNotifications {
+      position: absolute;
+      bottom: 10vh; left: 5vw;
+      width: 25vh; height: 20vh;
+      transform: rotateX(0.5deg) rotateY(5deg) rotateZ(-2deg);
+      align-items: left;
+      justify-content: center;
+      padding: 0 20px;
+      background-color: rgba(66, 65, 65, 0.274);
+      border-radius: 10px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.3);
+      transition: opacity 0.3s ease;
+      padding-top: 35px;
+      opacity: 0;
+      pointer-events: none;
+    }
 
     /* ── pointer-lock overlay ── */
     #lockOverlay {
@@ -731,7 +774,7 @@
       box-shadow: 0 0 20px rgba(0,0,0,0.5);
       backdrop-filter: blur(14px);
       overflow: hidden;
-      z-index: 200;
+      z-index: 1001;
     }
 
   
@@ -900,7 +943,7 @@
       box-shadow: 0 0 20px rgba(0,0,0,0.5);
       backdrop-filter: blur(14px);
       overflow: hidden;
-      z-index: 200;
+      z-index: 1001;
     }
 
     /* chat header — shows who you're talking to */
@@ -1466,6 +1509,7 @@
                 <div class="settings-row"><span>jump</span>     <kbd id="jump" onclick="rebind('jump', this)">space</kbd></div>
                 <div class="settings-row"><span>grapple</span>  <kbd id="grapple" onclick="rebind('grapple', this)">F</kbd></div>
                 <div class="settings-row"><span>bomb</span>     <kbd id="bomb" onclick="rebind('bomb', this)">Q</kbd></div>
+                <div class="settings-row"><span>parry</span>    <kbd id="parry" onclick="rebind('parry', this)">E</kbd></div>
               </div>
             </div>
 
@@ -1532,11 +1576,28 @@
       wasd &nbsp;move<br>
       space &nbsp;jump<br>
       f &nbsp;&nbsp;&nbsp;&nbsp;grapple<br>
-      q &nbsp;&nbsp;&nbsp;&nbsp;bomb
+      q &nbsp;&nbsp;&nbsp;&nbsp;bomb<br>
+      e &nbsp;&nbsp;&nbsp;&nbsp;parry
     </div>
     <div id="bombCooldown">
       <label>bomb [q]</label>
       <div id="bombReady">ready</div>
+    </div>
+    <div id="parryCooldown">
+      <label>parry [e]</label>
+      <div id="parryReady">ready</div>
+    </div>
+    <div class='inGameNotifications'>
+      <div class="gamemode-bar">
+        <div class="controls mini">
+          <span class="control close"></span>
+          <span class="control none"></span>
+          <span class="control none"></span>
+        </div>
+        <div class='menu-title'>Notifications</div>
+      </div> 
+      <div class='notificationContent'>
+      </div>
     </div>
   </div>
 

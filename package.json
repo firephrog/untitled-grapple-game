@@ -7,7 +7,8 @@
     "start": "node server.js",
     "dev": "nodemon server.js",
     "build": "cd client && npm run build",
-    "dev:client": "cd client && npm run dev"
+    "dev:client": "cd client && npm run dev",
+    "test": "npm run build && node server.js"
   },
   "dependencies": {
     "@colyseus/schema": "^2.0.0",

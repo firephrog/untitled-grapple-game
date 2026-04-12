@@ -22,6 +22,7 @@ const { PhysicsWorld, RAPIER_READY }        = require('../game/PhysicsWorld');
 const { applyMovement }  = require('../game/PlayerController');
 const { GrappleSystem }  = require('../game/GrappleSystem');
 const { BombSystem }     = require('../game/BombSystem');
+const ParrySystem        = require('../game/ParrySystem');
 const { MAP_LIST, getMap, resolveVotes } = require('../maps');
 const { getSkin, getGrapple }        = require('../skins');
 const CFG                = require('../config');
@@ -49,6 +50,7 @@ class BaseGameRoom extends Room {
     this._bodies   = new Map();   // sid → RAPIER.RigidBody
     this._grapples = new Map();   // sid → GrappleSystem
     this._grappleLastInput = new Map();  // sid → frame number of last grapple button press
+    this._parries  = new Map();   // sid → ParrySystem
 
     // Skin data fetched at join time: sid → { skinId, glb, scale, eyeOffset }
     this._skins    = new Map();
@@ -213,7 +215,7 @@ class BaseGameRoom extends Room {
     const map   = getMap(mapId);
 
     console.log(`[Room ${this.roomId}] Map resolved: ${mapId}`);
-    this.broadcast('mapChosen', { mapId: map.id, mapName: map.name });
+    this.broadcast('mapChosen', { mapId: map.id, mapName: map.name, skyColor: map.skyColor });
     this.clock.setTimeout(() => this._beginGame(map), 500);
   }
 
@@ -265,6 +267,7 @@ class BaseGameRoom extends Room {
       const body = this._physics.createPlayerBody(index);
       this._bodies.set(sid, body);
       this._grapples.set(sid, new GrappleSystem());
+      this._parries.set(sid, new ParrySystem());
     });
 
     // ── Send map load payload ──────────────────────────────────
@@ -290,6 +293,7 @@ class BaseGameRoom extends Room {
     this.onMessage('input',     (c, d) => this._handleInput(c, d));
     this.onMessage('grapple',   (c)    => this._handleGrapple(c));
     this.onMessage('spawnBomb', (c, d) => this._handleSpawnBomb(c, d));
+    this.onMessage('parry',     (c)    => this._handleParry(c));
 
     this.setSimulationInterval(() => this._tick(), 1000 / CFG.TICK_RATE);
     this._startGame();
@@ -369,6 +373,23 @@ class BaseGameRoom extends Room {
   _handleSpawnBomb(client, data) {
     const id = this._bombs.spawn(data.position, data.impulse, client.sessionId);
     this.state.bombs.set(id, new BombState(id));
+  }
+
+  _handleParry(client) {
+    const sid = client.sessionId;
+    const parry = this._parries.get(sid);
+    if (!parry) return;
+    
+    // Try to activate the parry
+    const activated = parry.activate();
+    
+    if (activated) {
+      // Parry was successfully activated, send notification to the player
+      client.send('parryActivated', {
+        success: true,
+        message: 'parry ready'
+      });
+    }
   }
 
   _handleRematch(client, data) {
@@ -545,6 +566,21 @@ class BaseGameRoom extends Room {
     for (const { sid, damage } of hits) {
       const ps = this.state.players.get(sid);
       if (!ps) continue;
+
+      // Check if the target player has an active parry
+      const parry = this._parries.get(sid);
+      if (parry && parry.isAttackBlocked()) {
+        // Parry blocked the attack!
+        parry.deactivate();
+        
+        // Find the client and send notification
+        const targetClient = this.clients.find(c => c.sessionId === sid);
+        if (targetClient) {
+          targetClient.send('parrySuccess', { message: 'parry blocked' });
+        }
+        continue;  // Skip damage application
+      }
+
       ps.health = Math.max(0, ps.health - damage);
       this.broadcast('playerHit', { playerId: sid, damage, by: ownerId });
       if (ps.health <= 0) {

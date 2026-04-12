@@ -68,4 +68,8 @@ module.exports = {
   DAMAGE_RADIUS:   25,           // units to take damage
   BOMB_DAMAGE:     40,          // HP per hit (4 hits = dead)
 
+  // ── Parry ──────────────────────────────────────────────────
+  PARRY_WINDOW_MS:    1000,      // 0.175s window to block attacks
+  PARRY_COOLDOWN_MS:  2000,     // 2s cooldown after parry
+
 };

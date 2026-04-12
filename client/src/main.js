@@ -321,7 +321,7 @@ renderer.shadowMap.resolution = 512;  // Reduced from default 2048
 
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping      = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.0;
+renderer.toneMappingExposure = 1;
 
 // Style the game canvas: hidden initially, z-index below menus
 renderer.domElement.id = 'gameCanvas';
@@ -339,7 +339,9 @@ dirLight.shadow.mapSize.width = 512;
 dirLight.shadow.mapSize.height = 512;
 dirLight.shadow.camera.far = 100;
 scene.add(dirLight);
-scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+const defaultAmbientLight = new THREE.AmbientLight(0xffffff, 0.5);
+scene.add(defaultAmbientLight);
+const DEFAULT_LIGHTS = [dirLight, defaultAmbientLight];  // Reference to default lights
 
 const floor = new THREE.Mesh(
   new THREE.PlaneGeometry(100, 100),
@@ -998,6 +1000,56 @@ function updateNotificationsDisplay() {
   // Container will be updated by addNotification
 }
 
+/**
+ * Add an in-game notification (appears during gameplay)
+ * @param {string} message - The notification message
+ * @param {number} duration - How long to show (ms), default 3000
+ */
+function addInGameNotification(message, duration = 3000) {
+  const container = document.querySelector('.inGameNotifications .notificationContent');
+  if (!container) {
+    console.warn('[addInGameNotification] Container not found');
+    return;
+  }
+
+  const notifId = `ingame-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const notifEl = document.createElement('div');
+  notifEl.id = notifId;
+  notifEl.style.cssText = 'padding:8px 10px; margin:4px 0; background:rgba(0,255,136,0.2); border-left:3px solid #ffe600; color:#00ff88; word-break:break-word; font-size: 12px; animation: slideIn 0.3s ease-out;';
+  notifEl.textContent = message;
+  
+  container.insertAdjacentElement('afterbegin', notifEl);
+  
+  // Show the notifications container if it was hidden
+  const notificationsDiv = document.querySelector('.inGameNotifications');
+  if (notificationsDiv) {
+    notificationsDiv.style.opacity = '1';
+    notificationsDiv.style.pointerEvents = 'auto';
+  }
+
+  // Auto-remove after duration
+  setTimeout(() => {
+    const el = document.getElementById(notifId);
+    if (el) el.remove();
+    
+    // Hide container if no more notifications
+    if (container.children.length === 0 || container.querySelectorAll('[id^="ingame-"]').length === 0) {
+      setTimeout(() => {
+        if (container.querySelectorAll('[id^="ingame-"]').length === 0 && notificationsDiv) {
+          notificationsDiv.style.opacity = '0';
+          notificationsDiv.style.pointerEvents = 'none';
+        }
+      }, 1000);  // Wait 1s after all notifications are gone before hiding
+    }
+  }, duration);
+}
+
+function updateNotificationsDisplay() {
+  const container = document.querySelector('.notificationContent');
+  if (!container) return;
+  // Container will be updated by addNotification
+}
+
 // load skin cards
 
 async function forEachUnlockedSkin(skinCallback, grappleCallback) {
@@ -1387,9 +1439,45 @@ async function loadMapGLB(glbPath) {
     currentMapRoot = null;
   }
 
+  // Remove lights from previous map
+  currentMapLights.forEach(light => scene.remove(light));
+  currentMapLights = [];
+
   try {
     const gltf = await gltfLoader.loadAsync(glbPath);
     currentMapRoot = gltf.scene;
+
+    // Extract and add lights from the GLB file
+    let foundLights = false;
+    currentMapRoot.traverse(obj => {
+      if (obj.isLight) {
+        // Clone the light to avoid issues with scene hierarchy
+        const clonedLight = obj.clone();
+        scene.add(clonedLight);
+        currentMapLights.push(clonedLight);
+        foundLights = true;
+        console.log(`[LoadMap] Found light in GLB: ${obj.type} at position`, obj.position);
+      }
+    });
+
+    // If no lights found in GLB, ensure default lights are visible
+    if (!foundLights) {
+      dirLight.visible = true;
+      defaultAmbientLight.visible = true;
+      defaultAmbientLight.intensity = 0.5;  // Reset to full intensity
+      DEFAULT_LIGHTS.forEach(light => {
+        if (!scene.children.includes(light)) {
+          scene.add(light);
+        }
+      });
+      console.log('[LoadMap] No lights found in GLB, using default lights');
+    } else {
+      // Hide directional light when using map lights, but keep ambient light darker
+      dirLight.visible = false;
+      defaultAmbientLight.visible = true;
+      defaultAmbientLight.intensity = 0.2;  // Darker ambient for fill light
+      console.log('[LoadMap] Using map lights with reduced ambient fill');
+    }
 
     // Enable shadows on every mesh in the loaded scene
     currentMapRoot.traverse(obj => {
@@ -1406,6 +1494,8 @@ async function loadMapGLB(glbPath) {
 
   } catch (err) {
     console.error(`[Client] Failed to load map GLB: ${glbPath}`, err);
+    // On error, ensure default lights are visible
+    DEFAULT_LIGHTS.forEach(light => light.visible = true);
   }
 }
 
@@ -1545,6 +1635,7 @@ const controls    = new PointerLockControls(camera, renderer.domElement);
 const keys        = { w:false, a:false, s:false, d:false, space:false };
 let   seq         = 0;
 let   lastSpawn   = 0;
+let   lastParry   = 0;
 let   spacePressed = false;    // Track if space was just pressed this frame
 let   prevSpaceState = false;  // Track space state from previous frame
 
@@ -1562,6 +1653,15 @@ document.addEventListener('keydown', e => {
   if (e.code === window.keybinds.bomb && gameStarted && room) {
     const now = performance.now();
     if (now - lastSpawn >= 3000) { shootBomb(); lastSpawn = now; }
+  }
+
+  if (e.code === window.keybinds.parry && gameStarted && room) {
+    const now = performance.now();
+    if (now - lastParry >= 2000) {
+      room.send('parry');
+      startParryCooldown();
+      lastParry = now;
+    }
   }
 });
 document.addEventListener('keyup', e => {
@@ -1608,6 +1708,26 @@ function shootBomb() {
   }
 }
 
+function startParryCooldown() {
+  // Cooldown indicator
+  const readyEl = document.getElementById('parryReady');
+  if (readyEl) {
+    readyEl.textContent = 'cooldown';
+    readyEl.style.color = '#555';
+    let remaining = 2;
+    const countdown = setInterval(() => {
+      remaining--;
+      if (remaining <= 0) {
+        clearInterval(countdown);
+        readyEl.textContent = 'ready';
+        readyEl.style.color = '#6699ff';
+      } else {
+        readyEl.textContent = remaining + 's';
+      }
+    }, 1000);
+  }
+}
+
 // ── Colyseus room setup ───────────────────────────────────
 async function setupRoom(r) {
   room = r;
@@ -1647,11 +1767,15 @@ async function setupRoom(r) {
     });
   });
 
-  room.onMessage('mapChosen', ({ mapId, mapName }) => {
+  room.onMessage('mapChosen', ({ mapId, mapName, skyColor }) => {
     hideMapVotePicker();
     // Show lobby while map loads
     const title = document.getElementById('waitingTitle');
     if (title) title.textContent = `loading ${mapName}...`;
+    // Apply map sky color to the renderer
+    if (skyColor) {
+      scene.background = new THREE.Color(skyColor);
+    }
     showWaiting();
   });
 
@@ -1732,6 +1856,10 @@ async function setupRoom(r) {
       renderer.domElement.style.outline = '5px solid red';
       setTimeout(() => { renderer.domElement.style.outline = ''; }, 200);
     }
+  });
+
+  room.onMessage('parrySuccess', (data) => {
+    addInGameNotification('+ PARRY', 3000); //ultrakill reference?
   });
 
   room.onMessage('gameEnd', async (data) => {
@@ -2146,6 +2274,37 @@ function animate() {
   renderer.render(scene, camera);
 }
 animate();
+
+// ── DEBUG: Console functions for development ────────────────────────────────
+window.getPlayerPos = function() {
+  if (!cBody) {
+    console.log('Player body not initialized');
+    return null;
+  }
+  const pos = cBody.translation();
+  console.log(`Player Position: x=${pos.x.toFixed(2)}, y=${pos.y.toFixed(2)}, z=${pos.z.toFixed(2)}`);
+  console.table({
+    x: pos.x.toFixed(4),
+    y: pos.y.toFixed(4),
+    z: pos.z.toFixed(4)
+  });
+  return { x: pos.x, y: pos.y, z: pos.z };
+};
+
+window.getPlayerVel = function() {
+  if (!cBody) {
+    console.log('Player body not initialized');
+    return null;
+  }
+  const vel = cBody.linvel();
+  console.log(`Player Velocity: x=${vel.x.toFixed(2)}, y=${vel.y.toFixed(2)}, z=${vel.z.toFixed(2)}`);
+  console.table({
+    x: vel.x.toFixed(4),
+    y: vel.y.toFixed(4),
+    z: vel.z.toFixed(4)
+  });
+  return { x: vel.x, y: vel.y, z: vel.z };
+};
 
 // ── Resize ────────────────────────────────────────────────────
 window.addEventListener('resize', () => {

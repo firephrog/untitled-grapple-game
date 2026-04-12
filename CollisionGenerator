@@ -1,0 +1,44 @@
+import bpy
+import json
+import os
+import bmesh
+
+# -- CONFIG --
+OUTPUT_PATH = r"C:\Users\Owner\OneDrive\Desktop\UGG (RECODE)\client\static\maps\orbit.collision.json"
+
+# Get the ACTIVE selected object instead of searching by name
+obj = bpy.context.active_object
+
+if obj is None or obj.type != 'MESH':
+    print("ERROR: You must select a MESH object in the viewport first!")
+else:
+    print(f"Exporting selected object: {obj.name}")
+    
+    # --- PROCEED WITH EXPORT ---
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    obj_eval = obj.evaluated_get(depsgraph)
+    mesh_data = obj_eval.to_mesh()
+
+    bm = bmesh.new()
+    bm.from_mesh(mesh_data)
+    bmesh.ops.triangulate(bm, faces=bm.faces)
+    bm.to_mesh(mesh_data)
+    bm.free()
+
+    # World-space + Axis Swap (Y-forward to Z-forward)
+    matrix = obj.matrix_world
+    vertices = []
+    for v in mesh_data.vertices:
+        p = matrix @ v.co
+        vertices.extend([round(p.x, 4), round(p.z, 4), round(-p.y, 4)])
+
+    indices = []
+    for poly in mesh_data.polygons:
+        indices.extend(poly.vertices)
+
+    # Save
+    with open(OUTPUT_PATH, 'w', encoding='utf-8') as f:
+        json.dump({"vertices": vertices, "indices": indices}, f)
+
+    obj_eval.to_mesh_clear()
+    print(f"DONE! Exported {obj.name} to {OUTPUT_PATH}")
