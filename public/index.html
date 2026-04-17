@@ -12,6 +12,7 @@
       grapple:  'KeyF',
       bomb:     'KeyQ',
       parry:    'KeyE',
+      gear:     'KeyG',
     };
     window.gameSettings = {
     graphics: {
@@ -34,7 +35,8 @@
 
   </script>
 
-  <!-- main script -->
+  <!-- main script -->
+
   
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>untitled grapple game</title>
@@ -524,6 +526,19 @@
     }
     #parryCooldown label { font-size: 10px; color: #888; letter-spacing: 1px; }
     #parryReady { font-size: 13px; color: #6699ff; }
+
+    #gearCooldown {
+      position: absolute;
+      bottom: 80px;
+      right: 50%;
+      transform: translateX(120%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+    }
+    #gearCooldown label { font-size: 10px; color: #888; letter-spacing: 1px; }
+    #gearReady { font-size: 13px; color: #ffcc00; }
 
     @keyframes slideIn {
       from {
@@ -1110,10 +1125,13 @@
     .gear {
       position: absolute;
       display: flex;
+      flex-direction: column;
       height: 200px;
       width: 35vw;
       left: 35vw;
       top: 9vh;
+      padding-bottom: 0 !important;
+      overflow: visible;
     }
     .prefixes {
       position: absolute;
@@ -1195,11 +1213,89 @@
       max-height: 200px;
     }
 
+    /* ──── GEAR CARDS ──── */
+    .gear-cards-container {
+      display: flex;
+      width: 100%;
+      height: calc(100% - 35px);
+      overflow-x: auto;
+      overflow-y: hidden;
+      gap: 12px;
+      padding: 12px;
+      box-sizing: border-box;
+      align-items: center;
+      position: static;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,0.1) transparent;
+    }
+    .gear-cards-container::-webkit-scrollbar { height: 4px; }
+    .gear-cards-container::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+
+    .gear-card {
+      flex-shrink: 0;
+      width: 120px;
+      height: 120px;
+      border-radius: 10px;
+      border: 2px solid rgba(168, 173, 168, 1);
+      background: linear-gradient(to left, rgba(0,0,0,0.7), transparent), 
+                  url("https://upload.wikimedia.org/wikipedia/commons/4/4d/Cheeseburger.jpg") center/cover;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      box-sizing: border-box;
+    }
+
+    .gear-card:hover {
+      width: 280px;
+      border-color: #00ff88;
+      background: linear-gradient(to left, rgba(0,0,0,0.9), rgba(0,0,0,0.4)), 
+                  url("https://upload.wikimedia.org/wikipedia/commons/4/4d/Cheeseburger.jpg") center/cover;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.6), 0 0 20px rgba(0,255,136,0.2);
+    }
+
+    .gear-card.selected {
+      border-color: #00ff88;
+      background: linear-gradient(to left, rgba(0,0,0,0.7), rgba(0,0,0,0.2)), 
+                  url("https://upload.wikimedia.org/wikipedia/commons/4/4d/Cheeseburger.jpg") center/cover;
+    }
+
+    .gear-card-header {
+      font-size: 12px;
+      font-weight: 600;
+      color: #fff;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 4px;
+    }
+
+    .gear-card-info {
+      display: none;
+      font-size: 11px;
+      color: #aaa;
+      line-height: 1.4;
+      flex: 1;
+    }
+
+    .gear-card:hover .gear-card-info {
+      display: block;
+    }
+
+    .gear-card-footer {
+      font-size: 10px;
+      color: #666;
+      text-align: right;
+      margin-top: auto;
+    }
 
 
 
-  </style>
-  <script type="module" crossorigin src="/assets/index-Cr65uOZC.js"></script>
+
+  </style>
+  <script type="module" crossorigin src="/assets/index-DkIEJTWD.js"></script>
 </head>
 <body>
 
@@ -1215,7 +1311,7 @@
         <div class="menu-title">untitled grapple game</div>
       </div>
       <h1 style="margin-top:20px;">Untitled Grapple Game</h1>
-      <p>burgerburgerburger</p>
+      <p>Game is currently in beta.</p><a href="https://docs.google.com/document/d/18rTX_194Jc21O8MDj4kgio8gefnRahk4MGs96-RYTbo/edit?usp=sharing" target="_blank">Refer to this document for changelog</a>
       <div class='playGamemodes' style="margin-top:20px;">
 
         <!-- 1v1 card -->
@@ -1577,7 +1673,8 @@
       space &nbsp;jump<br>
       f &nbsp;&nbsp;&nbsp;&nbsp;grapple<br>
       q &nbsp;&nbsp;&nbsp;&nbsp;bomb<br>
-      e &nbsp;&nbsp;&nbsp;&nbsp;parry
+      e &nbsp;&nbsp;&nbsp;&nbsp;parry<br>
+      g &nbsp;&nbsp;&nbsp;&nbsp;gear
     </div>
     <div id="bombCooldown">
       <label>bomb [q]</label>
@@ -1586,6 +1683,10 @@
     <div id="parryCooldown">
       <label>parry [e]</label>
       <div id="parryReady">ready</div>
+    </div>
+    <div id="gearCooldown">
+      <label>gear [g]</label>
+      <div id="gearReady">ready</div>
     </div>
     <div class='inGameNotifications'>
       <div class="gamemode-bar">
@@ -1668,6 +1769,7 @@
         </div>
         <div class="menu-title">Gear</div>
       </div>
+      <div class="gear-cards-container" id="gearCardsContainer"></div>
     </div>
     <div class="MainUI prefixes" style="padding-bottom: 0; overflow: clip;">
       <div class="title-bar">
@@ -1938,6 +2040,70 @@
     //moved to main
 
     loadSettings();
+
+    // ── GEAR SYSTEM ──────────────────────────────────────────
+
+    function createGearCard(gear) {
+      const card = document.createElement('div');
+      card.className = `gear-card${gear.equipped ? ' selected' : ''}`;
+      card.innerHTML = `
+        <div class="gear-card-header">${gear.name}</div>
+        <div class="gear-card-info">${gear.description}</div>
+        <div class="gear-card-footer">
+          <span style="color: ${{'common': '#888', 'rare': '#4488ff', 'epic': '#cc44ff', 'legendary': '#ffaa00'}[gear.rarity]}">${gear.rarity}</span>
+        </div>
+      `;
+      card.onclick = () => equipGear(gear.id, card);
+      
+      // Add scroll on hover for cards at the end
+      card.addEventListener('mouseenter', () => {
+        const container = card.parentElement;
+        const allCards = container.querySelectorAll('.gear-card');
+        const isLastCard = card === allCards[allCards.length - 1];
+        
+        if (isLastCard) {
+          // Scroll to show the expanded card (120px base + 160px expansion = 280px total)
+          const scrollAmount = (card.offsetLeft + 280) - container.clientWidth + 12;
+          container.scrollLeft = Math.max(0, scrollAmount);
+        }
+      });
+      
+      return card;
+    }
+
+    function equipGear(gearId, cardElement) {
+      // Remove previous selection
+      document.querySelectorAll('.gear-card').forEach(card => card.classList.remove('selected'));
+      // Add selection to clicked card
+      cardElement.classList.add('selected');
+      
+      // In production, send to server: POST /api/gear/equip with gearId
+      console.log('Equipped gear:', gearId);
+    }
+
+    function initializeGearCards() {
+      const container = document.getElementById('gearCardsContainer');
+      if (container) {
+        gearItems.forEach(gear => {
+          container.appendChild(createGearCard(gear));
+        });
+        
+        // Add horizontal scroll with mouse wheel
+        container.addEventListener('wheel', (e) => {
+          e.preventDefault();
+          container.scrollLeft += e.deltaY > 0 ? 50 : -50;
+        });
+      }
+    }
+
+    // Initialize gear cards when page loads
+    document.addEventListener('DOMContentLoaded', initializeGearCards);
+    // Also try immediate in case DOM is already ready
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initializeGearCards);
+    } else {
+      initializeGearCards();
+    }
 
   </script>
 </body>

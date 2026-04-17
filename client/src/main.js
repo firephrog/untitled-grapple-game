@@ -1630,12 +1630,73 @@ class Explosion {
   }
 }
 
+// ── Gear effects tracking ────────────────────────────────
+const activeGearEffects = new Map();  // shooterId → { model, shooterId, initialOffset, startTime, duration }
+
+function updateGearEffectPosition(effect) {
+  if (effect.shooterId === myId) {
+    // Local player: use camera position
+    let velocityOffset = { x: 0, y: 0, z: 0 };
+    if (cBody) {
+      const vel = cBody.linvel();
+      // Get camera forward direction
+      const cameraDir = new THREE.Vector3();
+      camera.getWorldDirection(cameraDir);
+      // Offset model back based on forward velocity (negative direction means back)
+      const forwardVel = vel.x * cameraDir.x + vel.y * cameraDir.y + vel.z * cameraDir.z;
+      const velocityScale = -0.05; // Model moves back when going forward
+      velocityOffset.x = cameraDir.x * forwardVel * velocityScale;
+      velocityOffset.y = cameraDir.y * forwardVel * velocityScale;
+      velocityOffset.z = cameraDir.z * forwardVel * velocityScale;
+    }
+    effect.model.position.set(
+      camera.position.x + effect.initialOffset.x + velocityOffset.x,
+      camera.position.y + effect.initialOffset.y + velocityOffset.y,
+      camera.position.z + effect.initialOffset.z + velocityOffset.z
+    );
+    effect.model.quaternion.copy(camera.quaternion);
+  } else {
+    // Opponent (or any other player): use networked state
+    const shooterState = room.state.players.get(effect.shooterId);
+    if (shooterState && shooterState.position) {
+      let velocityOffset = { x: 0, y: 0, z: 0 };
+      if (shooterState.velocity) {
+        // Get player look direction from mesh
+        const oppMesh = skinMgr.getRoot(effect.shooterId);
+        if (oppMesh) {
+          const lookDir = new THREE.Vector3(0, 0, 1).applyQuaternion(oppMesh.quaternion).normalize();
+          // Offset model back based on forward velocity
+          const forwardVel = shooterState.velocity.x * lookDir.x + shooterState.velocity.y * lookDir.y + shooterState.velocity.z * lookDir.z;
+          const velocityScale = -0.05;
+          velocityOffset.x = lookDir.x * forwardVel * velocityScale;
+          velocityOffset.y = lookDir.y * forwardVel * velocityScale;
+          velocityOffset.z = lookDir.z * forwardVel * velocityScale;
+        }
+      }
+      effect.model.position.set(
+        shooterState.position.x + effect.initialOffset.x + velocityOffset.x,
+        shooterState.position.y + effect.initialOffset.y + velocityOffset.y,
+        shooterState.position.z + effect.initialOffset.z + velocityOffset.z
+      );
+      const oppMesh = skinMgr.getRoot(effect.shooterId);
+      if (oppMesh) {
+        effect.model.quaternion.copy(oppMesh.quaternion);
+        // Re-apply 180 degree yaw rotation for sniper
+        const yawRotation = new THREE.Quaternion();
+        yawRotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+        effect.model.quaternion.multiplyQuaternions(effect.model.quaternion, yawRotation);
+      }
+    }
+  }
+}
+
 // ── Input ─────────────────────────────────────────────────
 const controls    = new PointerLockControls(camera, renderer.domElement);
 const keys        = { w:false, a:false, s:false, d:false, space:false };
 let   seq         = 0;
 let   lastSpawn   = 0;
 let   lastParry   = 0;
+let   lastGear    = 0;
 let   spacePressed = false;    // Track if space was just pressed this frame
 let   prevSpaceState = false;  // Track space state from previous frame
 
@@ -1661,6 +1722,14 @@ document.addEventListener('keydown', e => {
       room.send('parry');
       startParryCooldown();
       lastParry = now;
+    }
+  }
+
+  if (e.code === window.keybinds.gear && gameStarted && room) {
+    const now = performance.now();
+    if (now - lastGear >= 2500) {
+      useGear();
+      lastGear = now;
     }
   }
 });
@@ -1721,6 +1790,48 @@ function startParryCooldown() {
         clearInterval(countdown);
         readyEl.textContent = 'ready';
         readyEl.style.color = '#6699ff';
+      } else {
+        readyEl.textContent = remaining + 's';
+      }
+    }, 1000);
+  }
+}
+
+function useGear() {
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  
+  // Offset the sniper shot origin to the right, like a barrel
+  const right = new THREE.Vector3();
+  right.crossVectors(dir, camera.up).normalize();
+  
+  const pos = new THREE.Vector3();
+  pos.copy(camera.position)
+    .addScaledVector(dir, 0.5)
+    .addScaledVector(right, 0.5);
+  
+  room.send('useGear', {
+    gearName: 'sniper',
+    cameraPos: { x: pos.x, y: pos.y, z: pos.z },
+    cameraDir: { x: dir.x, y: dir.y, z: dir.z }
+  });
+
+  startGearCooldown();
+}
+
+function startGearCooldown() {
+  // Cooldown indicator
+  const readyEl = document.getElementById('gearReady');
+  if (readyEl) {
+    readyEl.textContent = 'cooldown';
+    readyEl.style.color = '#555';
+    let remaining = 2;
+    const countdown = setInterval(() => {
+      remaining--;
+      if (remaining <= 0) {
+        clearInterval(countdown);
+        readyEl.textContent = 'ready';
+        readyEl.style.color = '#ffcc00';
       } else {
         readyEl.textContent = remaining + 's';
       }
@@ -1849,12 +1960,215 @@ async function setupRoom(r) {
     const el    = document.getElementById(numId);
     const fill  = document.getElementById(barId);
     if (!el) return;
-    const newHP = Math.max(0, parseInt(el.textContent) - data.damage);
+    // Use server's current health value from the message
+    const newHP = data.currentHealth !== undefined ? data.currentHealth : Math.max(0, parseInt(el.textContent) - data.damage);
     el.textContent = newHP;
     if (fill) fill.style.width = newHP + '%';
     if (isMe) {
       renderer.domElement.style.outline = '5px solid red';
       setTimeout(() => { renderer.domElement.style.outline = ''; }, 200);
+    }
+  });
+
+  room.onMessage('sniperLine', (data) => {
+    const start = new THREE.Vector3(data.start.x, data.start.y, data.start.z);
+    const end = new THREE.Vector3(data.end.x, data.end.y, data.end.z);
+    
+    // Cylinder parameters (similar to grapple rope)
+    const SNIPER_RADIUS = 0.08;
+    const SNIPER_SEGMENTS = 3;
+    const distance = start.distanceTo(end);
+    
+    // Create cylinder geometry (height = 1, will be scaled)
+    const geometry = new THREE.CylinderGeometry(SNIPER_RADIUS, SNIPER_RADIUS, distance, SNIPER_SEGMENTS);
+    const material = new THREE.MeshBasicMaterial({ color: 0xff6600, depthWrite: true, transparent: true, opacity: 1.0 });
+    const mesh = new THREE.Mesh(geometry, material);
+    
+    // Position and orient the cylinder
+    const midpoint = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
+    mesh.position.copy(midpoint);
+    
+    const direction = new THREE.Vector3().subVectors(end, start).normalize();
+    const up = new THREE.Vector3(0, 1, 0);
+    const quaternion = new THREE.Quaternion();
+    const axis = new THREE.Vector3().crossVectors(up, direction).normalize();
+    
+    if (axis.length() > 0.001) {
+      const angle = Math.acos(Math.max(-1, Math.min(1, up.dot(direction))));
+      quaternion.setFromAxisAngle(axis, angle);
+    }
+    mesh.quaternion.copy(quaternion);
+    
+    scene.add(mesh);
+    
+    // Add end caps (spheres)
+    const capGeo = new THREE.SphereGeometry(SNIPER_RADIUS * 1.2, 8, 8);
+    const capMat = new THREE.MeshBasicMaterial({ color: 0xff6600, transparent: true, opacity: 1.0 });
+    
+    const startCap = new THREE.Mesh(capGeo, capMat.clone());
+    startCap.position.copy(start);
+    scene.add(startCap);
+    
+    const endCap = new THREE.Mesh(capGeo, capMat.clone());
+    endCap.position.copy(end);
+    scene.add(endCap);
+    
+    // Fade out and remove after duration
+    const startTime = Date.now();
+    const duration = data.duration || 3000;
+    const fadeInterval = setInterval(() => {
+      const elapsed = Date.now() - startTime;
+      const alpha = Math.max(0, 1 - (elapsed / duration));
+      material.opacity = alpha;
+      capMat.opacity = alpha;
+      if (capMat.clone().opacity <= 0) {
+        clearInterval(fadeInterval);
+        scene.remove(mesh);
+        scene.remove(startCap);
+        scene.remove(endCap);
+        geometry.dispose();
+        capGeo.dispose();
+        material.dispose();
+      }
+    }, 16);
+  });
+
+  room.onMessage('gearEffect', (data) => {
+    const { gearName, shooterId, position, rotation, duration } = data;
+    console.log('[gearEffect] Received:', { gearName, shooterId, duration });
+    
+    // Create procedural sniper rifle model (fallback if GLB fails)
+    function createSniperModel() {
+      const group = new THREE.Group();
+      
+      // Barrel (long cylinder)
+      const barrelGeo = new THREE.CylinderGeometry(0.08, 0.08, 2.0, 16);
+      const barrelMat = new THREE.MeshStandardMaterial({ color: 0x333333, metalness: 0.8, roughness: 0.2 });
+      const barrel = new THREE.Mesh(barrelGeo, barrelMat);
+      barrel.rotation.z = Math.PI / 2;
+      barrel.position.set(1.0, 0, 0);
+      group.add(barrel);
+      
+      // Scope (box on top)
+      const scopeGeo = new THREE.BoxGeometry(0.15, 0.15, 0.8);
+      const scopeMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, metalness: 0.9, roughness: 0.1 });
+      const scope = new THREE.Mesh(scopeGeo, scopeMat);
+      scope.position.set(0.5, 0.3, 0);
+      group.add(scope);
+      
+      // Stock (rectangular prism at back)
+      const stockGeo = new THREE.BoxGeometry(0.25, 0.25, 0.8);
+      const stockMat = new THREE.MeshStandardMaterial({ color: 0x663300, metalness: 0.3, roughness: 0.6 });
+      const stock = new THREE.Mesh(stockGeo, stockMat);
+      stock.position.set(-0.6, 0, 0);
+      group.add(stock);
+      
+      // Trigger area (small detail)
+      const triggerGeo = new THREE.BoxGeometry(0.1, 0.15, 0.05);
+      const triggerMat = new THREE.MeshStandardMaterial({ color: 0x444444, metalness: 0.6 });
+      const trigger = new THREE.Mesh(triggerGeo, triggerMat);
+      trigger.position.set(-0.1, -0.15, 0);
+      group.add(trigger);
+      
+      return group;
+    }
+    
+    let model = null;
+    
+    // Ensure duration has a sensible default
+    const effectDuration = duration || 3000;
+    
+    // Try to load GLB file, fall back to procedural model
+    const gearGlbPath = {
+      'sniper': '/gear/sniper.glb',
+    }[gearName] || '/gear/sniper.glb';
+    
+    const gltfLoader = new GLTFLoader();
+    gltfLoader.load(
+      gearGlbPath,
+      (gltf) => {
+        // GLB loaded successfully
+        model = gltf.scene;
+        model.position.set(position.x, position.y, position.z);
+        
+        // Apply rotation
+        const dir = new THREE.Vector3(rotation.x, rotation.y, rotation.z).normalize();
+        const up = new THREE.Vector3(0, 1, 0);
+        const right = new THREE.Vector3().crossVectors(up, dir).normalize();
+        const newUp = new THREE.Vector3().crossVectors(dir, right).normalize();
+        
+        const matrix = new THREE.Matrix4();
+        matrix.makeBasis(right, newUp, dir);
+        model.quaternion.setFromRotationMatrix(matrix);
+        
+        // Rotate sniper 180 degrees yaw
+        const yawRotation = new THREE.Quaternion();
+        yawRotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+        model.quaternion.multiplyQuaternions(model.quaternion, yawRotation);
+        
+        scene.add(model);
+        console.log('[gearEffect] GLB loaded, starting animation with duration:', effectDuration);
+        setupGearEffectAnimation(model, shooterId, position, effectDuration);
+      },
+      undefined,
+      (error) => {
+        // GLB failed, use procedural model
+        console.warn(`[gearEffect] Failed to load ${gearGlbPath}, using procedural model:`, error);
+        model = createSniperModel();
+        model.position.set(position.x, position.y, position.z);
+        
+        // Apply rotation
+        const dir = new THREE.Vector3(rotation.x, rotation.y, rotation.z).normalize();
+        const up = new THREE.Vector3(0, 1, 0);
+        const right = new THREE.Vector3().crossVectors(up, dir).normalize();
+        const newUp = new THREE.Vector3().crossVectors(dir, right).normalize();
+        
+        const matrix = new THREE.Matrix4();
+        matrix.makeBasis(right, newUp, dir);
+        model.quaternion.setFromRotationMatrix(matrix);
+        
+        // Rotate sniper 180 degrees yaw
+        const yawRotation = new THREE.Quaternion();
+        yawRotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+        model.quaternion.multiplyQuaternions(model.quaternion, yawRotation);
+        
+        scene.add(model);
+        console.log('[gearEffect] Procedural model created, starting animation with duration:', effectDuration);
+        setupGearEffectAnimation(model, shooterId, position, effectDuration);
+      }
+    );
+    
+    function setupGearEffectAnimation(model, shooterId, position, duration) {
+      // Ensure we have a valid duration
+      const finalDuration = Math.max(duration || 3000, 3000);
+      
+      const startTime = Date.now();
+      
+      // Calculate initial offset from shooter's position
+      let initialOffset = new THREE.Vector3();
+      const shooterStateAtStart = room.state.players.get(shooterId);
+      
+      if (shooterStateAtStart && shooterStateAtStart.position) {
+        initialOffset.set(
+          position.x - shooterStateAtStart.position.x,
+          position.y - shooterStateAtStart.position.y,
+          position.z - shooterStateAtStart.position.z
+        );
+      }
+      
+      // Register this effect for frame-by-frame updates
+      const effect = { model, shooterId, initialOffset, startTime, duration: finalDuration };
+      activeGearEffects.set(shooterId, effect);
+      
+      // Handle cleanup after duration
+      const cleanupTimeout = setTimeout(() => {
+        activeGearEffects.delete(shooterId);
+        scene.remove(model);
+        model.traverse((child) => {
+          if (child.geometry) child.geometry.dispose();
+          if (child.material) child.material.dispose();
+        });
+      }, finalDuration);
     }
   });
 
@@ -2199,6 +2513,23 @@ function animate() {
     camera.position.set(p.x, p.y + eyeOff, p.z);
 
     updateBarrelPos();
+
+    // ── Update active gear effects (snipers) ──────────────────
+    for (const effect of activeGearEffects.values()) {
+      const elapsed = Date.now() - effect.startTime;
+      const progress = elapsed / effect.duration;
+      const alpha = Math.max(0, 1 - progress);
+      
+      updateGearEffectPosition(effect);
+      
+      // Update opacity
+      effect.model.traverse((child) => {
+        if (child.material) {
+          child.material.transparent = true;
+          child.material.opacity = alpha;
+        }
+      });
+    }
 
     // ── HUD: speed ────────────────────────────────────────────
     const v   = cBody.linvel();

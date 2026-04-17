@@ -69,7 +69,10 @@ module.exports = {
   BOMB_DAMAGE:     40,          // HP per hit (4 hits = dead)
 
   // ── Parry ──────────────────────────────────────────────────
-  PARRY_WINDOW_MS:    1000,      // 0.175s window to block attacks
+  PARRY_WINDOW_MS:    500,      // 0.175s window to block attacks
   PARRY_COOLDOWN_MS:  2000,     // 2s cooldown after parry
+
+  // ── Gear (weapons) ─────────────────────────────────────────
+  SNIPER_COOLDOWN_MS: 25000,      // 25s cooldown after using sniper
 
 };

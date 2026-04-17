@@ -22,6 +22,7 @@ const { PhysicsWorld, RAPIER_READY }        = require('../game/PhysicsWorld');
 const { applyMovement }  = require('../game/PlayerController');
 const { GrappleSystem }  = require('../game/GrappleSystem');
 const { BombSystem }     = require('../game/BombSystem');
+const { GearSystem }     = require('../game/GearSystem');
 const ParrySystem        = require('../game/ParrySystem');
 const { MAP_LIST, getMap, resolveVotes } = require('../maps');
 const { getSkin, getGrapple }        = require('../skins');
@@ -262,6 +263,13 @@ class BaseGameRoom extends Room {
       this._handleExplosion(id, pos, ownerId);
     });
 
+    this._gear = new GearSystem(
+      this._physics,
+      (shooterId, targetId, damage) => this._handleSnipeHit(shooterId, targetId, damage),
+      (line) => this._broadcastLine(line),
+      (effect) => this._broadcastGearEffect(effect)
+    );
+
     const sessions = this.clients.map(c => c.sessionId);
     sessions.forEach((sid, index) => {
       const body = this._physics.createPlayerBody(index);
@@ -294,6 +302,7 @@ class BaseGameRoom extends Room {
     this.onMessage('grapple',   (c)    => this._handleGrapple(c));
     this.onMessage('spawnBomb', (c, d) => this._handleSpawnBomb(c, d));
     this.onMessage('parry',     (c)    => this._handleParry(c));
+    this.onMessage('useGear',   (c, d) => this._handleUseGear(c, d));
 
     this.setSimulationInterval(() => this._tick(), 1000 / CFG.TICK_RATE);
     this._startGame();
@@ -390,6 +399,80 @@ class BaseGameRoom extends Room {
         message: 'parry ready'
       });
     }
+  }
+
+  _handleUseGear(client, data) {
+    const sid = client.sessionId;
+    const gearName = data.gearName || 'sniper';
+    const body = this._bodies.get(sid);
+    const pi = this._input.get(sid);
+    
+    if (!body || !pi) return;
+
+    // Currently only sniper is implemented
+    if (gearName === 'sniper') {
+      const playerEntries = [];
+      for (const [sessionId, playerBody] of this._bodies) {
+        playerEntries.push({ sid: sessionId, body: playerBody });
+      }
+
+      const result = this._gear.snipe(
+        body,
+        data.cameraPos,
+        data.cameraDir,
+        [],  // allBodies (not used in our simple raycast)
+        playerEntries,
+        sid
+      );
+
+      if (result.success) {
+        console.log(`[Sniper] ${sid} hit ${result.targetSid} for ${result.damage} damage`);
+      }
+    }
+  }
+
+  _handleSnipeHit(shooterId, targetId, damage) {
+    const ps = this.state.players.get(targetId);
+    if (!ps) return;
+    
+    ps.health = Math.max(0, ps.health - damage);
+    console.log(`[Damage] ${targetId} took ${damage} damage, health now ${ps.health}`);
+    
+    // Broadcast hit to all clients with current health
+    this.broadcast('playerHit', {
+      playerId: targetId,
+      damage: damage,
+      currentHealth: ps.health
+    });
+    
+    if (ps.health <= 0) {
+      this._endGame(shooterId, targetId);
+    }
+  }
+
+  _broadcastLine(line) {
+    // Broadcast the sniper line to all clients for rendering
+    this.broadcast('sniperLine', {
+      start: line.startPos,
+      end: line.endPos,
+      duration: line.duration,
+    });
+  }
+
+  _broadcastGearEffect(effect) {
+    // Broadcast gear preview effect to all clients for rendering
+    console.log('[_broadcastGearEffect] Broadcasting effect:', {
+      gearName: effect.gearName,
+      shooterId: effect.shooterId,
+      duration: effect.duration,
+    });
+    this.broadcast('gearEffect', {
+      gearName: effect.gearName,
+      shooterId: effect.shooterId,
+      position: effect.position,
+      rotation: effect.rotation,
+      duration: effect.duration,
+    });
   }
 
   _handleRematch(client, data) {
@@ -542,6 +625,17 @@ class BaseGameRoom extends Room {
 
     const detonated = this._bombs.tick();
     for (const id of detonated) this.state.bombs.delete(id);
+
+    // Execute gear logic and handle ready snipes
+    const readySnipes = this._gear.tick();
+    for (const pending of readySnipes) {
+      const shooterBody = this._bodies.get(pending.shooterId);
+      const shooterInput = this._input.get(pending.shooterId);
+      if (shooterBody && shooterInput) {
+        const pos = shooterBody.translation();
+        this._gear.executePendingSnipe(pending, pos, shooterInput.camDir);
+      }
+    }
 
     this._bombs.forEachLive((id, pos, rot) => {
       const bs = this.state.bombs.get(id);
