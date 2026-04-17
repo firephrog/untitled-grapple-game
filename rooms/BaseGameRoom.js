@@ -371,12 +371,15 @@ class BaseGameRoom extends Room {
     const grapple = this._grapples.get(sid);
     const body    = this._bodies.get(sid);
     const pi      = this._input.get(sid);
+    const skin    = this._skins.get(sid);
     if (!grapple || !body || !pi) return;
     
     // Record that we received grapple input on this frame
     this._grappleLastInput.set(sid, this._tickCount);
     
-    grapple.activate(body, pi.camDir);
+    // Pass the player's actual eye offset (defaults to 1.0 if not found)
+    const eyeOffset = skin?.eyeOffset || 1.0;
+    grapple.activate(body, pi.camDir, eyeOffset);
   }
 
   _handleSpawnBomb(client, data) {
@@ -406,6 +409,7 @@ class BaseGameRoom extends Room {
     const gearName = data.gearName || 'sniper';
     const body = this._bodies.get(sid);
     const pi = this._input.get(sid);
+    const skin = this._skins.get(sid);
     
     if (!body || !pi) return;
 
@@ -416,13 +420,16 @@ class BaseGameRoom extends Room {
         playerEntries.push({ sid: sessionId, body: playerBody });
       }
 
+      // Pass the player's actual eye offset (defaults to 1.0 if not found)
+      const eyeOffset = skin?.eyeOffset || 1.0;
       const result = this._gear.snipe(
         body,
         data.cameraPos,
         data.cameraDir,
         [],  // allBodies (not used in our simple raycast)
         playerEntries,
-        sid
+        sid,
+        eyeOffset
       );
 
       if (result.success) {
@@ -456,6 +463,7 @@ class BaseGameRoom extends Room {
       start: line.startPos,
       end: line.endPos,
       duration: line.duration,
+      direction: line.direction,  // Include direction for client-side offset
     });
   }
 
@@ -632,8 +640,7 @@ class BaseGameRoom extends Room {
       const shooterBody = this._bodies.get(pending.shooterId);
       const shooterInput = this._input.get(pending.shooterId);
       if (shooterBody && shooterInput) {
-        const pos = shooterBody.translation();
-        this._gear.executePendingSnipe(pending, pos, shooterInput.camDir);
+        this._gear.executePendingSnipe(pending, shooterBody, shooterInput);
       }
     }
 

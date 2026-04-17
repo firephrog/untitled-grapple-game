@@ -34,11 +34,12 @@ class GrappleSystem {
 
   // ── Public API ───────────────────────────────────────────────
 
-  activate(playerBody, camDir) {
+  activate(playerBody, camDir, eyeOffset = 1.0) {
     if (this.status === STATUS.IDLE) {
       const pos       = playerBody.translation();
       this.status     = STATUS.SHOOTING;
-      this.hookPos    = { x: pos.x, y: pos.y, z: pos.z };
+      // Start hook from eye level (player's aiming position), not body position
+      this.hookPos    = { x: pos.x, y: pos.y + eyeOffset, z: pos.z };
       this.direction  = { x: camDir.x, y: camDir.y, z: camDir.z };
       this.travelDist = 0;
     } else if (this.status === STATUS.STUCK) {

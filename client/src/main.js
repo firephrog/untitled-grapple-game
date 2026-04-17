@@ -1971,8 +1971,16 @@ async function setupRoom(r) {
   });
 
   room.onMessage('sniperLine', (data) => {
-    const start = new THREE.Vector3(data.start.x, data.start.y, data.start.z);
+    let start = new THREE.Vector3(data.start.x, data.start.y, data.start.z);
     const end = new THREE.Vector3(data.end.x, data.end.y, data.end.z);
+    
+    // Apply right offset to match server-side beam origin (like barrel offset)
+    if (data.direction) {
+      const dir = new THREE.Vector3(data.direction.x, data.direction.y, data.direction.z);
+      const up = new THREE.Vector3(0, 1, 0);
+      const right = new THREE.Vector3().crossVectors(dir, up).normalize();
+      start.addScaledVector(right, 0.5);  // 0.5 units to the right
+    }
     
     // Cylinder parameters (similar to grapple rope)
     const SNIPER_RADIUS = 0.08;

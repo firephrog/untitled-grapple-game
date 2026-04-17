@@ -30,9 +30,12 @@ const GEAR_REGISTRY = {
 // ────────────────────────────────────────────────────────────────────────────
 
 class PendingSnipe {
-  constructor(shooterId, playerEntries, delayMs = 2000) {
+  constructor(shooterId, playerEntries, cameraPos, cameraDir, eyeOffset = 1.0, delayMs = 2000) {
     this.shooterId = shooterId;
     this.playerEntries = playerEntries;
+    this.cameraPos = cameraPos;      // Store the actual camera position
+    this.cameraDir = cameraDir;      // Store the camera direction
+    this.eyeOffset = eyeOffset;
     this.executionTime = Date.now() + delayMs;
   }
 
@@ -44,11 +47,12 @@ class PendingSnipe {
 // ────────────────────────────────────────────────────────────────────────────
 
 class ActiveLine {
-  constructor(startPos, endPos, createdAt, duration = 3000) {
+  constructor(startPos, endPos, createdAt, duration = 3000, direction = null) {
     this.startPos = startPos;
     this.endPos = endPos;
     this.createdAt = createdAt;
     this.duration = duration;  // how long until line fades
+    this.direction = direction;  // direction for client-side offset
   }
 
   isExpired(now) {
@@ -121,9 +125,10 @@ class GearSystem {
    * @param {RAPIER.RigidBody[]} allBodies all dynamic bodies in world (to detect hits)
    * @param {Array<{sid, body}>} playerEntries players with their bodies
    * @param {string}            shooterId sessionId of the player shooting
+   * @param {number}            eyeOffset player's eye height offset (default 1.0)
    * @returns {object} { success } 
    */
-  snipe(shooterBody, cameraPos, cameraDir, allBodies, playerEntries, shooterId) {
+  snipe(shooterBody, cameraPos, cameraDir, allBodies, playerEntries, shooterId, eyeOffset = 1.0) {
     // Validate inputs
     if (!cameraPos || typeof cameraPos.x !== 'number' || typeof cameraPos.y !== 'number' || typeof cameraPos.z !== 'number') {
       console.warn('[GearSystem] Invalid cameraPos:', cameraPos);
@@ -173,8 +178,15 @@ class GearSystem {
       }
 
       // Store pending snipe to execute after preview duration
-      // Note: We pass shooterBody but NOT position/angle - those will be fetched at execution time
-      const pending = new PendingSnipe(shooterId, playerEntries, previewDuration);
+      // Store actual camera position and direction to use at execution time
+      const pending = new PendingSnipe(
+        shooterId,
+        playerEntries,
+        { x: cameraPos.x, y: cameraPos.y, z: cameraPos.z },  // Store camera position
+        { x: dir.x, y: dir.y, z: dir.z },  // Store normalized direction
+        eyeOffset,
+        previewDuration
+      );
       pending.shooterBody = shooterBody;  // Store body for physics access at fire time
       this._pendingSnipes.push(pending);
 
@@ -186,21 +198,25 @@ class GearSystem {
   }
 
   /**
-   * Execute a pending snipe with the provided camera position and direction.
-   * Called with the CURRENT camera position/direction at fire time.
+   * Execute a pending snipe using the current shooter position and direction.
    * 
    * @param {PendingSnipe} pending
-   * @param {{ x, y, z }} cameraPos Current camera position
-   * @param {{ x, y, z }} cameraDir Current camera direction
+   * @param {RAPIER.RigidBody} shooterBody Current body of shooter
+   * @param {{ camDir: { x, y, z } }} shooterInput Current input of shooter (for camera direction)
    */
-  executePendingSnipe(pending, cameraPos, cameraDir) {
-    const { shooterId, playerEntries } = pending;
+  executePendingSnipe(pending, shooterBody, shooterInput) {
+    const { shooterId, playerEntries, eyeOffset } = pending;
+    
+    // Get current position from shooter's body (not stored position from 2 seconds ago)
+    const shooterPos = shooterBody.translation();
+    // Start from eye level, like the grapple does
+    const cameraPos = { x: shooterPos.x, y: shooterPos.y + eyeOffset, z: shooterPos.z };
+    const cameraDir = shooterInput?.camDir || { x: 0, y: 0, z: 1 };
 
     try {
-      // Raycast from camera position adjusted for eye height (camera is 1 unit above model)
+      // Raycast from the exact camera position sent by client
       const maxDist = 1000;
-      const SKIP_DIST = 0.3; // Small offset to pass through player's collider
-      const EYE_OFFSET = 1; // Camera is positioned 1 unit above player model
+      const SKIP_DIST = 2.0; // Large offset to escape player's own collider
       
       // Normalize direction
       const len = Math.sqrt(cameraDir.x ** 2 + cameraDir.y ** 2 + cameraDir.z ** 2);
@@ -210,10 +226,10 @@ class GearSystem {
         z: cameraDir.z / len,
       } : { x: 0, y: 0, z: 0 };
       
-      // Adjust camera position down to match model height, then offset forward
+      // Use camera position directly (already positioned correctly on client)
       const rayOrigin = {
         x: cameraPos.x + dir.x * SKIP_DIST,
-        y: cameraPos.y - EYE_OFFSET + dir.y * SKIP_DIST,
+        y: cameraPos.y + dir.y * SKIP_DIST,
         z: cameraPos.z + dir.z * SKIP_DIST
       };
       const rayDir = { x: dir.x, y: dir.y, z: dir.z };
@@ -230,7 +246,7 @@ class GearSystem {
         hitBody = result.collider.parent();
       }
 
-      // Find which player (if any) was hit
+      // Find which player (if any) was hit (exclude the shooter)
       let targetSid = null;
       if (hitBody) {
         for (const { sid, body } of playerEntries) {
@@ -249,7 +265,7 @@ class GearSystem {
         z: rayOrigin.z + rayDir.z * closestDist,
       };
 
-      const line = new ActiveLine(actualOrigin, hitPos, Date.now(), 3000);
+      const line = new ActiveLine(actualOrigin, hitPos, Date.now(), 3000, { x: dir.x, y: dir.y, z: dir.z });
       this._lines.push(line);
       if (this._onLineSpawn) this._onLineSpawn(line);
 
