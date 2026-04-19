@@ -13,6 +13,7 @@ const { PrivateRoom }     = require('./rooms/PrivateRoom');
 const { MatchmakingRoom } = require('./rooms/MatchmakingRoom');
 const { Lobby, getLobby } = require('./rooms/Lobby');
 const { skinRoutes, unlockSkin, unlockGrapple } = require('./routes/skins');
+const gearRoutes          = require('./routes/gear');
 const CFG                 = require('./config');
 const User = require('./models/User'); 
 const { TITLES, TITLE_LIST, getTitle } = require('./skins'); 
@@ -28,9 +29,10 @@ mongoose.connect(CFG.MONGO_URI)
     for (const user of users) {
       const updates = {};
       
-      // Set default skin and grapple if not already set
+      // Set default skin, grapple, and gear if not already set
       if (!user.equippedSkin) updates.equippedSkin = 'default';
       if (!user.equippedGrapple) updates.equippedGrapple = 'default';
+      if (!user.equippedGear) updates.equippedGear = 'sniper';
       if (!user.userPrefix) updates.userPrefix = 'player';
       updates.status = 'Offline';
       
@@ -68,6 +70,7 @@ const PUBLIC_DIR = path.resolve(process.cwd(), 'public');
 app.use(express.static(PUBLIC_DIR));
 app.use(express.json());
 app.use('/api/skins', skinRoutes);
+app.use('/api/gear', gearRoutes);
 
 // ── Auth routes ──────────────────────────────────────────── // ← ADD BLOCK
 app.post('/auth/signup', async (req, res) => {
@@ -88,26 +91,36 @@ app.post('/auth/signup', async (req, res) => {
 });
 
 app.post('/auth/login', async (req, res) => {
-  const { username, password } = req.body;
-  if (!username || !password) return res.status(400).json({ error: 'Username and password required.' });
-  const user = await User.findOne({ username });
-  if (!user || !await bcrypt.compare(password, user.passwordHash))
-    return res.status(401).json({ error: 'Invalid username or password.' });
-  const token = jwt.sign({ userId: user._id, username }, CFG.JWT_SECRET, { expiresIn: '7d' });
-  res.json({ username, token });
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) return res.status(400).json({ error: 'Username and password required.' });
+    const user = await User.findOne({ username });
+    if (!user || !await bcrypt.compare(password, user.passwordHash))
+      return res.status(401).json({ error: 'Invalid username or password.' });
+    const token = jwt.sign({ userId: user._id, username }, CFG.JWT_SECRET, { expiresIn: '7d' });
+    res.json({ username, token });
+  } catch (err) {
+    console.error('Login error:', err.message);
+    res.status(400).json({ error: err.message });
+  }
 });
 
 app.get('/auth/me', async (req, res) => {
-  const header = req.headers.authorization || '';
-  const token  = header.startsWith('Bearer ') ? header.slice(7) : null;
-  if (!token) return res.status(401).json({ error: 'No token.' });
   try {
-    const { userId } = jwt.verify(token, CFG.JWT_SECRET);
-    const user = await User.findById(userId).select('-passwordHash');
-    if (!user) return res.status(404).json({ error: 'User not found.' });
-    res.json(user);
-  } catch {
-    res.status(401).json({ error: 'Invalid token.' });
+    const header = req.headers.authorization || '';
+    const token  = header.startsWith('Bearer ') ? header.slice(7) : null;
+    if (!token) return res.status(401).json({ error: 'No token.' });
+    try {
+      const { userId } = jwt.verify(token, CFG.JWT_SECRET);
+      const user = await User.findById(userId).select('-passwordHash');
+      if (!user) return res.status(404).json({ error: 'User not found.' });
+      res.json(user);
+    } catch {
+      res.status(401).json({ error: 'Invalid token.' });
+    }
+  } catch (err) {
+    console.error('Auth error:', err.message);
+    res.status(400).json({ error: err.message });
   }
 });
 // ── end auth routes ──────────────────────────────────────────
@@ -125,7 +138,7 @@ app.post('/api/save', async (req, res) => {
     await User.findByIdAndUpdate(userId, { $set: { settings: data.settings } });
     res.json({ ok: true });
   } catch (err) {
-    console.error(err);
+    console.error('Save error:', err.message);
     res.status(401).json({ error: 'Invalid token.' });
   }
 });
@@ -138,7 +151,8 @@ app.get('/api/users/:username', async (req, res) => {
     if (!user) return res.status(404).json({ error: 'User not found.' });
     res.json(user);
   } catch (err) {
-    res.status(500).json({ error: `Server error: ${err}` });
+    console.error('Find user error:', err.message);
+    res.status(500).json({ error: `Server error: ${err.message}` });
   }
 });
 
@@ -168,7 +182,8 @@ app.post('/api/users/:username/friend-request', async (req, res) => {
     
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: `Server error: ${err}` });
+    console.error('Friend request error:', err.message);
+    res.status(500).json({ error: `Server error: ${err.message}` });
   }
 });
 
@@ -202,7 +217,8 @@ app.post('/api/friends/accept', async (req, res) => {
 
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: 'Server error.' });
+    console.error('Accept friend request error:', err.message);
+    res.status(500).json({ error: `Server error: ${err.message}` });
   }
 });
 
@@ -216,6 +232,34 @@ app.post('/api/friends/decline', async (req, res) => {
 
     await User.findByIdAndUpdate(userId, {
       $unset: { [`friends.requests.${requesterId}`]: '' }
+    });
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Decline friend request error:', err.message);
+    res.status(500).json({ error: `Server error: ${err.message}` });
+  }
+});
+
+app.post('/api/friends/remove', async (req, res) => {
+  const header = req.headers.authorization || '';
+  const token  = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'No token.' });
+  try {
+    const { userId, username } = jwt.verify(token, CFG.JWT_SECRET);
+    const { friendUsername } = req.body;
+
+    // Find the friend user
+    const friend = await User.findOne({ username: friendUsername });
+    if (!friend) return res.status(404).json({ error: 'Friend not found.' });
+
+    // Remove friend from both users' friend lists
+    await User.findByIdAndUpdate(userId, {
+      $unset: { [`friends.list.${friendUsername}`]: '' }
+    });
+
+    await User.findByIdAndUpdate(friend._id, {
+      $unset: { [`friends.list.${username}`]: '' }
     });
 
     res.json({ ok: true });

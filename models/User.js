@@ -32,6 +32,9 @@ const userSchema = new mongoose.Schema({
   equippedGrapple: { type: String, default: 'default' },
   unlockedGrapples:{ type: [String], default: () => ['default'] },
 
+  // ── Gear ────────────────────────────────────────────────────
+  equippedGear: { type: String, default: 'sniper' },
+
   // ── Presence ────────────────────────────────────────────────
   status:   { type: String, default: 'Offline' },
 

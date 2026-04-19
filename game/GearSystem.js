@@ -11,10 +11,14 @@ const RAPIER = require('@dimforge/rapier3d-compat');
 // ────────────────────────────────────────────────────────────────────────────
 // GEAR DEFINITIONS
 // ────────────────────────────────────────────────────────────────────────────
+// This registry defines all available gear items. The client-side gearItems
+// array in client/src/main.js should be kept in sync with this registry.
 
 const GEAR_REGISTRY = {
   sniper: {
     name: 'Sniper',
+    description: 'High-damage hitscan weapon with 2-second preview',
+    rarity: 'high-skill',
     damage: 50,
     cooldown: 2500,  // ms
     image: '/static/skins/common/cheeseburger.png',  // placeholder
@@ -22,6 +26,19 @@ const GEAR_REGISTRY = {
     previewDuration: 2000,  // 2 seconds before firing
     postFireDuration: 1000,  // 1 second visible after firing
     scale: 1.0,
+  },
+  mace: {
+    name: 'Mace',
+    description: 'Heavy melee weapon, dealing AOE damage proportional to the user\'s current speed. Three second charge-up',
+    rarity: 'ultra-high-skill',
+    damage: 40,
+    cooldown: 3000,  // ms
+    glb: '/gear/mace.glb',  // GLB model path
+    previewDuration: 3000,  // 3 seconds before impact
+    postFireDuration: 1000,  // 1 second visible after impact
+    scale: 1.0,
+    aoeRadius: 3.0,  // meters
+    aoeScaleWithVelocity: true,
   },
 };
 
@@ -41,6 +58,31 @@ class PendingSnipe {
 
   isReady(now) {
     return now >= this.executionTime;
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// PENDING MACE – Mace raises up for 3 seconds, then deals AOE damage
+// ────────────────────────────────────────────────────────────────────────────
+
+class PendingMace {
+  constructor(shooterId, shooterBody, playerEntries, delayMs = 3000) {
+    this.shooterId = shooterId;
+    this.shooterBody = shooterBody;
+    this.playerEntries = playerEntries;
+    this.executionTime = Date.now() + delayMs;
+    this.startTime = Date.now();
+    this.startVelocity = shooterBody.linvel();  // Capture velocity at activation
+  }
+
+  isReady(now) {
+    return now >= this.executionTime;
+  }
+
+  getProgress(now) {
+    const elapsed = now - this.startTime;
+    const duration = this.executionTime - this.startTime;
+    return Math.min(1, elapsed / duration);
   }
 }
 
@@ -103,16 +145,23 @@ class GearSystem {
    *                                    Called when a visual line is created
    * @param {Function}     onGearPreview (effect) → void
    *                                    Called when a gear preview effect is created
+   * @param {Function}     onAoeDamage  (shooterId, targets, damage) → void
+   *                                    Called when AOE gear hits multiple players
+   * @param {Function}     onParticles  (position, type, count) → void
+   *                                    Called to spawn particles
    */
-  constructor(physicsWorld, onSnipeHit, onLineSpawn, onGearPreview) {
+  constructor(physicsWorld, onSnipeHit, onLineSpawn, onGearPreview, onAoeDamage, onParticles) {
     this._physics = physicsWorld;
     this._onSnipeHit = onSnipeHit;
     this._onLineSpawn = onLineSpawn;
     this._onGearPreview = onGearPreview;
+    this._onAoeDamage = onAoeDamage;
+    this._onParticles = onParticles;
     
     this._lines = [];  // Array of ActiveLine
     this._gearEffects = [];  // Array of ActiveGearEffect
     this._pendingSnipes = [];  // Array of PendingSnipe waiting to execute
+    this._pendingMaces = [];  // Array of PendingMace waiting to execute
   }
 
   /**
@@ -283,8 +332,125 @@ class GearSystem {
   }
 
   /**
+   * Attempt to use the mace gear.
+   * Shows a 3-second charge animation, then executes AOE damage.
+   * 
+   * @param {RAPIER.RigidBody} shooterBody
+   * @param {Array<{sid, body}>} playerEntries players with their bodies
+   * @param {string}            shooterId sessionId of the player using mace
+   * @returns {object} { success }
+   */
+  mace(shooterBody, playerEntries, shooterId) {
+    try {
+      console.log(`[GearSystem.mace] ${shooterId} used mace, ${playerEntries.length} players in world`);
+      
+      // Get shooter position
+      const shooterPos = shooterBody.translation();
+      
+      // Create gear preview effect (visible for charge duration)
+      const previewDuration = (GEAR_REGISTRY.mace && GEAR_REGISTRY.mace.previewDuration) || 3000;
+      const postFireDuration = (GEAR_REGISTRY.mace && GEAR_REGISTRY.mace.postFireDuration) || 1000;
+      const effectDuration = previewDuration + postFireDuration;
+
+      const gearEffect = new ActiveGearEffect(
+        'mace',
+        shooterId,
+        { x: shooterPos.x, y: shooterPos.y + 1.5, z: shooterPos.z },  // Position above head
+        { x: 0, y: 0, z: 0, w: 1 },
+        Date.now(),
+        effectDuration
+      );
+      this._gearEffects.push(gearEffect);
+      if (this._onGearPreview) {
+        console.log(`[GearSystem.mace] Calling _onGearPreview for mace effect`);
+        this._onGearPreview(gearEffect);
+      }
+
+      // Store pending mace to execute after charge duration
+      const pending = new PendingMace(shooterId, shooterBody, playerEntries, previewDuration);
+      this._pendingMaces.push(pending);
+      console.log(`[GearSystem.mace] Created pending mace, will execute in ${previewDuration}ms`);
+
+      return { success: true };
+    } catch (err) {
+      console.error('[GearSystem.mace] Error:', err);
+      return { success: false };
+    }
+  }
+
+  /**
+   * Execute a pending mace, dealing AOE damage scaled by velocity.
+   * 
+   * @param {PendingMace} pending
+   */
+  executePendingMace(pending) {
+    const { shooterId, shooterBody, playerEntries, startVelocity } = pending;
+    
+    try {
+      console.log(`[GearSystem.executePendingMace] Executing mace for ${shooterId}, ${playerEntries.length} players in world`);
+      
+      // Get current position
+      const shooterPos = shooterBody.translation();
+      const impactPos = { x: shooterPos.x, y: shooterPos.y, z: shooterPos.z };
+
+      // Calculate velocity magnitude for damage scaling
+      const velocity = shooterBody.linvel();
+      const speed = Math.sqrt(velocity.x ** 2 + velocity.y ** 2 + velocity.z ** 2);
+      const baseSpeed = Math.sqrt(startVelocity.x ** 2 + startVelocity.y ** 2 + startVelocity.z ** 2);
+      
+      // Damage scales from base damage (40) to base damage + 60 based on speed
+      // Max speed considered: 30 m/s, so 40 + 60 = 100 max damage
+      const speedFactor = Math.min(1, speed / 30);
+      const baseDamage = GEAR_REGISTRY.mace.damage;
+      const scaledDamage = baseDamage + (60 * speedFactor);
+      
+      console.log(`[GearSystem.executePendingMace] Speed: ${speed.toFixed(2)} m/s, speedFactor: ${speedFactor.toFixed(2)}, damage: ${scaledDamage.toFixed(0)}`);
+      
+      // Find all players within AOE radius
+      const aoeRadius = GEAR_REGISTRY.mace.aoeRadius || 3.0;
+      const hitsPerformed = new Set();
+
+      for (const { sid, body } of playerEntries) {
+        if (sid === shooterId) continue;  // Skip self
+        
+        const targetPos = body.translation();
+        const dx = targetPos.x - impactPos.x;
+        const dy = targetPos.y - impactPos.y;
+        const dz = targetPos.z - impactPos.z;
+        const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+        console.log(`[GearSystem.executePendingMace] Checking ${sid}: distance ${distance.toFixed(2)}m (radius: ${aoeRadius}m)`);
+
+        if (distance <= aoeRadius) {
+          console.log(`[GearSystem.executePendingMace] ${sid} is in range, dealing damage`);
+          if (this._onAoeDamage) {
+            console.log(`[GearSystem.executePendingMace] Calling _onAoeDamage(${shooterId}, ${sid}, ${Math.round(scaledDamage)})`);
+            this._onAoeDamage(shooterId, sid, Math.round(scaledDamage));
+          } else {
+            console.warn('[GearSystem.executePendingMace] _onAoeDamage callback not defined!');
+          }
+          hitsPerformed.add(sid);
+          console.log(`[Mace] ${shooterId} hit ${sid} for ${Math.round(scaledDamage)} damage (speed factor: ${speedFactor.toFixed(2)})`);
+        }
+      }
+
+      console.log(`[GearSystem.executePendingMace] Hit ${hitsPerformed.size} targets`);
+
+      // Spawn particles at impact
+      if (this._onParticles) {
+        this._onParticles(impactPos, 'mace_impact', 20 + Math.floor(speedFactor * 10));
+      }
+
+      return { success: true, targets: Array.from(hitsPerformed), damage: Math.round(scaledDamage) };
+    } catch (err) {
+      console.error('[GearSystem.executePendingMace] Error:', err);
+      return { success: false };
+    }
+  }
+
+  /**
    * Update active lines, gear effects, and pending snipes (called each tick).
-   * @returns {Array} Array of ready snipes to execute
+   * @returns {object} { readySnipes, readyMaces }
    */
   tick() {
     const now = Date.now();
@@ -297,7 +463,11 @@ class GearSystem {
     const readySnipes = this._pendingSnipes.filter(p => p.isReady(now));
     this._pendingSnipes = this._pendingSnipes.filter(p => !p.isReady(now));
     
-    return readySnipes;  // Return ready snipes for execution
+    // Find maces that are ready to execute
+    const readyMaces = this._pendingMaces.filter(p => p.isReady(now));
+    this._pendingMaces = this._pendingMaces.filter(p => !p.isReady(now));
+    
+    return { readySnipes, readyMaces };
   }
 
   /**

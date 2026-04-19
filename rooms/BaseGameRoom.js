@@ -267,7 +267,9 @@ class BaseGameRoom extends Room {
       this._physics,
       (shooterId, targetId, damage) => this._handleSnipeHit(shooterId, targetId, damage),
       (line) => this._broadcastLine(line),
-      (effect) => this._broadcastGearEffect(effect)
+      (effect) => this._broadcastGearEffect(effect),
+      (shooterId, targetId, damage) => this._handleAoeDamage(shooterId, targetId, damage),
+      (position, type, count) => this._broadcastParticles(position, type, count)
     );
 
     const sessions = this.clients.map(c => c.sessionId);
@@ -413,7 +415,6 @@ class BaseGameRoom extends Room {
     
     if (!body || !pi) return;
 
-    // Currently only sniper is implemented
     if (gearName === 'sniper') {
       const playerEntries = [];
       for (const [sessionId, playerBody] of this._bodies) {
@@ -433,7 +434,18 @@ class BaseGameRoom extends Room {
       );
 
       if (result.success) {
-        console.log(`[Sniper] ${sid} hit ${result.targetSid} for ${result.damage} damage`);
+        console.log(`[Sniper] ${sid} used sniper`);
+      }
+    } else if (gearName === 'mace') {
+      const playerEntries = [];
+      for (const [sessionId, playerBody] of this._bodies) {
+        playerEntries.push({ sid: sessionId, body: playerBody });
+      }
+
+      const result = this._gear.mace(body, playerEntries, sid);
+      
+      if (result.success) {
+        console.log(`[Mace] ${sid} used mace`);
       }
     }
   }
@@ -480,6 +492,36 @@ class BaseGameRoom extends Room {
       position: effect.position,
       rotation: effect.rotation,
       duration: effect.duration,
+    });
+  }
+
+  _handleAoeDamage(shooterId, targetId, damage) {
+    // Handle AOE damage (for mace and similar gear)
+    const ps = this.state.players.get(targetId);
+    if (!ps) return;
+    
+    ps.health = Math.max(0, ps.health - damage);
+    console.log(`[AOE Damage] ${targetId} took ${damage} damage, health now ${ps.health}`);
+    
+    // Broadcast hit to all clients with current health
+    this.broadcast('playerHit', {
+      playerId: targetId,
+      damage: damage,
+      currentHealth: ps.health
+    });
+    
+    if (ps.health <= 0) {
+      this._endGame(shooterId, targetId);
+    }
+  }
+
+  _broadcastParticles(position, type, count) {
+    // Broadcast particle effect to all clients for rendering
+    this.broadcast('particles', {
+      position: position,
+      type: type,  // 'mace_impact', 'sniper_flash', etc.
+      count: count,
+      timestamp: Date.now()
     });
   }
 
@@ -634,14 +676,19 @@ class BaseGameRoom extends Room {
     const detonated = this._bombs.tick();
     for (const id of detonated) this.state.bombs.delete(id);
 
-    // Execute gear logic and handle ready snipes
-    const readySnipes = this._gear.tick();
+    // Execute gear logic and handle ready snipes and maces
+    const { readySnipes, readyMaces } = this._gear.tick();
+    
     for (const pending of readySnipes) {
       const shooterBody = this._bodies.get(pending.shooterId);
       const shooterInput = this._input.get(pending.shooterId);
       if (shooterBody && shooterInput) {
         this._gear.executePendingSnipe(pending, shooterBody, shooterInput);
       }
+    }
+
+    for (const pending of readyMaces) {
+      this._gear.executePendingMace(pending);
     }
 
     this._bombs.forEachLive((id, pos, rot) => {

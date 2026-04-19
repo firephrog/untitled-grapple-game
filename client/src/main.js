@@ -52,6 +52,7 @@ function showMenu()        {
     renderer.domElement.style.display = 'none'; 
     renderer.domElement.style.pointerEvents = 'none';
   }
+  initializeGearCards();  // Initialize gear cards when menu is shown
 }
 
 function hideMenu()        { 
@@ -233,10 +234,23 @@ function showAuthOverlay() {
           }
           
           // Wait for applySettings to be available (game to initialize)
+          let retryCount = 0;
+          const maxRetries = 150; // 15 seconds with 100ms intervals
           const applySettingsWhenReady = () => {
+            retryCount++;
+            console.log(`[Login] Retry ${retryCount}/${maxRetries} - Checking game readiness...`);
+            console.log(`[Login] State: applySettings=${!!window.applySettings}, controls=${!!window.controls}, camera=${!!window.camera}`);
             if (window.applySettings && window.controls && window.camera) {
-              console.log('[Login] Game ready, applying loaded settings');
-              window.applySettings();
+              console.log('[Login] ✓ Game ready, applying loaded settings');
+              const result = window.applySettings();
+              console.log('[Login] Apply result:', result);
+              // Also reconnect to presence room to ensure websocket works
+              if (window.joinPresence) {
+                console.log('[Login] Reconnecting presence room after settings applied');
+                window.joinPresence().catch(e => console.error('[Login] Failed to reconnect presence:', e));
+              }
+            } else if (retryCount >= maxRetries) {
+              console.error('[Login] ✗ Game failed to initialize after 15 seconds, giving up');
             } else {
               console.log('[Login] Waiting for game to initialize...');
               setTimeout(applySettingsWhenReady, 100);
@@ -428,6 +442,7 @@ async function databaseSave(info) {
 
 function applySettings() {
   console.log('[applySettings] Called, gameSettings object:', gameSettings);
+  console.log('[applySettings] Checking initialization state - controls:', !!controls, 'camera:', !!camera);
   
   // Read from gameSettings directly instead of DOM elements
   const fov = gameSettings.graphics.fov || 75;
@@ -440,28 +455,57 @@ function applySettings() {
   console.log('[applySettings] Parsed values - FOV:', fov, 'Sensitivity:', sensitivity, 'InvertY:', invertY, 'ShowHints:', showHints, 'ShowSpeed:', showSpeed, 'ShowPing:', showPing);
 
   if (!controls) {
-    console.error('[applySettings] controls not initialized!');
-    return;
+    console.error('[applySettings] FAILED: controls not initialized! Type:', typeof controls);
+    return false;
   }
   if (!camera) {
-    console.error('[applySettings] camera not initialized!');
-    return;
+    console.error('[applySettings] FAILED: camera not initialized! Type:', typeof camera);
+    return false;
   }
 
-  controls.pointerSpeed = sensitivity;
-  controls.invertYAxis = invertY;
-  camera.fov = fov;
+  try {
+    controls.pointerSpeed = sensitivity;
+    console.log('[applySettings] Set controls.pointerSpeed to', controls.pointerSpeed, '(verify:', controls.pointerSpeed === sensitivity, ')');
+    
+    controls.invertYAxis = invertY;
+    console.log('[applySettings] Set controls.invertYAxis to', controls.invertYAxis, '(verify:', controls.invertYAxis === invertY, ')');
+    
+    camera.fov = fov;
+    console.log('[applySettings] Set camera.fov to', camera.fov, '(verify:', camera.fov === fov, ')');
 
-  console.log('[applySettings] Set controls.pointerSpeed to', controls.pointerSpeed);
-  console.log('[applySettings] Set controls.invertYAxis to', controls.invertYAxis);
-  console.log('[applySettings] Set camera.fov to', camera.fov);
+    // UI visibility updates with verification
+    const hintsEl = document.getElementById('controls-hint');
+    if (hintsEl) {
+      hintsEl.style.display = showHints ? 'block' : 'none';
+      console.log('[applySettings] Updated controls-hint to', hintsEl.style.display);
+    } else {
+      console.warn('[applySettings] controls-hint element not found');
+    }
+    
+    const velocityEl = document.getElementById('velocity');
+    if (velocityEl) {
+      velocityEl.style.display = showSpeed ? 'block' : 'none';
+      console.log('[applySettings] Updated velocity to', velocityEl.style.display);
+    } else {
+      console.warn('[applySettings] velocity element not found');
+    }
+    
+    const pingEl = document.getElementById('ping');
+    if (pingEl) {
+      pingEl.style.display = showPing ? 'block' : 'none';
+      console.log('[applySettings] Updated ping to', pingEl.style.display);
+    } else {
+      console.warn('[applySettings] ping element not found');
+    }
 
-  if (showHints == false) { document.getElementById('controls-hint').style.display = 'none'; } else { document.getElementById('controls-hint').style.display = 'block'; }
-  if (showSpeed == false) { document.getElementById('velocity').style.display = 'none'; } else { document.getElementById('velocity').style.display = 'block'; }
-  if (showPing == false) { document.getElementById('ping').style.display = 'none'; } else { document.getElementById('ping').style.display = 'block'; }
-
-  camera.updateProjectionMatrix();
-  console.log('[applySettings] Complete! Camera FOV is now:', camera.fov);
+    camera.updateProjectionMatrix();
+    console.log('[applySettings] Called updateProjectionMatrix, Camera FOV is now:', camera.fov);
+    console.log('[applySettings] SUCCESS - all settings applied!');
+    return true;
+  } catch (err) {
+    console.error('[applySettings] EXCEPTION during apply:', err);
+    return false;
+  }
 }
 
 
@@ -502,7 +546,18 @@ document.getElementById('saveBtn').addEventListener('click', () => {
   }
 
   console.log('[Save] Calling applySettings()');
-  applySettings();
+  const applied = applySettings();
+  if (applied) {
+    console.log('[Save] Settings applied successfully, closing menu');
+    // Close the settings menu after applying
+    const settingsPanel = document.getElementById('panel-settings');
+    if (settingsPanel) {
+      settingsPanel.style.display = 'none';
+      console.log('[Save] Settings panel hidden');
+    }
+  } else {
+    console.warn('[Save] Settings were not applied successfully');
+  }
   databaseSave({ settings })
 })
 
@@ -510,10 +565,15 @@ document.getElementById('saveBtn').addEventListener('click', () => {
 if (window.displayStoredSettings) {
   const originalDisplay = window.displayStoredSettings;
   window.displayStoredSettings = function() {
+    console.log('[Settings] displayStoredSettings called');
     originalDisplay.call(this);
+    console.log('[Settings] Calling applySettings after display');
     applySettings();
   };
 }
+
+// Expose applySettings globally for presenceRoom reconnect
+window.applySettingsGlobal = applySettings;
 
 document.addEventListener('click', () => {
   if (gameStarted && !controls.isLocked) {
@@ -639,7 +699,7 @@ async function displayFriends(friends) {
     const initials    = username.slice(0, 2).toUpperCase();
 
     const html = `
-      <div class="friend-row" id="friend-${username}" onclick="openChat('${username}')">
+      <div class="friend-row" id="friend-${username}" onclick="openChat('${username}')" oncontextmenu="event.preventDefault(); showFriendContextMenu(event, '${username}')">
         <div class="f-avatar">${initials}<div class="status-dot ${status}"></div></div>
         <div class="friend-info">
           <div class="friend-name">
@@ -671,6 +731,115 @@ async function loadFriendRequests() {
   const requests = user.friends?.requests || {};
   displayFriendRequests(requests);
 }
+
+// Context menu for friend actions
+function showFriendContextMenu(event, username) {
+  console.log('[Friends] Right-click on friend:', username);
+  
+  // Remove any existing context menu
+  const existing = document.getElementById('friend-context-menu');
+  if (existing) existing.remove();
+  
+  // Create context menu
+  const menu = document.createElement('div');
+  menu.id = 'friend-context-menu';
+  menu.style.cssText = `
+    position: fixed;
+    left: ${event.clientX}px;
+    top: ${event.clientY}px;
+    background: rgba(30, 30, 40, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    z-index: 10000;
+    min-width: 140px;
+    backdrop-filter: blur(6px);
+  `;
+  
+  menu.innerHTML = `
+    <div style="padding: 8px 0;">
+      <div onclick="unfriend('${username}')" style="padding: 10px 16px; cursor: pointer; color: #ff5f56; font-size: 14px; transition: background 0.15s;" onmouseover="this.style.background = 'rgba(255, 95, 86, 0.2)'" onmouseout="this.style.background = 'transparent'">
+        Unfriend
+      </div>
+    </div>
+  `;
+  
+  document.body.appendChild(menu);
+  
+  // Close menu when clicking elsewhere
+  const closeMenu = (e) => {
+    if (!menu.contains(e.target)) {
+      menu.remove();
+      document.removeEventListener('click', closeMenu);
+    }
+  };
+  
+  setTimeout(() => document.addEventListener('click', closeMenu), 0);
+}
+
+// Remove a friend with confirmation
+async function unfriend(username) {
+  console.log('[Friends] Unfriending:', username);
+  
+  // Close context menu
+  const menu = document.getElementById('friend-context-menu');
+  if (menu) menu.remove();
+  
+  // Show confirmation dialog
+  const confirmed = confirm(`Are you sure you want to unfriend ${username}?`);
+  if (!confirmed) {
+    console.log('[Friends] Unfriend cancelled');
+    return;
+  }
+  
+  const authUser = JSON.parse(localStorage.getItem('auth_user'));
+  if (!authUser) {
+    console.error('[Friends] Not logged in');
+    return;
+  }
+  
+  try {
+    console.log('[Friends] Sending unfriend request for:', username);
+    const res = await fetch(`${API_BASE}/api/friends/remove`, {
+      method: 'POST',
+      headers: { 
+        'Authorization': `Bearer ${authUser.token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ friendUsername: username })
+    });
+    
+    const data = await res.json();
+    if (!res.ok) {
+      console.error('[Friends] Failed to unfriend:', data.error);
+      alert(`Failed to unfriend: ${data.error || 'Unknown error'}`);
+      return;
+    }
+    
+    console.log('[Friends] Successfully unfriended:', username);
+    
+    // Remove the friend row with animation
+    const friendRow = document.getElementById(`friend-${username}`);
+    if (friendRow) {
+      friendRow.style.transition = 'opacity 0.2s';
+      friendRow.style.opacity = '0';
+      setTimeout(() => {
+        friendRow.remove();
+      }, 200);
+    }
+    
+    // Refresh friends list to ensure consistency
+    await loadFriends();
+    console.log('[Friends] Friends list refreshed after unfriend');
+    
+  } catch (e) {
+    console.error('[Friends] Error unfriending:', e);
+    alert('Failed to unfriend. Please try again.');
+  }
+}
+
+// Expose unfriend globally for context menu onclick
+window.unfriend = unfriend;
 
 async function loadFriends() {
   const authUser = JSON.parse(localStorage.getItem('auth_user'));
@@ -753,13 +922,24 @@ async function sendInvite(friendUsername) {
 }
 
 async function joinInvite(code) {
-  // Close chat menu and go to versusMenu
+  console.log('[Friends] Joining invite with code:', code);
+  // Close chat menu and friends menu
   document.getElementById('chatMenu').style.display = 'none';
+  
+  // Close the friends/menu area
+  const friendsList = document.getElementById('friends-list');
+  if (friendsList) friendsList.style.display = 'none';
+  const onlineFriends = document.getElementById('online-friends');
+  if (onlineFriends) onlineFriends.style.display = 'none';
+  const offlineFriends = document.getElementById('offline-friends');
+  if (offlineFriends) offlineFriends.style.display = 'none';
+  
   document.getElementById('menu').style.display = 'none';
   document.getElementById('versusMenu').style.display = 'flex';
   
   // Fill in code and attempt join
   document.getElementById('codeInput').value = code.toUpperCase();
+  console.log('[Friends] Filled code input, attempting join');
   
   // Give it a moment to render, then click join
   setTimeout(() => {
@@ -771,14 +951,21 @@ loadFriendRequests();
 loadFriends();
 
 document.getElementById('friendsMenuBtn').addEventListener('click', () => {
+  console.log('[Friends] Friends menu button clicked, refreshing');
   loadFriendRequests();
   loadFriends();
 })
 
-document.querySelector('.friend-action-btn').addEventListener('click', () => {
-  loadFriendRequests();
-  loadFriends();
-})
+// Refresh friends when any friend action button is clicked
+try {
+  document.querySelector('.friend-action-btn')?.addEventListener('click', () => {
+    console.log('[Friends] Friend action button clicked, refreshing');
+    loadFriendRequests();
+    loadFriends();
+  });
+} catch (e) {
+  console.log('[Friends] Friend action button not found yet (will be available at runtime)', e.message);
+}
 
 // ── Chat ─────────────────────────────────────────────────────
 let activeChatUser = null;
@@ -792,6 +979,10 @@ let messageState = {
 async function openChat(username) {
   activeChatUser = username;
   messageState = { skip: 0, limit: 20, total: 0, isLoading: false };
+
+  // Clear messages immediately
+  const scroll = document.getElementById('msgScroll');
+  scroll.innerHTML = '<div style="text-align:center;color:#555;font-size:11px;font-family:\'Space Mono\',monospace;margin:auto;padding-top:20px;">loading...</div>';
 
   // fetch their profile for display info
   const res  = await fetch(`${API_BASE}/api/users/${username}`);
@@ -864,7 +1055,7 @@ async function renderMessages(username, isInitial = false) {
     scroll.scrollTop = scroll.scrollHeight;
     _attachScrollListener();
   } else {
-    // Prepend newer messages at top
+    // Prepend older messages at top
     const container = scroll.firstChild;
     messages.reverse().forEach(m => {
       const elem = _createMessageElement(m, authUser.username);
@@ -943,25 +1134,72 @@ document.getElementById('msgInput').addEventListener('keydown', (e) => {
 
 document.querySelector('.send-btn').addEventListener('click', sendMessage);
 
+// Wrapper for acceptRequest to also refresh the friends menu
+async function acceptRequest(userId, username) {
+  console.log('[Friends] Accepting request from', username, 'userId:', userId);
+  const authUser = JSON.parse(localStorage.getItem('auth_user'));
+  if (!authUser) return;
+  
+  try {
+    const res = await fetch(`${API_BASE}/api/friends/accept`, {
+      method: 'POST',
+      headers: { 
+        'Authorization': `Bearer ${authUser.token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ requesterId: userId, requesterUsername: username })
+    });
+    
+    const data = await res.json();
+    if (!res.ok) {
+      console.error('[Friends] Failed to accept request:', data.error);
+      return;
+    }
+    
+    console.log('[Friends] Request accepted, refreshing menu');
+    await loadFriendRequests();
+    await loadFriends();
+  } catch (e) {
+    console.error('[Friends] Failed to accept request:', e);
+  }
+}
+
+// Wrapper for declineRequest
+async function declineRequest(userId) {
+  console.log('[Friends] Declining request from user', userId);
+  const authUser = JSON.parse(localStorage.getItem('auth_user'));
+  if (!authUser) return;
+  
+  try {
+    const res = await fetch(`${API_BASE}/api/friends/decline`, {
+      method: 'POST',
+      headers: { 
+        'Authorization': `Bearer ${authUser.token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ requesterId: userId })
+    });
+    
+    const data = await res.json();
+    if (!res.ok) {
+      console.error('[Friends] Failed to decline request:', data.error);
+      return;
+    }
+    
+    console.log('[Friends] Request declined, refreshing menu');
+    await loadFriendRequests();
+  } catch (e) {
+    console.error('[Friends] Failed to decline request:', e);
+  }
+}
+
 // expose to HTML onclick handlers
 window.openChat = openChat;
 window.acceptRequest = acceptRequest;
 window.declineRequest = declineRequest;
 window.sendInvite = sendInvite;
 window.joinInvite = joinInvite;
-
-// handle real-time incoming messages via presence room
-// call this after joinPresence() sets up presenceRoom
-function setupMessageListener() {
-  if (!presenceRoom) return;
-  presenceRoom.onMessage('newMessage', async (data) => {
-    if (activeChatUser === data.from) {
-      // Reset to show latest on new message
-      messageState = { skip: 0, limit: 20, total: 0, isLoading: false };
-      await renderMessages(data.from, true);
-    }
-  });
-}
+window.showFriendContextMenu = showFriendContextMenu;
 
 function showMessageNotification(fromUsername) {
   // find the friend row and add a dot or badge
@@ -1096,6 +1334,10 @@ function createSkinCard(skin, unlocked, equipped) {
       // update UI
       document.querySelectorAll('#panel-skinCards .skin-card').forEach(c => c.classList.remove('selected'));
       card.classList.add('selected');
+      // Update preview
+      if (typeof previewSystem !== 'undefined') {
+        previewSystem.updatePreview().catch(e => console.error('[Preview Update]', e));
+      }
     }
     );
   }
@@ -1131,6 +1373,10 @@ function createGrappleCard(grapple, unlocked, equipped) {
       // update UI
       document.querySelectorAll('#panel-grappleSkinCards .skin-card').forEach(c => c.classList.remove('selected'));
       card.classList.add('selected');
+      // Update preview
+      if (typeof previewSystem !== 'undefined') {
+        previewSystem.updatePreview().catch(e => console.error('[Preview Update]', e));
+      }
     }
     );
   }
@@ -1185,6 +1431,10 @@ function createTitleCard(title, unlocked, equipped) {
       document.querySelectorAll('.title-row').forEach(c => c.classList.remove('selected'));
       card.classList.add('selected');
       fetchAndDisplayStats(authUser.token); // to update title display in stats
+      // Update preview
+      if (typeof previewSystem !== 'undefined') {
+        previewSystem.updatePreview().catch(e => console.error('[Preview Update]', e));
+      }
     });
     container.appendChild(card);
   }
@@ -1195,6 +1445,422 @@ function createTitleCard(title, unlocked, equipped) {
 }
 
 forEachTitleCard(createTitleCard);
+
+// ── GEAR SYSTEM ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+// Gear items list - fetched from server via /api/gear
+let gearItems = [];
+
+/**
+ * Fetch gear data from server
+ */
+async function loadGearData() {
+  try {
+    const authUser = JSON.parse(localStorage.getItem('auth_user'));
+    if (!authUser) return;
+
+    const res = await fetch(`${API_BASE}/api/gear`, {
+      headers: { Authorization: `Bearer ${authUser.token}` }
+    });
+
+    if (!res.ok) {
+      console.error('[loadGearData] Failed to fetch gear:', res.statusText);
+      return;
+    }
+
+    const data = await res.json();
+    gearItems = data.gear;
+    console.log('[loadGearData] Loaded', gearItems.length, 'gear items');
+  } catch (err) {
+    console.error('[loadGearData] Error:', err);
+  }
+}
+
+function createGearCard(gear) {
+  const card = document.createElement('div');
+  card.className = `gear-card${gear.equipped ? ' selected' : ''}`;
+  card.innerHTML = `
+    <div class="gear-card-header">${gear.name}</div>
+    <div class="gear-card-info">${gear.description}</div>
+    <div class="gear-card-footer">
+      <span style="color: ${{'low-skill': '#888', 'medium-skill': '#4488ff', 'high-skill': '#cc44ff', 'ultra-high-skill': '#ffaa00'}[gear.rarity]}">${gear.rarity}</span>
+    </div>
+  `;
+  card.onclick = () => equipGear(gear.id, card);
+  
+  // Add scroll on hover for cards at the end
+  card.addEventListener('mouseenter', () => {
+    const container = card.parentElement;
+    const allCards = container.querySelectorAll('.gear-card');
+    const isLastCard = card === allCards[allCards.length - 1];
+    
+    if (isLastCard) {
+      // Scroll to show the expanded card (120px base + 160px expansion = 280px total)
+      const scrollAmount = (card.offsetLeft + 280) - container.clientWidth + 12;
+      container.scrollLeft = Math.max(0, scrollAmount);
+    }
+  });
+  
+  return card;
+}
+
+function equipGear(gearId, cardElement) {
+  // Remove previous selection
+  document.querySelectorAll('.gear-card').forEach(card => card.classList.remove('selected'));
+  // Add selection to clicked card
+  cardElement.classList.add('selected');
+  
+  // Mark gear as equipped in the array
+  gearItems.forEach(gear => {
+    gear.equipped = (gear.id === gearId);
+  });
+  
+  // Send to server: POST /api/gear/equip with gearId
+  const authUser = JSON.parse(localStorage.getItem('auth_user'));
+  if (authUser) {
+    fetch(`${API_BASE}/api/gear/equip`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${authUser.token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ gearId })
+    }).catch(err => console.error('[equipGear] Error:', err));
+  }
+  console.log('Equipped gear:', gearId);
+}
+
+function initializeGearCards() {
+  const container = document.getElementById('gearCardsContainer');
+  if (!container || gearItems.length === 0) return;
+  
+  // Clear existing cards
+  container.innerHTML = '';
+  gearItems.forEach(gear => {
+    container.appendChild(createGearCard(gear));
+  });
+    
+    // Add horizontal scroll with mouse wheel
+    container.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      container.scrollLeft += e.deltaY > 0 ? 50 : -50;
+    });
+}
+
+// Initialize gear cards on page load
+async function initGearOnLoad() {
+  await loadGearData();
+  initializeGearCards();
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initGearOnLoad);
+} else {
+  initGearOnLoad();
+}
+
+// ── PLAYER PREVIEW SYSTEM ───────────────────────────────────────────────────────────────────────────────────────────────────────
+
+class PlayerPreviewSystem {
+  constructor() {
+    this.previewScene = null;
+    this.previewCamera = null;
+    this.previewRenderer = null;
+    this.previewSkinMgr = null;
+    this.previewNametags = null;
+    this.previewHookMgr = null;
+    this.previewPlayerData = null;
+    this.buttonRenderer = null;
+    this.animationFrameId = null;
+    this.resizeHandler = null;
+    this.isInitialized = false;
+  }
+
+  async initialize() {
+    if (this.isInitialized) return;
+    
+    try {
+      // Wait for layout to be calculated
+      await new Promise(resolve => {
+        if (document.readyState === 'complete') {
+          resolve();
+        } else {
+          window.addEventListener('load', resolve, { once: true });
+        }
+      });
+      
+      // Small delay to ensure layout is computed
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      // Initialize main preview canvas
+      const previewCanvas = document.getElementById('previewCanvas');
+      if (previewCanvas) {
+        // Get display size
+        const displayWidth = previewCanvas.clientWidth || 400;
+        const displayHeight = previewCanvas.clientHeight || 440;
+        
+        // Set canvas resolution attributes to match display size
+        previewCanvas.width = displayWidth;
+        previewCanvas.height = displayHeight;
+        
+        this.previewScene = new THREE.Scene();
+        this.previewScene.background = new THREE.Color(`rgba(104, 101, 101, 0.95)`);
+        
+        this.previewCamera = new THREE.PerspectiveCamera(
+          40,
+          displayWidth / displayHeight,
+          0.1,
+          1000
+        );
+        this.previewCamera.position.set(0, 4, 7);
+        this.previewCamera.lookAt(0, 1, 0);
+        this.previewCamera.updateProjectionMatrix();
+        
+        this.previewRenderer = new THREE.WebGLRenderer({ 
+          canvas: previewCanvas, 
+          antialias: true, 
+          alpha: false,
+          preserveDrawingBuffer: false
+        });
+        this.previewRenderer.setSize(displayWidth, displayHeight);
+        this.previewRenderer.setPixelRatio(window.devicePixelRatio);
+        this.previewRenderer.shadowMap.enabled = true;
+        
+        // Add lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        this.previewScene.add(ambientLight);
+        
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(5, 5, 5);
+        dirLight.castShadow = true;
+        dirLight.shadow.mapSize.width = 1024;
+        dirLight.shadow.mapSize.height = 1024;
+        this.previewScene.add(dirLight);
+        
+        // Add floor
+        const floorGeom = new THREE.PlaneGeometry(20, 20);
+        const floorMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(`rgba(104, 103, 103, 0.95)`) });
+        const floorMesh = new THREE.Mesh(floorGeom, floorMat);
+        floorMesh.rotation.x = -Math.PI / 2;
+        floorMesh.position.y = -1.5;
+        floorMesh.receiveShadow = true;
+        this.previewScene.add(floorMesh);
+        
+        // Initialize managers
+        this.previewSkinMgr = new SkinManager(this.previewScene, gltfLoader);
+        this.previewHookMgr = new HookManager(this.previewScene);
+        this.previewNametags = new Nametags(this.previewScene);
+      }
+      
+      // Initialize button canvas preview
+      const buttonCanvas = document.getElementById('customizationButtonCanvas');
+      if (buttonCanvas) {
+        const btnDisplayWidth = buttonCanvas.clientWidth || 120;
+        const btnDisplayHeight = buttonCanvas.clientHeight || 120;
+        
+        // Set canvas resolution attributes
+        buttonCanvas.width = btnDisplayWidth;
+        buttonCanvas.height = btnDisplayHeight;
+        
+        this.buttonRenderer = new THREE.WebGLRenderer({ 
+          canvas: buttonCanvas, 
+          antialias: true, 
+          alpha: false,
+          preserveDrawingBuffer: false
+        });
+        this.buttonRenderer.setSize(btnDisplayWidth, btnDisplayHeight);
+        this.buttonRenderer.setPixelRatio(window.devicePixelRatio);
+      }
+      
+      // Handle window resize
+      const handleResize = () => {
+        if (previewCanvas) {
+          const newDisplayWidth = previewCanvas.clientWidth;
+          const newDisplayHeight = previewCanvas.clientHeight;
+          
+          if (newDisplayWidth > 0 && newDisplayHeight > 0) {
+            this.previewRenderer?.setSize(newDisplayWidth, newDisplayHeight);
+            this.previewCamera.aspect = newDisplayWidth / newDisplayHeight;
+            this.previewCamera?.updateProjectionMatrix();
+          }
+        }
+        
+        if (buttonCanvas) {
+          const newBtnDisplayWidth = buttonCanvas.clientWidth;
+          const newBtnDisplayHeight = buttonCanvas.clientHeight;
+          
+          if (newBtnDisplayWidth > 0 && newBtnDisplayHeight > 0) {
+            this.buttonRenderer?.setSize(newBtnDisplayWidth, newBtnDisplayHeight);
+          }
+        }
+      };
+      window.addEventListener('resize', handleResize);
+      
+      this.resizeHandler = handleResize;
+      
+      this.isInitialized = true;
+      await this.updatePreview();
+      this.startAnimation();
+    } catch (e) {
+      console.error('[PlayerPreviewSystem] Initialization failed:', e);
+    }
+  }
+
+  async updatePreview() {
+    try {
+      const authUser = JSON.parse(localStorage.getItem('auth_user'));
+      if (!authUser) return;
+      
+      // Fetch player data
+      const res = await fetch(`${API_BASE}/api/skins`, {
+        headers: { Authorization: `Bearer ${authUser.token}` }
+      });
+      const data = await res.json();
+      
+      // Get equipped items
+      const equippedSkinId = data.equippedSkin;
+      const equippedGrappleId = data.equippedGrapple;
+      
+      if (!equippedSkinId || !equippedGrappleId) return;
+      
+      // Get skin and grapple data
+      const { skins, grapples } = data;
+      const skinData = skins.find(s => s.id === equippedSkinId);
+      const grappleData = grapples.find(g => g.id === equippedGrappleId);
+      
+      if (!skinData || !grappleData) return;
+      
+      // Build full skin data object
+      this.previewPlayerData = {
+        glb: skinData.glb,
+        scale: skinData.scale || 1.0,
+        eyeOffset: skinData.eyeOffset || 1.0,
+        grapple: {
+          image: grappleData.image,
+          localImage: grappleData.localImage,
+          scale: grappleData.scale || 1.0,
+          color: grappleData.color || 0x00ffff,
+        },
+      };
+      
+      // Load skin
+      if (this.previewSkinMgr) {
+        await this.previewSkinMgr.assignSkin('preview-player', this.previewPlayerData, false);
+        this.previewSkinMgr.setPosition('preview-player', 0, 0, 0);
+      }
+      
+      // Load grapple
+      if (this.previewHookMgr) {
+        this.previewHookMgr.assignHook('preview-player', this.previewPlayerData.grapple, false);
+      }
+      
+      // Setup nametag - fetch colors from auth/me (same as stats viewer)
+      const res2 = await fetch(`${API_BASE}/auth/me`, {
+        headers: { Authorization: `Bearer ${authUser.token}` }
+      });
+      const userData = await res2.json();
+      
+      if (this.previewNametags) {
+        // Get colors directly from user data (same place as stats viewer)
+        const prefixColor = userData.prefixColor || '#ffffff';
+        const usernameColor = userData.usernameColor || '#ffffff';
+        
+        this.previewNametags.register({
+          sessionId: 'preview-player',
+          username: authUser.username,
+          userPrefix: userData.userPrefix || '',
+          prefixColor: prefixColor,
+          usernameColor: usernameColor,
+        });
+      }
+      
+      console.log('[PlayerPreviewSystem] Preview updated');
+    } catch (e) {
+      console.error('[PlayerPreviewSystem] Update failed:', e);
+    }
+  }
+
+  startAnimation() {
+    const animate = () => {
+      this.animationFrameId = requestAnimationFrame(animate);
+      
+      if (this.previewRenderer && this.previewScene && this.previewCamera) {
+        // Update nametag positions
+        const playerMeshMap = new Map();
+        const playerMesh = this.previewSkinMgr?.getRoot('preview-player');
+        if (playerMesh) {
+          playerMesh.castShadow = true;
+          playerMeshMap.set('preview-player', playerMesh);
+        }
+        
+        if (this.previewNametags && playerMeshMap.size > 0) {
+          // Pass empty string as myId so the nametag is always visible
+          this.previewNametags.update(playerMeshMap, '', this.previewCamera);
+          
+          // Move nametag lower by adjusting the sprite position
+          const entry = this.previewNametags._entries?.get('preview-player');
+          if (entry && entry.sprite) {
+            entry.sprite.position.y -= 1.2;  // Move down by 1.2 units
+          }
+        }
+        
+        // Update grapple - simple position and rotation
+        if (this.previewHookMgr && playerMesh) {
+          const hook = this.previewHookMgr._hooks?.get('preview-player');
+          if (hook) {
+            // Set grapple position relative to player
+            hook.hookPivot.position.copy(playerMesh.position).add(new THREE.Vector3(-1.2, 0.5, 2));
+            // Face the grapple away from the player (180 degrees opposite)
+            hook.hookPivot.rotation.copy(playerMesh.rotation);
+            hook.hookPivot.rotateOnWorldAxis(new THREE.Vector3(0.25, 1, 0), Math.PI);
+            // Scale grapple bigger for preview
+            hook.hookPivot.scale.set(1.4, 1.4, 1.4);
+            hook.hookPivot.visible = true;
+          }
+        }
+        
+        // Face the player forward at a slight angle
+        if (playerMesh) {
+          playerMesh.rotation.y = -Math.PI / -8;
+        }
+        
+        this.previewRenderer.render(this.previewScene, this.previewCamera);
+      }
+      
+      // Render button preview (same scene, different camera)
+      if (this.buttonRenderer && this.previewScene) {
+        const buttonCam = new THREE.PerspectiveCamera(40, 1, 0.1, 1000);
+        buttonCam.position.set(0.3, 2, 7);
+        buttonCam.lookAt(0.3, 1, 0);
+        this.buttonRenderer.render(this.previewScene, buttonCam);
+      }
+    };
+    
+    animate();
+  }
+
+  dispose() {
+    if (this.animationFrameId) {
+      cancelAnimationFrame(this.animationFrameId);
+    }
+    if (this.resizeHandler) {
+      window.removeEventListener('resize', this.resizeHandler);
+    }
+    if (this.previewRenderer) {
+      this.previewRenderer.dispose();
+    }
+    if (this.buttonRenderer) {
+      this.buttonRenderer.dispose();
+    }
+    if (this.previewSkinMgr) {
+      this.previewSkinMgr.removeAll();
+    }
+    if (this.previewNametags) {
+      this.previewNametags.dispose();
+    }
+  }
+}
+
 // ── Presence ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 async function joinPresence() {
@@ -1203,18 +1869,33 @@ async function joinPresence() {
   try {
     presenceRoom = await colyseus.joinOrCreate('lobby', { token: authUser.token });
 
-    // listen for incoming messages
+    // listen for incoming messages - handles both display and notifications
     presenceRoom.onMessage('newMessage', async (data) => {
       const { from, text } = data;
+      const authUser = JSON.parse(localStorage.getItem('auth_user'));
       
       if (activeChatUser === from) {
-        await renderMessages(from);
+        // If chat is open, append message to the DOM
+        const scroll = document.getElementById('msgScroll');
+        
+        // Remove empty state if it exists
+        const empty = scroll.querySelector('div[style*="text-align:center"]');
+        if (empty && empty.textContent === 'no messages yet') {
+          empty.remove();
+        }
+        
+        // Add the new message to the bottom
+        const elem = _createMessageElement(data, authUser.username);
+        scroll.appendChild(elem);
+        scroll.scrollTop = scroll.scrollHeight;
+        
+        // Increment total for pagination awareness
+        messageState.total += 1;
       } else {
-        // Check if this is a game invite
+        // If chat is not open, show notification
         if (text.includes('[CLICK TO JOIN]')) {
           addNotification('game-invite', from, `[Game] ${from} has invited you to a 1v1 match`);
         } else {
-          // Add regular message to notifications if not in active chat
           addNotification('message', from, `[Message] ${from} - ${text.substring(0, 40)}${text.length > 40 ? '...' : ''}`);
         }
       }
@@ -1232,8 +1913,10 @@ async function joinPresence() {
     presenceRoom.onMessage('friendAccepted', async (data) => {
       const { from } = data;
       addNotification('friend-accepted', from, `[Friend] Your friend request to ${from} was accepted`);
-      // Reload friends list
+      // Reload friends list and requests
+      console.log('[Presence] Friend accepted, refreshing friends menu');
       await loadFriends();
+      await loadFriendRequests();
     });
 
     window.addEventListener('beforeunload', () => {
@@ -1247,6 +1930,10 @@ async function joinPresence() {
   }
 }
 
+// Initialize presence room and expose it globally for reconnect
+if (!window.joinPresence) {
+  window.joinPresence = joinPresence;
+}
 joinPresence();
 
 // ── Client physics ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1418,7 +2105,22 @@ const hookMgr = new HookManager(scene);
 //nametags --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 const nametags = new Nametags(scene);
 const perfMonitor = new PerformanceMonitor(scene, renderer);
-const playerMeshMap = new Map();  
+const playerMeshMap = new Map();
+
+// Initialize preview system (after gltfLoader is created)
+const previewSystem = new PlayerPreviewSystem();
+previewSystem.initialize().catch(e => console.error('[Preview Init]', e));
+
+// Update preview when customization opens
+const customizationEl = document.getElementById('customization');
+if (customizationEl) {
+  const observer = new MutationObserver(() => {
+    if (customizationEl.style.display === 'flex') {
+      previewSystem.updatePreview().catch(e => console.error('[Preview Update]', e));
+    }
+  });
+  observer.observe(customizationEl, { attributes: true, attributeFilter: ['style'] });
+}  
 
 let oppYaw = 0;
 let currentMapRoot = null;        // the THREE.Group added to scene
@@ -1634,6 +2336,43 @@ class Explosion {
 const activeGearEffects = new Map();  // shooterId → { model, shooterId, initialOffset, startTime, duration }
 
 function updateGearEffectPosition(effect) {
+  const LERP_FACTOR = 0.15;  // Easing factor (0-1, lower = smoother)
+  
+  // Handle mace animation (rises up over duration)
+  if (effect.animationType === 'mace') {
+    const elapsed = Date.now() - effect.startTime;
+    const progress = Math.min(1, elapsed / effect.duration);  // 0 to 1
+    
+    const shooterState = room.state.players.get(effect.shooterId);
+    if (shooterState && shooterState.position) {
+      // Calculate target position (mace rises up from player position)
+      const riseHeight = progress * 2.5;  // Rise up to 2.5 meters
+      const targetPos = new THREE.Vector3(
+        shooterState.position.x,
+        shooterState.position.y + 1.5 + riseHeight,
+        shooterState.position.z
+      );
+      
+      // Smoothly interpolate position
+      effect.currentPosition.lerp(targetPos, LERP_FACTOR);
+      effect.model.position.copy(effect.currentPosition);
+      
+      // Mace rotates with the player
+      if (effect.shooterId === myId) {
+        // Local player: use camera rotation
+        effect.model.quaternion.copy(camera.quaternion);
+      } else {
+        // Remote player: use their mesh rotation
+        const oppMesh = skinMgr.getRoot(effect.shooterId);
+        if (oppMesh) {
+          effect.model.quaternion.copy(oppMesh.quaternion);
+        }
+      }
+    }
+    return;
+  }
+  
+  // Default sniper animation (follows player)
   if (effect.shooterId === myId) {
     // Local player: use camera position
     let velocityOffset = { x: 0, y: 0, z: 0 };
@@ -1649,11 +2388,17 @@ function updateGearEffectPosition(effect) {
       velocityOffset.y = cameraDir.y * forwardVel * velocityScale;
       velocityOffset.z = cameraDir.z * forwardVel * velocityScale;
     }
-    effect.model.position.set(
+    
+    // Calculate target position
+    const targetPos = new THREE.Vector3(
       camera.position.x + effect.initialOffset.x + velocityOffset.x,
       camera.position.y + effect.initialOffset.y + velocityOffset.y,
       camera.position.z + effect.initialOffset.z + velocityOffset.z
     );
+    
+    // Smoothly interpolate position
+    effect.currentPosition.lerp(targetPos, LERP_FACTOR);
+    effect.model.position.copy(effect.currentPosition);
     effect.model.quaternion.copy(camera.quaternion);
   } else {
     // Opponent (or any other player): use networked state
@@ -1673,11 +2418,18 @@ function updateGearEffectPosition(effect) {
           velocityOffset.z = lookDir.z * forwardVel * velocityScale;
         }
       }
-      effect.model.position.set(
+      
+      // Calculate target position
+      const targetPos = new THREE.Vector3(
         shooterState.position.x + effect.initialOffset.x + velocityOffset.x,
         shooterState.position.y + effect.initialOffset.y + velocityOffset.y,
         shooterState.position.z + effect.initialOffset.z + velocityOffset.z
       );
+      
+      // Smoothly interpolate position
+      effect.currentPosition.lerp(targetPos, LERP_FACTOR);
+      effect.model.position.copy(effect.currentPosition);
+      
       const oppMesh = skinMgr.getRoot(effect.shooterId);
       if (oppMesh) {
         effect.model.quaternion.copy(oppMesh.quaternion);
@@ -1798,10 +2550,20 @@ function startParryCooldown() {
 }
 
 function useGear() {
+  // Get the currently equipped gear (from gearItems array)
+  const equippedGear = gearItems.find(g => g.equipped) || gearItems[0];
+  if (!equippedGear) {
+    console.warn('[useGear] No equipped gear found, gearItems:', gearItems);
+    return;
+  }
+  
+  const gearName = equippedGear.id;
+  console.log('[useGear] Using gear:', gearName);
+  
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
   
-  // Offset the sniper shot origin to the right, like a barrel
+  // Offset the shot origin to the right, like a barrel
   const right = new THREE.Vector3();
   right.crossVectors(dir, camera.up).normalize();
   
@@ -1810,8 +2572,9 @@ function useGear() {
     .addScaledVector(dir, 0.5)
     .addScaledVector(right, 0.5);
   
+  console.log('[useGear] Sending message with gearName:', gearName);
   room.send('useGear', {
-    gearName: 'sniper',
+    gearName: gearName,
     cameraPos: { x: pos.x, y: pos.y, z: pos.z },
     cameraDir: { x: dir.x, y: dir.y, z: dir.z }
   });
@@ -1953,6 +2716,83 @@ async function setupRoom(r) {
     explosions.push(new Explosion(data.position));
   });
 
+  // ── Particle spawning ────────────────────────────────────────
+  function spawnParticles(position, type, count) {
+    // Create particles for impact effects
+    for (let i = 0; i < count; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 5 + Math.random() * 10;
+      const velocity = {
+        x: Math.cos(angle) * speed,
+        y: 3 + Math.random() * 4,  // Always go up
+        z: Math.sin(angle) * speed
+      };
+      
+      // All particles use the same color
+      const color = 0x2e2e2e;  // Consistent dark gray
+      
+      // Create simple particle mesh
+      const geo = new THREE.SphereGeometry(0.1, 4, 4);
+      const mat = new THREE.MeshBasicMaterial({ color });
+      const particle = new THREE.Mesh(geo, mat);
+      particle.position.set(position.x, position.y, position.z);
+      scene.add(particle);
+      
+      // Store particle with lifetime
+      const particleData = {
+        mesh: particle,
+        position: { x: position.x, y: position.y, z: position.z },
+        velocity: velocity,
+        lifetime: 1.0,  // seconds
+        maxLifetime: 1.0,
+        gravity: -9.8
+      };
+      
+      // Update particle each frame and remove when done
+      const updateParticle = () => {
+        const deltaTime = 1 / 60;  // Assume 60 FPS
+        particleData.lifetime -= deltaTime;
+        
+        if (particleData.lifetime <= 0) {
+          scene.remove(particle);
+          geo.dispose();
+          mat.dispose();
+          return true;  // Signal removal
+        }
+        
+        // Update velocity (gravity)
+        particleData.velocity.y += particleData.gravity * deltaTime;
+        
+        // Update position
+        particleData.position.x += particleData.velocity.x * deltaTime;
+        particleData.position.y += particleData.velocity.y * deltaTime;
+        particleData.position.z += particleData.velocity.z * deltaTime;
+        
+        particle.position.set(
+          particleData.position.x,
+          particleData.position.y,
+          particleData.position.z
+        );
+        
+        // Fade out
+        const alpha = particleData.lifetime / particleData.maxLifetime;
+        particle.material.opacity = alpha;
+        
+        return false;
+      };
+      
+      // Add to particle update queue (we'll process this in the animation loop)
+      // For now, just add a simple fallback update
+      let elapsed = 0;
+      const particleInterval = setInterval(() => {
+        elapsed += 1 / 60;
+        if (updateParticle() || elapsed > 2) {
+          clearInterval(particleInterval);
+        }
+      }, 1000 / 60);
+    }
+  }
+
   room.onMessage('playerHit', (data) => {
     const isMe = data.playerId === myId;
     const numId = isMe ? 'health'     : 'opponentHP';
@@ -2080,71 +2920,166 @@ async function setupRoom(r) {
       
       return group;
     }
+
+    // Create procedural mace model (fallback if OBJ fails)
+    function createMaceModel() {
+      const group = new THREE.Group();
+      
+      // Handle (long cylinder)
+      const handleGeo = new THREE.CylinderGeometry(0.1, 0.1, 1.2, 16);
+      const handleMat = new THREE.MeshStandardMaterial({ color: 0x8B4513, metalness: 0.3, roughness: 0.7 });
+      const handle = new THREE.Mesh(handleGeo, handleMat);
+      handle.position.y = -0.5;
+      group.add(handle);
+      
+      // Head (sphere)
+      const headGeo = new THREE.SphereGeometry(0.4, 32, 32);
+      const headMat = new THREE.MeshStandardMaterial({ color: 0x555555, metalness: 0.9, roughness: 0.2 });
+      const head = new THREE.Mesh(headGeo, headMat);
+      head.position.y = 0.7;
+      head.scale.set(1, 1.2, 1);
+      group.add(head);
+      
+      // Spikes on head
+      for (let i = 0; i < 12; i++) {
+        const angle = (i / 12) * Math.PI * 2;
+        const spikeGeo = new THREE.ConeGeometry(0.08, 0.5, 8);
+        const spikeMat = new THREE.MeshStandardMaterial({ color: 0x444444, metalness: 0.8 });
+        const spike = new THREE.Mesh(spikeGeo, spikeMat);
+        spike.position.set(
+          Math.cos(angle) * 0.45,
+          0.7,
+          Math.sin(angle) * 0.45
+        );
+        spike.lookAt(Math.cos(angle) * 0.6, 1.0, Math.sin(angle) * 0.6);
+        group.add(spike);
+      }
+      
+      return group;
+    }
     
     let model = null;
     
     // Ensure duration has a sensible default
     const effectDuration = duration || 3000;
     
-    // Try to load GLB file, fall back to procedural model
-    const gearGlbPath = {
-      'sniper': '/gear/sniper.glb',
-    }[gearName] || '/gear/sniper.glb';
+    if (gearName === 'mace') {
+      // Load mace GLB or create procedural model
+      const maceGlbPath = '/gear/mace.glb';
+      const gltfLoader = new GLTFLoader();
+      gltfLoader.load(
+        maceGlbPath,
+        (gltf) => {
+          // GLB loaded successfully
+          model = gltf.scene;
+          model.position.set(position.x, position.y, position.z);
+          model.scale.set(0.5, 0.5, 0.5);
+          scene.add(model);
+          console.log('[gearEffect] Mace GLB loaded, starting animation with duration:', effectDuration);
+          setupMaceAnimation(model, shooterId, position, effectDuration);
+        },
+        undefined,
+        (error) => {
+          // GLB failed, use procedural model
+          console.warn(`[gearEffect] Failed to load ${maceGlbPath}, using procedural model:`, error);
+          model = createMaceModel();
+          model.position.set(position.x, position.y, position.z);
+          scene.add(model);
+          console.log('[gearEffect] Procedural mace created, starting animation with duration:', effectDuration);
+          setupMaceAnimation(model, shooterId, position, effectDuration);
+        }
+      );
+    } else {
+      // Default to sniper (GLB model)
+      const gearGlbPath = {
+        'sniper': '/gear/sniper.glb',
+      }[gearName] || '/gear/sniper.glb';
+      
+      const gltfLoader = new GLTFLoader();
+      gltfLoader.load(
+        gearGlbPath,
+        (gltf) => {
+          // GLB loaded successfully
+          model = gltf.scene;
+          model.position.set(position.x, position.y, position.z);
+          
+          // Apply rotation
+          const dir = new THREE.Vector3(rotation.x, rotation.y, rotation.z).normalize();
+          const up = new THREE.Vector3(0, 1, 0);
+          const right = new THREE.Vector3().crossVectors(up, dir).normalize();
+          const newUp = new THREE.Vector3().crossVectors(dir, right).normalize();
+          
+          const matrix = new THREE.Matrix4();
+          matrix.makeBasis(right, newUp, dir);
+          model.quaternion.setFromRotationMatrix(matrix);
+          
+          // Rotate sniper 180 degrees yaw
+          const yawRotation = new THREE.Quaternion();
+          yawRotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+          model.quaternion.multiplyQuaternions(model.quaternion, yawRotation);
+          
+          scene.add(model);
+          console.log('[gearEffect] GLB loaded, starting animation with duration:', effectDuration);
+          setupGearEffectAnimation(model, shooterId, position, effectDuration);
+        },
+        undefined,
+        (error) => {
+          // GLB failed, use procedural model
+          console.warn(`[gearEffect] Failed to load ${gearGlbPath}, using procedural model:`, error);
+          model = createSniperModel();
+          model.position.set(position.x, position.y, position.z);
+          
+          // Apply rotation
+          const dir = new THREE.Vector3(rotation.x, rotation.y, rotation.z).normalize();
+          const up = new THREE.Vector3(0, 1, 0);
+          const right = new THREE.Vector3().crossVectors(up, dir).normalize();
+          const newUp = new THREE.Vector3().crossVectors(dir, right).normalize();
+          
+          const matrix = new THREE.Matrix4();
+          matrix.makeBasis(right, newUp, dir);
+          model.quaternion.setFromRotationMatrix(matrix);
+          
+          // Rotate sniper 180 degrees yaw
+          const yawRotation = new THREE.Quaternion();
+          yawRotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+          model.quaternion.multiplyQuaternions(model.quaternion, yawRotation);
+          
+          scene.add(model);
+          console.log('[gearEffect] Procedural model created, starting animation with duration:', effectDuration);
+          setupGearEffectAnimation(model, shooterId, position, effectDuration);
+        }
+      );
+    }
     
-    const gltfLoader = new GLTFLoader();
-    gltfLoader.load(
-      gearGlbPath,
-      (gltf) => {
-        // GLB loaded successfully
-        model = gltf.scene;
-        model.position.set(position.x, position.y, position.z);
-        
-        // Apply rotation
-        const dir = new THREE.Vector3(rotation.x, rotation.y, rotation.z).normalize();
-        const up = new THREE.Vector3(0, 1, 0);
-        const right = new THREE.Vector3().crossVectors(up, dir).normalize();
-        const newUp = new THREE.Vector3().crossVectors(dir, right).normalize();
-        
-        const matrix = new THREE.Matrix4();
-        matrix.makeBasis(right, newUp, dir);
-        model.quaternion.setFromRotationMatrix(matrix);
-        
-        // Rotate sniper 180 degrees yaw
-        const yawRotation = new THREE.Quaternion();
-        yawRotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
-        model.quaternion.multiplyQuaternions(model.quaternion, yawRotation);
-        
-        scene.add(model);
-        console.log('[gearEffect] GLB loaded, starting animation with duration:', effectDuration);
-        setupGearEffectAnimation(model, shooterId, position, effectDuration);
-      },
-      undefined,
-      (error) => {
-        // GLB failed, use procedural model
-        console.warn(`[gearEffect] Failed to load ${gearGlbPath}, using procedural model:`, error);
-        model = createSniperModel();
-        model.position.set(position.x, position.y, position.z);
-        
-        // Apply rotation
-        const dir = new THREE.Vector3(rotation.x, rotation.y, rotation.z).normalize();
-        const up = new THREE.Vector3(0, 1, 0);
-        const right = new THREE.Vector3().crossVectors(up, dir).normalize();
-        const newUp = new THREE.Vector3().crossVectors(dir, right).normalize();
-        
-        const matrix = new THREE.Matrix4();
-        matrix.makeBasis(right, newUp, dir);
-        model.quaternion.setFromRotationMatrix(matrix);
-        
-        // Rotate sniper 180 degrees yaw
-        const yawRotation = new THREE.Quaternion();
-        yawRotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
-        model.quaternion.multiplyQuaternions(model.quaternion, yawRotation);
-        
-        scene.add(model);
-        console.log('[gearEffect] Procedural model created, starting animation with duration:', effectDuration);
-        setupGearEffectAnimation(model, shooterId, position, effectDuration);
-      }
-    );
+    function setupMaceAnimation(model, shooterId, position, duration) {
+      const finalDuration = Math.max(duration || 3000, 3000);
+      const startTime = Date.now();
+      
+      // Initialize current position for smooth interpolation
+      const currentPosition = new THREE.Vector3();
+      currentPosition.copy(model.position);
+      
+      // Store effect with mace-specific animation data
+      const effect = { 
+        model, 
+        shooterId, 
+        startTime, 
+        duration: finalDuration,
+        animationType: 'mace',  // Mark as mace animation
+        currentPosition  // For smooth position interpolation
+      };
+      activeGearEffects.set(shooterId, effect);
+      
+      // Handle cleanup after duration
+      const cleanupTimeout = setTimeout(() => {
+        activeGearEffects.delete(shooterId);
+        scene.remove(model);
+        model.traverse((child) => {
+          if (child.geometry) child.geometry.dispose();
+          if (child.material) child.material.dispose();
+        });
+      }, finalDuration);
+    }
     
     function setupGearEffectAnimation(model, shooterId, position, duration) {
       // Ensure we have a valid duration
@@ -2164,8 +3099,12 @@ async function setupRoom(r) {
         );
       }
       
+      // Initialize current position for smooth interpolation
+      const currentPosition = new THREE.Vector3();
+      currentPosition.copy(model.position);
+      
       // Register this effect for frame-by-frame updates
-      const effect = { model, shooterId, initialOffset, startTime, duration: finalDuration };
+      const effect = { model, shooterId, initialOffset, startTime, duration: finalDuration, animationType: 'sniper', currentPosition };
       activeGearEffects.set(shooterId, effect);
       
       // Handle cleanup after duration
@@ -2178,6 +3117,14 @@ async function setupRoom(r) {
         });
       }, finalDuration);
     }
+  });
+
+  room.onMessage('particles', (data) => {
+    const { position, type, count } = data;
+    console.log('[particles] Received:', { type, count });
+    
+    // Create particles at the given position
+    spawnParticles(position, type, count);
   });
 
   room.onMessage('parrySuccess', (data) => {
@@ -2441,6 +3388,8 @@ window.camera = camera;
 window.controls = controls;
 window.applySettings = applySettings;
 window.gameSettings = gameSettings;
+window.colyseus = colyseus;
+console.log('[Init] Global game objects exposed - camera, controls, applySettings, gameSettings, colyseus');
 
 // ── Main loop ─────────────────────────────────────────────
 const FT   = 1 / 60;
