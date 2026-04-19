@@ -25,7 +25,8 @@ const { BombSystem }     = require('../game/BombSystem');
 const { GearSystem }     = require('../game/GearSystem');
 const ParrySystem        = require('../game/ParrySystem');
 const { MAP_LIST, getMap, resolveVotes } = require('../maps');
-const { getSkin, getGrapple }        = require('../skins');
+const { getSkin, getGrapple, getBombSkin }        = require('../skins');
+const { checkAndUnlockRewards }      = require('../routes/skins');
 const CFG                = require('../config');
 
 const mongoose = require('mongoose');
@@ -100,16 +101,34 @@ class BaseGameRoom extends Room {
         await unlockGrapple(userId, 'cyan');
         await User.findByIdAndUpdate(userId, { status: 'In Game' });
 
-        const user = await User.findById(userId).select('equippedSkin unlockedSkins equippedGrapple unlockedGrapples username userPrefix prefixColor usernameColor');
+        const user = await User.findById(userId).select('skins username userPrefix prefixColor usernameColor');
         if (user) {
-          const equippedId      = user.equippedSkin || 'default';
-          const owned           = user.unlockedSkins || [];
-          const effectiveSkinId = owned.includes(equippedId) ? equippedId : 'default';
-          const skin            = getSkin(effectiveSkinId);
-          const grappleId  = user.equippedGrapple || 'default';
-          const ownedG     = user.unlockedGrapples || [];
-          const effectiveGrappleId = ownedG.includes(grappleId) ? grappleId : 'default';
-          const grappleDef = getGrapple(effectiveGrappleId);
+          // Find equipped player skin from nested structure
+          let equippedId = 'default';
+          if (user.skins?.player) {
+            for (const [id, data] of Object.entries(user.skins.player)) {
+              if (data.equipped) { equippedId = id; break; }
+            }
+          }
+          const skin = getSkin(equippedId);
+
+          // Find equipped grapple from nested structure
+          let grappleId = 'default';
+          if (user.skins?.grapples) {
+            for (const [id, data] of Object.entries(user.skins.grapples)) {
+              if (data.equipped) { grappleId = id; break; }
+            }
+          }
+          const grappleDef = getGrapple(grappleId);
+
+          // Find equipped bomb skin from nested structure
+          let bombSkinId = 'default';
+          if (user.skins?.bombs) {
+            for (const [id, data] of Object.entries(user.skins.bombs)) {
+              if (data.equipped) { bombSkinId = id; break; }
+            }
+          }
+          const bombSkinDef = getBombSkin(bombSkinId);
 
           skinData = {
             skinId:    skin.id,
@@ -121,6 +140,12 @@ class BaseGameRoom extends Room {
               localImage: grappleDef.localImage,
               scale: grappleDef.scale,
               color: grappleDef.color,
+            },
+            bombSkinId: bombSkinId,
+            bombSkin: {
+              id: bombSkinDef.id,
+              glb: bombSkinDef.glb,
+              scale: bombSkinDef.scale,
             },
           };
 
@@ -145,6 +170,7 @@ class BaseGameRoom extends Room {
 
     const ps = new PlayerState();
     ps.health = CFG.START_HEALTH;
+    ps.bombSkinId = skinData.bombSkinId || 'default';
     this.state.players.set(client.sessionId, ps);
 
     client.send('init', { myId: client.sessionId, isHost: isFirst });
@@ -227,16 +253,34 @@ class BaseGameRoom extends Room {
     for (const client of this.clients) {
       try {
         if (client._userId) {
-          const user = await User.findById(client._userId).select('equippedSkin unlockedSkins equippedGrapple unlockedGrapples');
+          const user = await User.findById(client._userId).select('skins');
           if (user) {
-            const equippedId      = user.equippedSkin || 'default';
-            const owned           = user.unlockedSkins || [];
-            const effectiveSkinId = owned.includes(equippedId) ? equippedId : 'default';
-            const skin            = getSkin(effectiveSkinId);
-            const grappleId  = user.equippedGrapple || 'default';
-            const ownedG     = user.unlockedGrapples || [];
-            const effectiveGrappleId = ownedG.includes(grappleId) ? grappleId : 'default';
-            const grappleDef = getGrapple(effectiveGrappleId);
+            // Find equipped player skin
+            let equippedId = 'default';
+            if (user.skins?.player) {
+              for (const [id, data] of Object.entries(user.skins.player)) {
+                if (data.equipped) { equippedId = id; break; }
+              }
+            }
+            const skin = getSkin(equippedId);
+
+            // Find equipped grapple
+            let grappleId = 'default';
+            if (user.skins?.grapples) {
+              for (const [id, data] of Object.entries(user.skins.grapples)) {
+                if (data.equipped) { grappleId = id; break; }
+              }
+            }
+            const grappleDef = getGrapple(grappleId);
+
+            // Find equipped bomb skin
+            let bombSkinId = 'default';
+            if (user.skins?.bombs) {
+              for (const [id, data] of Object.entries(user.skins.bombs)) {
+                if (data.equipped) { bombSkinId = id; break; }
+              }
+            }
+            const bombSkinDef = getBombSkin(bombSkinId);
 
             this._skins.set(client.sessionId, {
               skinId:    skin.id,
@@ -249,7 +293,19 @@ class BaseGameRoom extends Room {
                 scale: grappleDef.scale,
                 color: grappleDef.color,
               },
+              bombSkinId: bombSkinId,
+              bombSkin: {
+                id: bombSkinDef.id,
+                glb: bombSkinDef.glb,
+                scale: bombSkinDef.scale,
+              },
             });
+
+            // Set the bomb skin ID in the player state so it's available during gameplay
+            const ps = this.state.players.get(client.sessionId);
+            if (ps) {
+              ps.bombSkinId = bombSkinId;
+            }
           }
         }
       } catch (e) {
@@ -339,10 +395,28 @@ class BaseGameRoom extends Room {
     const winnerDbId = winnerClient?._userId;
     const loserDbId = loserClient?._userId;
     
-    // Update stats immediately on server
+    // Update stats and check for unlocks asynchronously
     if (winnerDbId && loserDbId) {
-      User.findByIdAndUpdate(winnerDbId, { $inc: { wins: 1 } }).catch(e => console.error('Failed to update winner stats:', e));
-      User.findByIdAndUpdate(loserDbId, { $inc: { deaths: 1 } }).catch(e => console.error('Failed to update loser stats:', e));
+      (async () => {
+        try {
+          await User.findByIdAndUpdate(winnerDbId, { $inc: { wins: 1 } });
+          await User.findByIdAndUpdate(loserDbId, { $inc: { deaths: 1 } });
+          
+          // Check and unlock any earned rewards for both players
+          const winnerUnlocks = await checkAndUnlockRewards(winnerDbId);
+          const loserUnlocks = await checkAndUnlockRewards(loserDbId);
+          
+          // Send updated unlock info to clients
+          if (winnerUnlocks.length > 0 || loserUnlocks.length > 0) {
+            this.broadcast('unlocksNotification', {
+              winnerUnlocks,
+              loserUnlocks,
+            });
+          }
+        } catch (e) {
+          console.error('Error updating player stats/unlocks:', e);
+        }
+      })();
     }
     
     this.broadcast('gameEnd', { winner: winnerDbId, loser: loserDbId });
@@ -386,7 +460,15 @@ class BaseGameRoom extends Room {
 
   _handleSpawnBomb(client, data) {
     const id = this._bombs.spawn(data.position, data.impulse, client.sessionId);
-    this.state.bombs.set(id, new BombState(id));
+    
+    // Get the player's equipped bomb skin
+    let equippedBombSkinId = 'default';
+    const playerState = this.state.players.get(client.sessionId);
+    if (playerState?.bombSkinId) {
+      equippedBombSkinId = playerState.bombSkinId;
+    }
+    
+    this.state.bombs.set(id, new BombState(id, equippedBombSkinId));
   }
 
   _handleParry(client) {
@@ -546,16 +628,25 @@ class BaseGameRoom extends Room {
     for (const client of this.clients) {
       try {
         if (client._userId) {
-          const user = await User.findById(client._userId).select('equippedSkin unlockedSkins equippedGrapple unlockedGrapples');
+          const user = await User.findById(client._userId).select('skins');
           if (user) {
-            const equippedId      = user.equippedSkin || 'default';
-            const owned           = user.unlockedSkins || [];
-            const effectiveSkinId = owned.includes(equippedId) ? equippedId : 'default';
-            const skin            = getSkin(effectiveSkinId);
-            const grappleId  = user.equippedGrapple || 'default';
-            const ownedG     = user.unlockedGrapples || [];
-            const effectiveGrappleId = ownedG.includes(grappleId) ? grappleId : 'default';
-            const grappleDef = getGrapple(effectiveGrappleId);
+            // Find equipped player skin
+            let equippedId = 'default';
+            if (user.skins?.player) {
+              for (const [id, data] of Object.entries(user.skins.player)) {
+                if (data.equipped) { equippedId = id; break; }
+              }
+            }
+            const skin = getSkin(equippedId);
+
+            // Find equipped grapple
+            let grappleId = 'default';
+            if (user.skins?.grapples) {
+              for (const [id, data] of Object.entries(user.skins.grapples)) {
+                if (data.equipped) { grappleId = id; break; }
+              }
+            }
+            const grappleDef = getGrapple(grappleId);
 
             this._skins.set(client.sessionId, {
               skinId:    skin.id,
@@ -602,6 +693,16 @@ class BaseGameRoom extends Room {
     // Reset grapple systems
     for (const [sid, grapple] of this._grapples) {
       grapple.reset();
+    }
+
+    // Reset input state to prevent old movement from carrying over
+    for (const sid of sessions) {
+      const pi = this._input.get(sid);
+      if (pi) {
+        pi.inputs = { w: false, a: false, s: false, d: false, space: false };
+        pi.camDir = { x: 0, y: 0, z: -1 };
+        pi.lastSeq = 0;
+      }
     }
 
     // Reload the map for clients

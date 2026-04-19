@@ -9,16 +9,18 @@ import RAPIER                    from '@dimforge/rapier3d-compat';
 import Colyseus                  from 'colyseus.js';
 
 import { initBackground, hideBackground, showBackground } from './background.js';
-import { SkinManager, HookManager } from './SkinManager.js';
+import { SkinManager, HookManager, BombManager } from './SkinManager.js';
 import { Nametags } from './Nametags.js';
 import { PerformanceMonitor } from './PerformanceMonitor.js';
-
 
 
 // ── Auth ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 const API_BASE = location.protocol === 'https:'
   ? `https://${location.hostname}`
   : `http://${location.hostname}:3000`;
+
+// Make API_BASE available globally for SkinManager and other modules
+window.API_BASE = API_BASE;
 
 // Helper to extract userId from JWT token
 function getUserIdFromToken(token) {
@@ -208,6 +210,15 @@ function showAuthOverlay() {
       overlay.remove();
       document.getElementById('menu').style.display = 'flex';
       fetchAndDisplayStats(data.token);
+      
+      // Preload user's unlocked skins on login
+      fetch(`${API_BASE}/api/skins/preload`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${data.token}` }
+      })
+      .then(r => r.json())
+      .then(result => console.log('[Login] Preloaded skins:', result))
+      .catch(err => console.warn('[Login] Failed to preload skins:', err));
       
       // Load and cache user settings after login
       fetch(`${API_BASE}/auth/me`, {
@@ -1288,15 +1299,23 @@ function updateNotificationsDisplay() {
   // Container will be updated by addNotification
 }
 
-// load skin cards
+// ── Skin card system ────────────────────────────────────────────────────────────
+// Store bomb skins globally so they can be accessed when bombs spawn during gameplay
+let gBombSkins = {};
 
-async function forEachUnlockedSkin(skinCallback, grappleCallback) {
+async function forEachUnlockedSkin(skinCallback, grappleCallback, bombCallback) {
   const authUser = JSON.parse(localStorage.getItem('auth_user'));
   if (!authUser) return;
   const res  = await fetch(`${API_BASE}/api/skins`, {
     headers: { Authorization: `Bearer ${authUser.token}` }
   });
-  const { skins, unlockedSkins, equippedSkin, grapples, unlockedGrapples, equippedGrapple } = await res.json();
+  const { skins, unlockedSkins, equippedSkin, grapples, unlockedGrapples, equippedGrapple, bombs, unlockedBombs, equippedBomb } = await res.json();
+
+  // Store bomb skins for gameplay use
+  gBombSkins = {};
+  for (const bomb of bombs) {
+    gBombSkins[bomb.id] = bomb;
+  }
 
   for (const skin of skins) {
     skinCallback(skin, unlockedSkins.includes(skin.id), skin.id === equippedSkin);
@@ -1307,13 +1326,34 @@ async function forEachUnlockedSkin(skinCallback, grappleCallback) {
       grappleCallback(grapple, unlockedGrapples.includes(grapple.id), grapple.id === equippedGrapple);
     }
   }
+
+  if (bombCallback) {
+    for (const bomb of bombs) {
+      bombCallback(bomb, unlockedBombs.includes(bomb.id), bomb.id === equippedBomb);
+    }
+  }
 }
 
-function createSkinCard(skin, unlocked, equipped) {
-  const container = document.getElementById('panel-skinCards');
+/**
+ * Generic card factory - prevents code duplication
+ * Creates a skin/grapple/bomb card with standard layout and event handling
+ * @param {Object} item - The item data (skin, grapple, or bomb)
+ * @param {string} containerId - ID of the container to append to
+ * @param {string} equipEndpoint - API endpoint to equip this item
+ * @param {string} paramName - Parameter name for the equip endpoint
+ * @param {boolean} unlocked - Whether the item is unlocked
+ * @param {boolean} equipped - Whether the item is equipped
+ */
+function createSkinCard(item, unlocked, equipped, containerId, equipEndpoint, paramName) {
+  const container = document.getElementById(containerId);
+  if (!container) {
+    console.warn(`[createSkinCard] Container not found: ${containerId}`);
+    return;
+  }
+
   const card = document.createElement('div');
   card.className = 'skin-card';
-  card.style.background = `linear-gradient(to left, rgba(0,0,0,0.7), transparent), url(${skin.thumbnail}) center/cover`;
+  card.style.background = `linear-gradient(to left, rgba(0,0,0,0.7), transparent), url(${item.thumbnail}) center/cover`;
 
   if (!unlocked) {
     const lock = document.createElement('div');
@@ -1321,73 +1361,54 @@ function createSkinCard(skin, unlocked, equipped) {
     lock.innerHTML = '<span style="font-size:12px;color:#fff;">locked</span>';
     card.appendChild(lock);
   } else {
-    card.innerHTML = `<h2>${skin.name}</h2> <p style="font-size: 12px; color: #dde">${skin.description}</p>`;
+    card.innerHTML = `<h2>${item.name}</h2> <p style="font-size: 12px; color: #dde">${item.description}</p>`;
     card.addEventListener('click', async () => {
-      await fetch(`${API_BASE}/api/skins/equip`, {
+      const authUser = JSON.parse(localStorage.getItem('auth_user'));
+      if (!authUser) return;
+
+      const body = {};
+      body[paramName] = item.id;
+
+      await fetch(`${API_BASE}${equipEndpoint}`, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${JSON.parse(localStorage.getItem('auth_user')).token}`,
+          'Authorization': `Bearer ${authUser.token}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ skinId: skin.id })
+        body: JSON.stringify(body)
       });
-      // update UI
-      document.querySelectorAll('#panel-skinCards .skin-card').forEach(c => c.classList.remove('selected'));
+
+      // Update UI - remove selection from all cards in this container
+      container.querySelectorAll('.skin-card').forEach(c => c.classList.remove('selected'));
       card.classList.add('selected');
+
       // Update preview
       if (typeof previewSystem !== 'undefined') {
         previewSystem.updatePreview().catch(e => console.error('[Preview Update]', e));
       }
-    }
-    );
+    });
   }
 
   if (equipped) {
     card.classList.add('selected');
   }
   container.appendChild(card);
+}
+
+// Wrapper functions for backward compatibility and cleaner calls
+function createPlayerSkinCard(skin, unlocked, equipped) {
+  createSkinCard(skin, unlocked, equipped, 'panel-skinCards', '/api/skins/equip', 'skinId');
 }
 
 function createGrappleCard(grapple, unlocked, equipped) {
-  const container = document.getElementById('panel-grappleSkinCards');
-  const card = document.createElement('div');
-  card.className = 'skin-card';
-  card.style.background = `linear-gradient(to left, rgba(0,0,0,0.7), transparent), url(${grapple.thumbnail}) center/cover`;
-
-  if (!unlocked) {
-    const lock = document.createElement('div');
-    lock.className = 'skin-lock';
-    lock.innerHTML = '<span style="font-size:12px;color:#fff;">locked</span>';
-    card.appendChild(lock);
-  } else {
-    card.innerHTML = `<h2>${grapple.name}</h2> <p style="font-size: 12px; color: #dde">${grapple.description}</p>`;
-    card.addEventListener('click', async () => {
-      await fetch(`${API_BASE}/api/skins/equip-grapple`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${JSON.parse(localStorage.getItem('auth_user')).token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ grappleId: grapple.id })
-      });
-      // update UI
-      document.querySelectorAll('#panel-grappleSkinCards .skin-card').forEach(c => c.classList.remove('selected'));
-      card.classList.add('selected');
-      // Update preview
-      if (typeof previewSystem !== 'undefined') {
-        previewSystem.updatePreview().catch(e => console.error('[Preview Update]', e));
-      }
-    }
-    );
-  }
-
-  if (equipped) {
-    card.classList.add('selected');
-  }
-  container.appendChild(card);
+  createSkinCard(grapple, unlocked, equipped, 'panel-grappleSkinCards', '/api/skins/equip-grapple', 'grappleId');
 }
 
-forEachUnlockedSkin(createSkinCard, createGrappleCard);
+function createBombCard(bomb, unlocked, equipped) {
+  createSkinCard(bomb, unlocked, equipped, 'panel-bombSkinCards', '/api/skins/equip-bomb', 'bombSkinId');
+}
+
+forEachUnlockedSkin(createPlayerSkinCard, createGrappleCard, createBombCard);
 
 //load title cards
 
@@ -2101,6 +2122,7 @@ function interpolateOpp() {
 const gltfLoader = new GLTFLoader();
 const skinMgr = new SkinManager(scene, gltfLoader);
 const hookMgr = new HookManager(scene);
+const bombMgr = new BombManager(scene, gltfLoader);
 
 //nametags --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 const nametags = new Nametags(scene);
@@ -2110,6 +2132,9 @@ const playerMeshMap = new Map();
 // Initialize preview system (after gltfLoader is created)
 const previewSystem = new PlayerPreviewSystem();
 previewSystem.initialize().catch(e => console.error('[Preview Init]', e));
+
+// Load bomb skins into global cache for use during gameplay
+forEachUnlockedSkin(()=>{}, ()=>{}, ()=>{}).catch(()=>{});
 
 // Update preview when customization opens
 const customizationEl = document.getElementById('customization');
@@ -2281,8 +2306,6 @@ function updateRope(pivot, a, b) {
 const myHook  = makeHook(0x00ffff);  const myRope  = makeRopeLine(0x00ffff);
 const oppHook = makeHook(0xff00ff);  const oppRope = makeRopeLine(0xff00ff);
 
-// ── bombs ─────────────────────────────────────────────────────
-const bombMeshes = new Map();
 
 // ── explosions ────────────────────────────────────────────────
 const explosions = [];
@@ -2336,7 +2359,7 @@ class Explosion {
 const activeGearEffects = new Map();  // shooterId → { model, shooterId, initialOffset, startTime, duration }
 
 function updateGearEffectPosition(effect) {
-  const LERP_FACTOR = 0.15;  // Easing factor (0-1, lower = smoother)
+  const LERP_FACTOR = 0.1;  // Easing factor (0-1, lower = smoother)
   
   // Handle mace animation (rises up over duration)
   if (effect.animationType === 'mace') {
@@ -2684,12 +2707,42 @@ async function setupRoom(r) {
 
     const authUser = JSON.parse(localStorage.getItem('auth_user'));
     if (authUser) {
+      // Load player's own skins
       fetch(`${API_BASE}/api/skins/player/${authUser.username}`)
         .then(r => r.json())
         .then(d => {
           hookMgr.assignHook('local', d.grapple, true);  // ← true for isLocal
           hookMgr.setCamera('local', camera);             // ← after assignHook
         });
+      
+      // Load opponent's skins into cache
+      // First get opponent username from user ID
+      fetch(`${API_BASE}/api/users-by-id/${oppId}`)
+        .then(r => {
+          if (!r.ok) throw new Error(`Failed to fetch opponent info: ${r.status}`);
+          return r.json();
+        })
+        .then(oppData => {
+          if (!oppData?.username) {
+            console.warn('[GameStart] Could not get opponent username from response:', oppData);
+            return;
+          }
+          // Load opponent's skins into server cache
+          return fetch(`${API_BASE}/api/skins/load-opponent`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: oppData.username })
+          });
+        })
+        .then(r => {
+          if (!r) return; // Handle earlier return
+          if (!r.ok) throw new Error(`Failed to load opponent skins: ${r.status}`);
+          return r.json();
+        })
+        .then(result => {
+          if (result) console.log('[GameStart] Loaded opponent skins:', result);
+        })
+        .catch(err => console.warn('[GameStart] Failed to load opponent skins:', err));
     }
 
     showGame();
@@ -2708,10 +2761,8 @@ async function setupRoom(r) {
   });
 
   room.onMessage('bombExploded', (data) => {
-    if (bombMeshes.has(data.id)) {
-      const m = bombMeshes.get(data.id);
-      scene.remove(m); m.geometry.dispose(); m.material.dispose();
-      bombMeshes.delete(data.id);
+    if (bombMgr._bombs.has(data.id)) {
+      bombMgr.removeBomb(data.id);
     }
     explosions.push(new Explosion(data.position));
   });
@@ -3145,6 +3196,7 @@ async function setupRoom(r) {
     
     skinMgr.removeAll(); 
     hookMgr.removeAll();
+    bombMgr.removeAll();
     nametags.dispose();
     playerMeshMap.clear();
 
@@ -3164,6 +3216,21 @@ async function setupRoom(r) {
       if (oppRes.ok) {
         const oppData = await oppRes.json();
         oppUsername = oppData.username || 'opponent';
+        
+        // Unload opponent's skins from cache (if player doesn't have them)
+        if (authUser) {
+          fetch(`${API_BASE}/api/skins/unload-opponent`, {
+            method: 'POST',
+            headers: { 
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${authUser.token}`
+            },
+            body: JSON.stringify({ username: oppUsername })
+          })
+          .then(r => r.json())
+          .then(result => console.log('[GameEnd] Unloaded opponent skins:', result))
+          .catch(err => console.warn('[GameEnd] Failed to unload opponent skins:', err));
+        }
       }
     } catch (e) {
       console.warn('Failed to fetch opponent username:', e);
@@ -3183,6 +3250,40 @@ async function setupRoom(r) {
     showResults(won);
   });
 
+  room.onMessage('unlocksNotification', (data) => {
+    const { winnerUnlocks, loserUnlocks } = data;
+    const authUser = JSON.parse(localStorage.getItem('auth_user'));
+    const myDbId = authUser ? getUserIdFromToken(authUser.token) : null;
+    
+    // Determine which unlocks are mine
+    let myUnlocks = [];
+    if (winnerUnlocks && winnerUnlocks.length > 0) {
+      // Check if I'm the winner
+      const gameEndMsg = document.getElementById('resultTitle');
+      if (gameEndMsg && gameEndMsg.textContent === 'you won') {
+        myUnlocks = winnerUnlocks;
+      }
+    }
+    
+    if (loserUnlocks && loserUnlocks.length > 0) {
+      // Check if I'm the loser
+      const gameEndMsg = document.getElementById('resultTitle');
+      if (gameEndMsg && gameEndMsg.textContent === 'you lost') {
+        myUnlocks = loserUnlocks;
+      }
+    }
+    
+    // Display unlock notifications
+    if (myUnlocks.length > 0) {
+      console.log('🎉 New unlocks:', myUnlocks);
+      myUnlocks.forEach(unlock => {
+        const msg = `🎉 Unlocked: ${unlock.name} (${unlock.type})`;
+        console.log(msg);
+        // TODO: Display UI notification for each unlock
+      });
+    }
+  });
+
   room.onMessage('opponentDisconnected', () => {
     skinMgr.removeAll(); 
     nametags.dispose();
@@ -3192,6 +3293,13 @@ async function setupRoom(r) {
   });
 
   room.onMessage('rematchStart', async () => {
+    // Reset all keyboard input to prevent carryover movement from previous match
+    keys.w = false;
+    keys.a = false;
+    keys.s = false;
+    keys.d = false;
+    keys.space = false;
+
     // Recreate opponent skins and grapples
     if (_pendingSkinInfo) {
       const oppSkinData = _pendingSkinInfo[oppId];
@@ -3532,22 +3640,34 @@ function animate() {
     const liveIds = new Set();
     room.state.bombs.forEach((bs, id) => {
       liveIds.add(id);
-      if (!bombMeshes.has(id)) {
-        const m = new THREE.Mesh(
-          new THREE.SphereGeometry(0.5, 12, 12),
-          new THREE.MeshStandardMaterial({ color:0x808080 })
-        );
-        scene.add(m);
-        bombMeshes.set(id, m);
+      
+      // Check if bomb needs to be created
+      if (!bombMgr._bombs.has(id)) {
+        const bombSkinId = bs.bombSkinId || 'default';
+        // Get the bomb skin definition from our global cache
+        const bombSkinDef = gBombSkins[bombSkinId] || { id: 'default', glb: null, scale: 1.0 };
+        const bombSkinData = {
+          id: bombSkinDef.id,
+          glb: bombSkinDef.glb,  // Pass the glb path (e.g., "/skins/bombs/c4.glb")
+          scale: bombSkinDef.scale || 1.0,
+        };
+        
+        // Assign bomb (async, but _bombs map is populated immediately)
+        bombMgr.assignBomb(id, bombSkinData);
       }
-      const m = bombMeshes.get(id);
-      m.position.set(bs.px, bs.py, bs.pz);
-      m.quaternion.set(bs.rx, bs.ry, bs.rz, bs.rw);
+      
+      // Update position/rotation (safe to do even if async load is pending)
+      const entry = bombMgr._bombs.get(id);
+      if (entry && entry.root) {
+        entry.root.position.set(bs.px, bs.py, bs.pz);
+        entry.root.quaternion.set(bs.rx, bs.ry, bs.rz, bs.rw);
+      }
     });
-    for (const [id, m] of bombMeshes) {
+    
+    // Clean up bombs that no longer exist
+    for (const id of bombMgr._bombs.keys()) {
       if (!liveIds.has(id)) {
-        scene.remove(m); m.geometry.dispose(); m.material.dispose();
-        bombMeshes.delete(id);
+        bombMgr.removeBomb(id);
       }
     }
   }

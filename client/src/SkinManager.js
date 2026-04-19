@@ -1,8 +1,11 @@
 // ── client/src/SkinManager.js ─────────────────────────────────────────────────
-// Manages player skin meshes AND grapple hook visuals in the Three.js scene.
+// Manages the skins, used for customization.
 //
-// SkinManager  — GLB player models, position, yaw rotation
+// SkinManager  — GLB skin models, position, yaw rotation
 // HookManager  — X-cross sprite hooks + colored rope, one per player
+// BombManager  — bomb meshes with optional skins
+//
+// runUnlockCheck — Sends a request to the server, to check if the player has unlocked a skin. If they have, returns the unlocked skins. This is used for the unlock notification.
 //
 // Both follow the same pattern:
 //   assign*(id, data)          called once when skinInfo arrives
@@ -109,7 +112,10 @@ export class SkinManager {
 
   _fetchGLB(path) {
     return new Promise(resolve => {
-      this._loader.load(path, gltf => {
+      // Extract skin ID from path (e.g., "/skins/cube.glb" -> "cube")
+      const skinId = path.split('/').pop().replace('.glb', '');
+      const apiUrl = `${window.API_BASE}/api/skins/download/player/${skinId}`;
+      this._loader.load(apiUrl, gltf => {
         gltf.scene.traverse(o => { if (o.isMesh) { o.castShadow = o.receiveShadow = true; } });
         resolve(gltf.scene);
       }, undefined, err => { console.warn('[SkinManager] GLB failed:', path, err); resolve(null); });
@@ -288,5 +294,114 @@ export class HookManager {
     h.hookPivot.traverse(o => { if (o.isMesh) { o.geometry?.dispose(); o.material?.dispose(); } });
     h.ropeMesh.geometry?.dispose();
     h.ropeMesh.material?.dispose();
+  }
+}
+
+export class BombManager {
+  constructor(scene, gltfLoader) {
+    this._scene   = scene;
+    this._loader  = gltfLoader;
+    this._bombs   = new Map();  // bombId → { root, bombSkinData }
+    this._cache   = new Map();  // glbPath → Promise<Group>
+  }
+
+  // ── Public ───────────────────────────────────────────────────
+
+  async assignBomb(bombId, bombSkinData) {
+    this._removeBomb(bombId);
+    const root = await this._loadBombMesh(bombSkinData);
+    this._scene.add(root);
+    this._bombs.set(bombId, { root, bombSkinData });
+    return root;
+  }
+
+  setPosition(bombId, x, y, z) {
+    const entry = this._bombs.get(bombId);
+    if (entry) entry.root.position.set(x, y, z);
+  }
+
+  setRotation(bombId, quaternion) {
+    const entry = this._bombs.get(bombId);
+    if (entry) entry.root.quaternion.copy(quaternion);
+  }
+
+  removeBomb(bombId) {
+    this._removeBomb(bombId);
+    this._bombs.delete(bombId);
+  }
+
+  removeAll() {
+    for (const bombId of [...this._bombs.keys()]) this._removeBomb(bombId);
+    this._bombs.clear();
+  }
+
+  // ── Internal ─────────────────────────────────────────────────
+
+  async _loadBombMesh(bombSkinData) {
+    if (!bombSkinData.glb) return this._makeSphereRoot(bombSkinData.scale ?? 1.0);
+    if (!this._cache.has(bombSkinData.glb)) {
+      this._cache.set(bombSkinData.glb, this._fetchGLB(bombSkinData.glb));
+    }
+    return this._cloneGLB(await this._cache.get(bombSkinData.glb), bombSkinData.scale ?? 1.0);
+  }
+
+  _fetchGLB(path) {
+    return new Promise(resolve => {
+      // Extract bomb skin ID from path (e.g., "/skins/bomb_metallic.glb" -> "bomb_metallic")
+      const skinId = path.split('/').pop().replace('.glb', '');
+      const apiUrl = `${window.API_BASE}/api/skins/download/bomb/${skinId}`;
+      this._loader.load(apiUrl, gltf => {
+        gltf.scene.traverse(o => { if (o.isMesh) { o.castShadow = o.receiveShadow = true; } });
+        resolve(gltf.scene);
+      }, undefined, err => { console.warn('[BombManager] GLB failed:', path, err); resolve(null); });
+    });
+  }
+
+  _cloneGLB(template, scale) {
+    if (!template) return this._makeSphereRoot(scale);
+    const clone = template.clone(true);
+    clone.scale.setScalar(scale);
+    clone.traverse(o => { if (o.isMesh) { o.castShadow = o.receiveShadow = true; } });
+    return clone;
+  }
+
+  _makeSphereRoot(scale) {
+    const m = new THREE.Mesh(
+      new THREE.SphereGeometry(0.5 * scale, 16, 16),
+      new THREE.MeshStandardMaterial({ color: 0x333333, metalness: 0.6, roughness: 0.4 })
+    );
+    m.castShadow = m.receiveShadow = true;
+    const g = new THREE.Group(); g.add(m); return g;
+  }
+
+  _removeBomb(bombId) {
+    const entry = this._bombs.get(bombId);
+    if (!entry) return;
+    this._scene.remove(entry.root);
+    entry.root.traverse(o => {
+      if (o.isMesh) {
+        o.geometry?.dispose();
+        (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m?.dispose());
+      }
+    });
+  }
+}
+
+
+// runUnlockCheck — Sends a request to the server, to check if the player has unlocked a skin. If they have, returns the unlocked skins. This is used for the unlock notification.
+export async function runUnlockCheck() {
+  try {
+    const response = await fetch(`${window.API_BASE}/api/skins/unlock-check`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    return data.unlockedSkins || [];
+  }
+  catch (err) {
+    console.warn('Unlock check failed:', err);
+    return [];
   }
 }

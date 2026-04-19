@@ -31,13 +31,13 @@ const GEAR_REGISTRY = {
     name: 'Mace',
     description: 'Heavy melee weapon, dealing AOE damage proportional to the user\'s current speed. Three second charge-up',
     rarity: 'ultra-high-skill',
-    damage: 40,
+    damage: 10,
     cooldown: 3000,  // ms
     glb: '/gear/mace.glb',  // GLB model path
-    previewDuration: 3000,  // 3 seconds before impact
+    previewDuration: 500,  // 0.5 seconds before impact
     postFireDuration: 1000,  // 1 second visible after impact
-    scale: 1.0,
-    aoeRadius: 3.0,  // meters
+    scale: 10.0,
+    aoeRadius: 6.0,  // meters
     aoeScaleWithVelocity: true,
   },
 };

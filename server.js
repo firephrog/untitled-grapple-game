@@ -12,11 +12,12 @@ const jwt                    = require('jsonwebtoken');
 const { PrivateRoom }     = require('./rooms/PrivateRoom');
 const { MatchmakingRoom } = require('./rooms/MatchmakingRoom');
 const { Lobby, getLobby } = require('./rooms/Lobby');
-const { skinRoutes, unlockSkin, unlockGrapple } = require('./routes/skins');
+const { skinRoutes, unlockSkin, unlockGrapple, unlockBombSkin } = require('./routes/skins');
 const gearRoutes          = require('./routes/gear');
 const CFG                 = require('./config');
 const User = require('./models/User'); 
-const { TITLES, TITLE_LIST, getTitle } = require('./skins'); 
+const { TITLES, TITLE_LIST, getTitle } = require('./skins');
+const { migrateSkinsStructure } = require('./migrations/migrateSkinsStructure'); 
 
 
 //mango db
@@ -59,6 +60,9 @@ mongoose.connect(CFG.MONGO_URI)
       }
     }
     console.log('✅  Necessary Migrations done!');
+    
+    // Run new skins structure migration
+    await migrateSkinsStructure();
   })
   .catch(err => { console.error('❌  MongoDB:', err); process.exit(1); });
 // ── end MongoDB block ────────────────────────────────────────
@@ -68,6 +72,12 @@ const httpServer = createServer(app);
 
 const PUBLIC_DIR = path.resolve(process.cwd(), 'public');
 app.use(express.static(PUBLIC_DIR));
+
+// Serve skin models and assets from skins/models directory
+// Maps /skins/* to skins/models/*
+const SKINS_DIR = path.resolve(process.cwd(), 'skins/models');
+app.use('/skins', express.static(SKINS_DIR));
+
 app.use(express.json());
 app.use('/api/skins', skinRoutes);
 app.use('/api/gear', gearRoutes);
@@ -437,6 +447,8 @@ app.get('/api/users-by-id/:userId', async (req, res) => {
     res.status(500).json({ error: 'Server error.' });
   }
 });
+
+
 
 const gameServer = new Server({
   transport: new WebSocketTransport({

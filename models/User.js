@@ -3,11 +3,13 @@
 // ── models/User.js ────────────────────────────────────────────────────────────
 // Mongoose schema for player accounts.
 //
-// Skin fields:
-//   equippedSkin  - skin id currently worn (defaults to 'default')
-//   unlockedSkins - array of skin ids the player owns.
-//                   Starts with only 'default'. All other skins are granted
-//                   explicitly via the unlockSkin() helper in routes/skins.js.
+// Skins are now stored as nested object with categories:
+//   skins.player       - player body skins { [skinId]: { unlocked, equipped } }
+//   skins.grapples     - grapple hook skins { [grappleId]: { unlocked, equipped } }
+//   skins.bombs        - bomb skins { [bombSkinId]: { unlocked, equipped } }
+//
+// Migration: Old fields (equippedSkin, unlockedSkins, etc.) are kept for
+// backward compatibility but will be deprecated.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const mongoose = require('mongoose');
@@ -27,6 +29,23 @@ const userSchema = new mongoose.Schema({
   usernameColor: { type: String, default: '#ffffff' },
   unlockedTitles: { type: [String], default: () => ['player'] },
 
+  // ── Skins (new nested structure) ────────────────────────────
+  skins: {
+    player: {
+      type: mongoose.Schema.Types.Mixed,
+      default: () => ({ default: { unlocked: true, equipped: true } })
+    },
+    grapples: {
+      type: mongoose.Schema.Types.Mixed,
+      default: () => ({ default: { unlocked: true, equipped: true } })
+    },
+    bombs: {
+      type: mongoose.Schema.Types.Mixed,
+      default: () => ({ default: { unlocked: true, equipped: true } })
+    }
+  },
+
+  // ── Legacy fields (kept for backward compatibility / migration) ───
   equippedSkin:  { type: String, default: 'default' },
   unlockedSkins: { type: [String], default: () => ['default'] },
   equippedGrapple: { type: String, default: 'default' },

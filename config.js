@@ -74,5 +74,6 @@ module.exports = {
 
   // ── Gear (weapons) ─────────────────────────────────────────
   SNIPER_COOLDOWN_MS: 25000,      // 25s cooldown after using sniper
+  MACE_COOLDOWN_MS:   10000,      // 10s cooldown after using mace
 
 };

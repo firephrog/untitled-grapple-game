@@ -46,6 +46,7 @@ class PlayerState extends Schema {
     this.health   = 100;
     this.lastSeq  = 0;
     this.grapple  = new GrappleState();
+    this.bombSkinId = 'default';
   }
 }
 defineTypes(PlayerState, {
@@ -54,21 +55,24 @@ defineTypes(PlayerState, {
   health:   'int16',
   lastSeq:  'int32',
   grapple:  GrappleState,
+  bombSkinId: 'string',
 });
 
 // ── BombState ─────────────────────────────────────────────────
 // Flat fields beat nested Vec3/Quat here — bombs are short-lived
 // and created/destroyed rapidly, so minimal schema overhead matters.
 class BombState extends Schema {
-  constructor(id = '') {
+  constructor(id = '', bombSkinId = 'default') {
     super();
     this.id = id;
+    this.bombSkinId = bombSkinId;
     this.px = 0; this.py = 0; this.pz = 0;
     this.rx = 0; this.ry = 0; this.rz = 0; this.rw = 1;
   }
 }
 defineTypes(BombState, {
   id: 'string',
+  bombSkinId: 'string',
   px: 'float32', py: 'float32', pz: 'float32',
   rx: 'float32', ry: 'float32', rz: 'float32', rw: 'float32',
 });
