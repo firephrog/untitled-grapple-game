@@ -449,7 +449,9 @@ router.get('/download/:type/:skinId', async (req, res) => {
   }
   
   res.setHeader('Content-Type', 'model/gltf-binary');
-  res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 24h
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   res.sendFile(filePath);
 });
 

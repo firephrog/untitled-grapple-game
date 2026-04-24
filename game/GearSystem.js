@@ -202,12 +202,6 @@ class GearSystem {
       const previewDuration = (GEAR_REGISTRY.sniper && GEAR_REGISTRY.sniper.previewDuration) || 2000;
       const postFireDuration = (GEAR_REGISTRY.sniper && GEAR_REGISTRY.sniper.postFireDuration) || 1000;
       const totalDuration = previewDuration + postFireDuration;
-      console.log('[GearSystem.snipe] Creating gear effect with duration:', {
-        previewDuration,
-        postFireDuration,
-        totalDuration,
-        gearRegistry: GEAR_REGISTRY.sniper,
-      });
       
       // Ensure totalDuration is at least 3000ms
       const effectDuration = Math.max(totalDuration, 3000);
@@ -222,7 +216,6 @@ class GearSystem {
       );
       this._gearEffects.push(gearEffect);
       if (this._onGearPreview) {
-        console.log('[GearSystem.snipe] Calling _onGearPreview with duration:', effectDuration);
         this._onGearPreview(gearEffect);
       }
 
@@ -321,7 +314,6 @@ class GearSystem {
       // Deal damage if hit a player
       if (targetSid) {
         this._onSnipeHit(shooterId, targetSid, GEAR_REGISTRY.sniper.damage);
-        console.log(`[Sniper] ${shooterId} hit ${targetSid} for ${GEAR_REGISTRY.sniper.damage} damage`);
       }
 
       return { success: !!targetSid, targetSid };
@@ -342,7 +334,6 @@ class GearSystem {
    */
   mace(shooterBody, playerEntries, shooterId) {
     try {
-      console.log(`[GearSystem.mace] ${shooterId} used mace, ${playerEntries.length} players in world`);
       
       // Get shooter position
       const shooterPos = shooterBody.translation();
@@ -362,14 +353,12 @@ class GearSystem {
       );
       this._gearEffects.push(gearEffect);
       if (this._onGearPreview) {
-        console.log(`[GearSystem.mace] Calling _onGearPreview for mace effect`);
         this._onGearPreview(gearEffect);
       }
 
       // Store pending mace to execute after charge duration
       const pending = new PendingMace(shooterId, shooterBody, playerEntries, previewDuration);
       this._pendingMaces.push(pending);
-      console.log(`[GearSystem.mace] Created pending mace, will execute in ${previewDuration}ms`);
 
       return { success: true };
     } catch (err) {
@@ -387,7 +376,6 @@ class GearSystem {
     const { shooterId, shooterBody, playerEntries, startVelocity } = pending;
     
     try {
-      console.log(`[GearSystem.executePendingMace] Executing mace for ${shooterId}, ${playerEntries.length} players in world`);
       
       // Get current position
       const shooterPos = shooterBody.translation();
@@ -404,8 +392,6 @@ class GearSystem {
       const baseDamage = GEAR_REGISTRY.mace.damage;
       const scaledDamage = baseDamage + (60 * speedFactor);
       
-      console.log(`[GearSystem.executePendingMace] Speed: ${speed.toFixed(2)} m/s, speedFactor: ${speedFactor.toFixed(2)}, damage: ${scaledDamage.toFixed(0)}`);
-      
       // Find all players within AOE radius
       const aoeRadius = GEAR_REGISTRY.mace.aoeRadius || 3.0;
       const hitsPerformed = new Set();
@@ -419,22 +405,15 @@ class GearSystem {
         const dz = targetPos.z - impactPos.z;
         const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
-        console.log(`[GearSystem.executePendingMace] Checking ${sid}: distance ${distance.toFixed(2)}m (radius: ${aoeRadius}m)`);
-
         if (distance <= aoeRadius) {
-          console.log(`[GearSystem.executePendingMace] ${sid} is in range, dealing damage`);
           if (this._onAoeDamage) {
-            console.log(`[GearSystem.executePendingMace] Calling _onAoeDamage(${shooterId}, ${sid}, ${Math.round(scaledDamage)})`);
             this._onAoeDamage(shooterId, sid, Math.round(scaledDamage));
           } else {
             console.warn('[GearSystem.executePendingMace] _onAoeDamage callback not defined!');
           }
           hitsPerformed.add(sid);
-          console.log(`[Mace] ${shooterId} hit ${sid} for ${Math.round(scaledDamage)} damage (speed factor: ${speedFactor.toFixed(2)})`);
         }
       }
-
-      console.log(`[GearSystem.executePendingMace] Hit ${hitsPerformed.size} targets`);
 
       // Spawn particles at impact
       if (this._onParticles) {

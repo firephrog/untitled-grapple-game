@@ -24,7 +24,7 @@ const MAPS = {
         description:    'Void and rocks credit: Mihoi',
         glb:            '/maps/stonelands.glb',
         collision:      '/maps/stonelands.collision.json',
-        skyColor:       0x1a1a2e,  // Dark void
+        skyColor:       0x87CEEB,  
         spawnPoints: [
           { x: 0, y: 2, z: -50 },
           { x: 0, y: 2, z: 40 },

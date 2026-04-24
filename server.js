@@ -11,6 +11,7 @@ const jwt                    = require('jsonwebtoken');
 
 const { PrivateRoom }     = require('./rooms/PrivateRoom');
 const { MatchmakingRoom } = require('./rooms/MatchmakingRoom');
+const { RankedRoom }      = require('./rooms/RankedRoom');
 const { Lobby, getLobby } = require('./rooms/Lobby');
 const { skinRoutes, unlockSkin, unlockGrapple, unlockBombSkin } = require('./routes/skins');
 const gearRoutes          = require('./routes/gear');
@@ -23,7 +24,7 @@ const { migrateSkinsStructure } = require('./migrations/migrateSkinsStructure');
 //mango db
 mongoose.connect(CFG.MONGO_URI)
   .then(async () => {
-    console.log('✅  MongoDB connected');
+    console.log('[STARTUP] MongoDB connected');
     
     // one-time migration — initialize skins and titles for all users
     const users = await User.find({});
@@ -59,12 +60,11 @@ mongoose.connect(CFG.MONGO_URI)
         await User.findByIdAndUpdate(user._id, updates);
       }
     }
-    console.log('✅  Necessary Migrations done!');
-    
+    console.log('[STARTUP] Necessary Migrations done!');
     // Run new skins structure migration
     await migrateSkinsStructure();
   })
-  .catch(err => { console.error('❌  MongoDB:', err); process.exit(1); });
+  .catch(err => { console.error('[STARTUP] MongoDB:', err); process.exit(1); });
 // ── end MongoDB block ────────────────────────────────────────
 
 const app        = express();
@@ -72,6 +72,16 @@ const httpServer = createServer(app);
 
 const PUBLIC_DIR = path.resolve(process.cwd(), 'public');
 app.use(express.static(PUBLIC_DIR));
+
+// Set no-cache headers for skin assets to ensure fresh content is always loaded
+app.use((req, res, next) => {
+  if (req.path.startsWith('/skins/') || req.path.startsWith('/api/skins/download/')) {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+  }
+  next();
+});
 
 // Serve skin models and assets from skins/models directory
 // Maps /skins/* to skins/models/*
@@ -95,7 +105,7 @@ app.post('/auth/signup', async (req, res) => {
     const token = jwt.sign({ userId: user._id, username }, CFG.JWT_SECRET, { expiresIn: '7d' });
     res.status(201).json({ username, token });
   } catch (err) {
-    console.error('Signup error:', err.message);
+    console.error('[AUTH] Signup error:', err.message);
     res.status(400).json({ error: err.message });
   }
 });
@@ -110,7 +120,7 @@ app.post('/auth/login', async (req, res) => {
     const token = jwt.sign({ userId: user._id, username }, CFG.JWT_SECRET, { expiresIn: '7d' });
     res.json({ username, token });
   } catch (err) {
-    console.error('Login error:', err.message);
+    console.error('[AUTH] Login error:', err.message);
     res.status(400).json({ error: err.message });
   }
 });
@@ -129,7 +139,7 @@ app.get('/auth/me', async (req, res) => {
       res.status(401).json({ error: 'Invalid token.' });
     }
   } catch (err) {
-    console.error('Auth error:', err.message);
+    console.error('[AUTH] Auth error:', err.message);
     res.status(400).json({ error: err.message });
   }
 });
@@ -148,7 +158,7 @@ app.post('/api/save', async (req, res) => {
     await User.findByIdAndUpdate(userId, { $set: { settings: data.settings } });
     res.json({ ok: true });
   } catch (err) {
-    console.error('Save error:', err.message);
+    console.error('[SAVE] Save error:', err.message);
     res.status(401).json({ error: 'Invalid token.' });
   }
 });
@@ -161,7 +171,20 @@ app.get('/api/users/:username', async (req, res) => {
     if (!user) return res.status(404).json({ error: 'User not found.' });
     res.json(user);
   } catch (err) {
-    console.error('Find user error:', err.message);
+    console.error('[USER] Find user error:', err.message);
+    res.status(500).json({ error: `Server error: ${err.message}` });
+  }
+});
+
+//get user by ID (with ELO for ranked mode)
+app.get('/api/users-by-id/:userId', async (req, res) => {
+  try {
+    const user = await User.findById(req.params.userId)
+      .select('username elo userPrefix usernameColor prefixColor');
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+    res.json(user);
+  } catch (err) {
+    console.error('[USER] Find user by ID error:', err.message);
     res.status(500).json({ error: `Server error: ${err.message}` });
   }
 });
@@ -192,7 +215,7 @@ app.post('/api/users/:username/friend-request', async (req, res) => {
     
     res.json({ ok: true });
   } catch (err) {
-    console.error('Friend request error:', err.message);
+    console.error('[FRIEND] Friend request error:', err.message);
     res.status(500).json({ error: `Server error: ${err.message}` });
   }
 });
@@ -448,6 +471,105 @@ app.get('/api/users-by-id/:userId', async (req, res) => {
   }
 });
 
+// ── LEADERBOARD ROUTES ───────────────────────────────────
+app.get('/api/leaderboard/:category', async (req, res) => {
+  try {
+    const { category } = req.params;
+    const LIMIT = 20;
+
+    let sortField = 'wins';
+    switch (category) {
+      case 'wins':
+        sortField = 'wins';
+        break;
+      case 'deaths':
+        sortField = 'deaths';
+        break;
+      case 'ranked':
+        sortField = 'elo';
+        break;
+      default:
+        return res.status(400).json({ error: 'Invalid category. Use: wins, deaths, or ranked' });
+    }
+
+    const leaderboard = await User.find({})
+      .select('username elo wins deaths userPrefix usernameColor prefixColor')
+      .sort({ [sortField]: -1 })
+      .limit(LIMIT)
+      .lean();
+
+    // Add rank number to each entry
+    const rankedPlayers = leaderboard.map((player, index) => ({
+      rank: index + 1,
+      username: player.username,
+      elo: player.elo || 0,
+      wins: player.wins || 0,
+      deaths: player.deaths || 0,
+      userPrefix: player.userPrefix || 'player',
+      usernameColor: player.usernameColor || '#ffffff',
+      prefixColor: player.prefixColor || '#bababa',
+    }));
+
+    res.json({
+      category,
+      leaderboard: rankedPlayers,
+      count: rankedPlayers.length,
+    });
+  } catch (err) {
+    console.error('Leaderboard error:', err.message);
+    res.status(500).json({ error: 'Server error.' });
+  }
+});
+
+// Get user's current rank in a category
+app.get('/api/leaderboard/:category/user-rank', async (req, res) => {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'No token.' });
+
+  try {
+    const { userId } = jwt.verify(token, CFG.JWT_SECRET);
+    const { category } = req.params;
+
+    let sortField = 'wins';
+    switch (category) {
+      case 'wins':
+        sortField = 'wins';
+        break;
+      case 'deaths':
+        sortField = 'deaths';
+        break;
+      case 'ranked':
+        sortField = 'elo';
+        break;
+      default:
+        return res.status(400).json({ error: 'Invalid category' });
+    }
+
+    const user = await User.findById(userId).select(`username elo wins deaths userPrefix usernameColor prefixColor ${sortField}`);
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+
+    // Count how many users are ranked higher
+    const higherRankedCount = await User.countDocuments({
+      [sortField]: { $gt: user[sortField] }
+    });
+
+    res.json({
+      rank: higherRankedCount + 1,
+      username: user.username,
+      elo: user.elo || 0,
+      wins: user.wins || 0,
+      deaths: user.deaths || 0,
+      userPrefix: user.userPrefix || 'player',
+      usernameColor: user.usernameColor || '#ffffff',
+      prefixColor: user.prefixColor || '#bababa',
+      value: user[sortField] || 0,
+    });
+  } catch (err) {
+    console.error('User rank error:', err.message);
+    res.status(401).json({ error: 'Invalid token.' });
+  }
+});
 
 
 const gameServer = new Server({
@@ -463,9 +585,12 @@ gameServer.define('private',     PrivateRoom);
 gameServer.define('matchmaking', MatchmakingRoom, {
   filterBy: ['ratingMin', 'ratingMax'],
 });
+gameServer.define('ranked',      RankedRoom, {
+  filterBy: ['ratingMin', 'ratingMax'],
+});
 gameServer.define('lobby', Lobby);
 
 httpServer.listen(CFG.PORT, () => {
-  console.log(`\n🎮  Server running → http://localhost:${CFG.PORT}`);
-  console.log(`    Room types: private | matchmaking\n`);
+  console.log(`[STARTUP] Untitled Grapple Game V0.6`);
+  console.log(`[STARTUP] Server running → http://localhost:${CFG.PORT}`);
 });

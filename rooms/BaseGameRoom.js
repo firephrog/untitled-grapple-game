@@ -225,7 +225,7 @@ class BaseGameRoom extends Room {
     if (this.state.phase !== 'voting') return;
     const mapId = typeof data.mapId === 'string' ? data.mapId : null;
     this._votes.set(client.sessionId, mapId);
-    console.log(`[Room ${this.roomId}] Vote from ${client.sessionId}: ${mapId}`);
+
     if (this._votes.size === this.clients.length) {
       this._resolveVotes();
     }
@@ -241,7 +241,7 @@ class BaseGameRoom extends Room {
     const mapId = resolveVotes(voteA, voteB);
     const map   = getMap(mapId);
 
-    console.log(`[Room ${this.roomId}] Map resolved: ${mapId}`);
+
     this.broadcast('mapChosen', { mapId: map.id, mapName: map.name, skyColor: map.skyColor });
     this.clock.setTimeout(() => this._beginGame(map), 500);
   }
@@ -516,7 +516,7 @@ class BaseGameRoom extends Room {
       );
 
       if (result.success) {
-        console.log(`[Sniper] ${sid} used sniper`);
+
       }
     } else if (gearName === 'mace') {
       const playerEntries = [];
@@ -527,7 +527,7 @@ class BaseGameRoom extends Room {
       const result = this._gear.mace(body, playerEntries, sid);
       
       if (result.success) {
-        console.log(`[Mace] ${sid} used mace`);
+
       }
     }
   }
@@ -537,7 +537,7 @@ class BaseGameRoom extends Room {
     if (!ps) return;
     
     ps.health = Math.max(0, ps.health - damage);
-    console.log(`[Damage] ${targetId} took ${damage} damage, health now ${ps.health}`);
+
     
     // Broadcast hit to all clients with current health
     this.broadcast('playerHit', {
@@ -563,11 +563,6 @@ class BaseGameRoom extends Room {
 
   _broadcastGearEffect(effect) {
     // Broadcast gear preview effect to all clients for rendering
-    console.log('[_broadcastGearEffect] Broadcasting effect:', {
-      gearName: effect.gearName,
-      shooterId: effect.shooterId,
-      duration: effect.duration,
-    });
     this.broadcast('gearEffect', {
       gearName: effect.gearName,
       shooterId: effect.shooterId,
@@ -583,7 +578,7 @@ class BaseGameRoom extends Room {
     if (!ps) return;
     
     ps.health = Math.max(0, ps.health - damage);
-    console.log(`[AOE Damage] ${targetId} took ${damage} damage, health now ${ps.health}`);
+
     
     // Broadcast hit to all clients with current health
     this.broadcast('playerHit', {
@@ -611,7 +606,7 @@ class BaseGameRoom extends Room {
     if (this.state.phase !== 'ended') return;
     
     this._rematches.set(client.sessionId, true);
-    console.log(`[Room ${this.roomId}] Rematch vote from ${client.sessionId}. Votes: ${this._rematches.size}/${this.clients.length}`);
+
     
     // If both players voted for rematch, start a new game
     if (this._rematches.size === this.clients.length) {

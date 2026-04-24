@@ -1,65 +1,74 @@
 'use strict';
 
 // ── rooms/MatchmakingRoom.js ─────────────────────────────────────────────────
-// Ranked matchmaking room.  Players are placed here automatically by the
+// Ranked matchmaking room. Players are placed here automatically by the
 // Colyseus matchmaker (filterBy / sortBy options on the client joinOrCreate call).
 //
-// CURRENT STATE: Stub — game logic is fully inherited from BaseGameRoom.
-//
-// TODO when implementing matchmaking:
-//   1. Add a `rating` field to RoomState schema (int16)
-//   2. Store player ratings in onCreate metadata
-//   3. Override onGameEnd() to call your rating service (Elo, Glicko-2, etc.)
-//   4. Use filterBy to match players by skill bracket
-//   5. Add a ready-check countdown before _startGame()
-//
-// Client usage (when ready):
-//   const room = await client.joinOrCreate('matchmaking', { rating: myRating });
+// Implements full ELO ranking system with one-way rank progression.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const { BaseGameRoom } = require('./BaseGameRoom');
-
-// ── Placeholder rating service ───────────────────────────────────────────────
-// Replace with a real DB call (Postgres, Redis, etc.) when you're ready.
-const RatingService = {
-  async getRating(sessionId) {
-    // TODO: look up player rating from your database
-    return 1000;  // default starting Elo
-  },
-
-  async updateRatings(winnerId, loserId, winnerRating, loserRating) {
-    // TODO: Elo / Glicko-2 update + persist to DB
-    const K = 32;
-    const expected = 1 / (1 + 10 ** ((loserRating - winnerRating) / 400));
-    const newWinner = Math.round(winnerRating + K * (1 - expected));
-    const newLoser  = Math.round(loserRating  + K * (0 - (1 - expected)));
-    console.log(`[Rating] ${winnerId}: ${winnerRating} → ${newWinner}`);
-    console.log(`[Rating] ${loserId}:  ${loserRating}  → ${newLoser}`);
-    return { newWinner, newLoser };
-  },
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
+const { calculateNewElo } = require('../lib/RankingUtils');
+const User = require('../models/User');
+const CFG = require('../config');
+const jwt = require('jsonwebtoken');
 
 class MatchmakingRoom extends BaseGameRoom {
 
   async onCreate(opts = {}) {
     await super.onCreate(opts);
+    
+    // Set correct maxClients for matchmaking rooms
+    this.maxClients = CFG.MATCHMAKING_MAX_CLIENTS;
 
     // Store rating range this room accepts (set by matchmaker)
     this._ratingMin = opts.ratingMin ?? 0;
     this._ratingMax = opts.ratingMax ?? 9999;
 
-    // Map of sessionId → rating for the two players this match
+    // Map of sessionId → { userId, rating } for the two players this match
     this._playerRatings = new Map();
   }
 
   async onJoin(client, opts = {}) {
-    // Fetch player rating before they fully join
-    // (In production, validate against a signed JWT instead of trusting opts.rating)
-    const rating = await RatingService.getrating(client.sessionId)
-      .catch(() => 1000);
-    this._playerRatings.set(client.sessionId, rating);
+    // Extract userId from token BEFORE checking client._userId
+    // (BaseGameRoom.onJoin won't be called until after super.onJoin, so we need to do it here)
+    if (opts.token && !client._userId) {
+      try {
+        const { userId } = jwt.verify(opts.token, CFG.JWT_SECRET);
+        client._userId = userId;
+      } catch (e) {
+        console.error('[MatchmakingRoom] Failed to verify token:', e.message);
+      }
+    }
+    
+    // Prevent same account from joining twice
+    if (client._userId) {
+      for (const existingClient of this.clients) {
+        if (existingClient._userId === client._userId && existingClient.sessionId !== client.sessionId) {
+          console.warn(`[MatchmakingRoom ${this.roomId}] Same account attempted to join twice: ${client._userId}`);
+          throw new Error('Cannot join with the same account twice');
+        }
+      }
+    }
+    
+    // Fetch player ELO from database
+    if (client._userId) {
+      try {
+        const user = await User.findById(client._userId).select('elo');
+        if (user) {
+          this._playerRatings.set(client.sessionId, {
+            userId: client._userId,
+            elo: user.elo || 100,
+          });
+        }
+      } catch (err) {
+        console.error('[MatchmakingRoom] Failed to fetch user ELO:', err);
+        this._playerRatings.set(client.sessionId, {
+          userId: client._userId,
+          elo: 100,  // Default ELO
+        });
+      }
+    }
 
     return super.onJoin(client, opts);
   }
@@ -70,15 +79,37 @@ class MatchmakingRoom extends BaseGameRoom {
   }
 
   async onGameEnd(winnerId, loserId) {
-    console.log(`[MatchmakingRoom ${this.roomId}] Game over. Winner: ${winnerId}`);
 
-    const winnerRating = this._playerRatings.get(winnerId) ?? 1000;
-    const loserRating  = this._playerRatings.get(loserId)  ?? 1000;
+    const winnerData = this._playerRatings.get(winnerId);
+    const loserData = this._playerRatings.get(loserId);
+
+    if (!winnerData || !loserData) {
+      console.error('[MatchmakingRoom] Missing player data for ELO update');
+      return;
+    }
 
     try {
-      await RatingService.updateRatings(winnerId, loserId, winnerRating, loserRating);
+      const winnerElo = winnerData.elo;
+      const loserElo = loserData.elo;
+
+      // Calculate new ELOs using proper formula with one-way rank progression
+      const newWinnerElo = calculateNewElo(winnerElo, loserElo, true, {
+        high: CFG.RANKED_K_FACTOR_HIGH,
+        low: CFG.RANKED_K_FACTOR_LOW,
+        threshold: CFG.RANKED_ELO_THRESHOLD,
+      });
+      const newLoserElo = calculateNewElo(loserElo, winnerElo, false, {
+        high: CFG.RANKED_K_FACTOR_HIGH,
+        low: CFG.RANKED_K_FACTOR_LOW,
+        threshold: CFG.RANKED_ELO_THRESHOLD,
+      });
+
+      // Update database
+      await User.findByIdAndUpdate(winnerData.userId, { elo: newWinnerElo });
+      await User.findByIdAndUpdate(loserData.userId, { elo: newLoserElo });
+
     } catch (err) {
-      console.error('[MatchmakingRoom] Failed to update ratings:', err);
+      console.error('[MatchmakingRoom] Failed to update ELOs:', err);
     }
   }
 }

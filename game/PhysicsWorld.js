@@ -53,8 +53,6 @@ class PhysicsWorld {
 
     let vertices, indices;
 
-    console.log(`[PhysicsWorld] Looking for collision file at: ${collisionPath}`);
-
     if (fs.existsSync(collisionPath)) {
       const raw  = fs.readFileSync(collisionPath, 'utf8');
       const data = JSON.parse(raw);
@@ -67,9 +65,6 @@ class PhysicsWorld {
         minY = Math.min(minY, data.vertices[i]);
         maxY = Math.max(maxY, data.vertices[i]);
       }
-      console.log(`[PhysicsWorld] Loaded collision: ${vertices.length/3} verts, ${indices.length/3} tris`);
-      console.log(`[PhysicsWorld] Y range in collision mesh: ${minY.toFixed(2)} to ${maxY.toFixed(2)}`);
-      console.log(`[PhysicsWorld] Spawn points: ${JSON.stringify(this.map.spawnPoints)}`);
     } else {
       console.warn(`[PhysicsWorld] *** COLLISION FILE NOT FOUND: ${collisionPath} ***`);
       console.warn(`[PhysicsWorld] Using flat ground fallback — update your map path`);

@@ -22,6 +22,7 @@ const userSchema = new mongoose.Schema({
   // ── Stats ───────────────────────────────────────────────────
   wins:   { type: Number, default: 0 },
   deaths: { type: Number, default: 0 },
+  elo:    { type: Number, default: 100 }, 
 
   // ── Cosmetics ───────────────────────────────────────────────
   userPrefix:    { type: String, default: 'player' },
@@ -46,10 +47,10 @@ const userSchema = new mongoose.Schema({
   },
 
   // ── Legacy fields (kept for backward compatibility / migration) ───
-  equippedSkin:  { type: String, default: 'default' },
-  unlockedSkins: { type: [String], default: () => ['default'] },
-  equippedGrapple: { type: String, default: 'default' },
-  unlockedGrapples:{ type: [String], default: () => ['default'] },
+  // equippedSkin:  { type: String, default: 'default' },
+  // unlockedSkins: { type: [String], default: () => ['default'] },
+  // equippedGrapple: { type: String, default: 'default' },
+  // unlockedGrapples:{ type: [String], default: () => ['default'] },
 
   // ── Gear ────────────────────────────────────────────────────
   equippedGear: { type: String, default: 'sniper' },

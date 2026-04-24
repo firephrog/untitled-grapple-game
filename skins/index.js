@@ -11,6 +11,7 @@ const SKINS = {
     glb:         null,
     scale:       1.0,
     eyeOffset:   1.0,
+    thumbnail:   '/skins/players/default_thumb.png',
   },
   cube: {
     id:          'cube',
@@ -19,7 +20,7 @@ const SKINS = {
     glb:         '/skins/players/cube.glb',
     scale:       1.0,
     eyeOffset:   1.0,
-    thumbnail:   '/skins/players/cube_thumb.jpg',
+    thumbnail:   '/skins/players/cube_thumb.png',
   },
   ghost: {
     id:          'ghost',
@@ -60,7 +61,8 @@ const GRAPPLES = {
     id:    'default',
     name:  'Default',
     image: '/skins/grapples/grapple_default.png',
-    localImage: '/skins/grapples/grapple_default_local.png',         // fall back to default
+    localImage: '/skins/grapples/grapple_default_local.png',        
+    thumbnail: '/skins/grapples/grapple_default_thumb.png',
     scale: 0.6,
     color: 0xffffff,
     description: "The standard grapple skin."
@@ -70,21 +72,26 @@ const GRAPPLES = {
     name:  'Cyan',
     image: '/skins/grapples/grapple_cyan.png',
     localImage: '/skins/grapples/grapple_cyan_local.png',
+    thumbnail: '/skins/grapples/grapple_cyan_thumb.png',
     scale: 0.8,
     color: 0x28364f,
     description: "A cyan grapple skin."
   },
-  ghost: {
-    id:    'ghost',
-    name:  'Ghost',
-    image: '/skins/grapples/grapple_ghost.png',
-    scale: 0.7,
-    color: 0xaaffee,
+  ropeDart: {
+    id:    'ropeDart',
+    name:  'Rope Dart',
+    image: '/skins/grapples/grapple_ropeDart.png',
+    localImage: '/skins/grapples/grapple_ropeDart_local.png',
+    thumbnail: '/skins/grapples/grapple_ropeDart_thumb.png',
+    scale: 1,
+    color: 0xaaaaaa,
+    description: "Very sharp."
   },
   fire: {
     id:    'fire',
     name:  'Fire',
     image: '/skins/grapples/grapple_fire.png',
+    thumbnail: '/skins/grapples/grapple_fire_thumb.png',
     scale: 0.6,
     color: 0xff4400,
   },
@@ -93,6 +100,7 @@ const GRAPPLES = {
     name:  'Cheese Hook',
     image: '/skins/grapples/grapple_cheese.png',
     localImage: '/skins/grapples/grapple_cheese_local.png',
+    thumbnail: '/skins/grapples/grapple_cheese_thumb.png',
     scale: 0.6,
     color: 0xffcc00,
     description: "its cheese."
@@ -107,13 +115,14 @@ const BOMB_SKINS = {
     id:          'default',
     name:        'Classic',
     description: 'The classic bomb sphere.',
+    thumbnail:   '/skins/bombs/default_thumb.png',
     glb:         null,  // null = fallback to sphere
     scale:       1.0,
   },
   c4: {
     id:          'c4',
     name:        'C4',
-    description: 'A military-grade plastic explosive, used for demolition. Get this skin after 100 deaths.',
+    description: 'A plastic explosive. Get this skin after 100 deaths. Model by @twix_3d',
     thumbnail: '/skins/c4_local.png',
     glb:         '/skins/bombs/c4.glb',
     scale:       1.0,
@@ -192,7 +201,7 @@ function getTitle(id)   { return TITLES[id]   || TITLES.player; }
 
 const TITLE_LIST    = Object.values(TITLES).map(({ id, name, prefixColor, usernameColor, description }) => ({ id, name, prefixColor, usernameColor, description }));
 const SKIN_LIST     = Object.values(SKINS).map(({ id, name, description, glb, thumbnail }) => ({ id, name, description, glb, thumbnail }));
-const GRAPPLE_LIST  = Object.values(GRAPPLES).map(({ id, name, image, scale, color, description }) => ({ id, name, image, scale, color, description }));
-const BOMB_SKIN_LIST = Object.values(BOMB_SKINS).map(({ id, name, description, glb, scale }) => ({ id, name, description, glb, scale }));
+const GRAPPLE_LIST  = Object.values(GRAPPLES).map(({ id, name, image, scale, color, description, thumbnail }) => ({ id, name, image, scale, color, description, thumbnail }));
+const BOMB_SKIN_LIST = Object.values(BOMB_SKINS).map(({ id, name, description, glb, scale, thumbnail }) => ({ id, name, description, glb, scale, thumbnail }));
 
 module.exports = { SKINS, GRAPPLES, BOMB_SKINS, TITLES, SKIN_LIST, GRAPPLE_LIST, BOMB_SKIN_LIST, TITLE_LIST, getSkin, getGrapple, getBombSkin, getTitle };

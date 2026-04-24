@@ -12,6 +12,7 @@ import { initBackground, hideBackground, showBackground } from './background.js'
 import { SkinManager, HookManager, BombManager } from './SkinManager.js';
 import { Nametags } from './Nametags.js';
 import { PerformanceMonitor } from './PerformanceMonitor.js';
+import { getRankFromElo, formatRankDisplay } from './RankingUtils.js';
 
 
 // ── Auth ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -38,17 +39,24 @@ function getUserIdFromToken(token) {
 // UI HELPER FUNCTIONS – defined early before they're called
 // ─────────────────────────────────────────────────────────────────────────────
 
+function hideLoadingScreen() {
+  const loadingScreen = document.getElementById('loadingScreen');
+  if (loadingScreen) {
+    loadingScreen.classList.add('hidden');
+  }
+}
+
 function showMenu()        { 
   const menuEl = document.getElementById('menu');
   if (!menuEl) {
     console.error('[showMenu] Menu element not found');
     return;
   }
+  hideLoadingScreen();  // Hide loading screen when showing menu
   menuEl.style.display = 'flex';
   menuEl.style.visibility = 'visible';
   menuEl.style.opacity = '1';
   menuEl.style.pointerEvents = 'auto';
-  console.log('[showMenu] Menu displayed');
   showBackground();  // Show background behind menu
   if (typeof renderer !== 'undefined' && renderer.domElement) {
     renderer.domElement.style.display = 'none'; 
@@ -70,19 +78,19 @@ function showWaiting()     {
 function showGame()        { 
   hideMenu();
   hideBackground();  // Hide background canvas so game is visible
+  // Hide all UI overlays
+  const screenIds = ['versusMenu', 'waitingRoom', 'mapVote', 'rankedMenu', 'rankedQueue', 'rankedCountdown'];
+  screenIds.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
   if (typeof renderer !== 'undefined' && renderer.domElement) {
     renderer.domElement.style.display = 'block';
     renderer.domElement.style.visibility = 'visible';
     renderer.domElement.style.opacity = '1';
     renderer.domElement.style.pointerEvents = 'auto';
     renderer.domElement.style.zIndex = '50';  // Ensure it's above everything
-    console.log('[showGame] Game canvas shown', {
-      display: renderer.domElement.style.display,
-      zIndex: renderer.domElement.style.zIndex,
-      backgroundColor: window.getComputedStyle(renderer.domElement).backgroundColor
-    });
   }
-  document.getElementById('waitingRoom').style.display = 'none';
   document.getElementById('hud').style.display = 'block'; 
 }
 
@@ -95,6 +103,730 @@ function showResults(won)  {
   document.getElementById('resultSub').textContent   = won ? 'opponent eliminated' : 'you were eliminated';
   document.getElementById('page-results').style.display = 'flex';
 }
+
+// ── Scope vignette drawing function ────────────────────────────────────────────
+function drawScopeVignette(canvas, ctx, progress) {
+  if (!ctx) return;
+  
+  // Get canvas dimensions
+  const width = canvas.width;
+  const height = canvas.height;
+  
+  // Set canvas size to match window if needed
+  if (canvas.width !== window.innerWidth || canvas.height !== window.innerHeight) {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+  }
+  
+  // Clear canvas
+  ctx.clearRect(0, 0, width, height);
+  
+  // Calculate center and circle properties
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const maxRadius = Math.max(width, height) * 0.5;  // Large circle for the vignette
+  const scopeRadius = maxRadius * defaultScopeRadius;
+  
+  // Animate the scope circle growing in - clamp to full size
+  const currentScopeRadius = scopeRadius * Math.min(progress * 1.5, 1);
+  
+  // Draw black vignette overlay with circular cutout
+  // Draw outer black rectangle - fully black outside the scope circle
+  ctx.fillStyle = `rgba(0, 0, 0, 1)`;
+  ctx.fillRect(0, 0, width, height);
+  
+  // Clear the circular scope area
+  ctx.save();
+  ctx.globalCompositeOperation = 'destination-out';
+  ctx.fillStyle = 'rgba(0, 0, 0, 1)';
+  ctx.beginPath();
+  ctx.arc(centerX, centerY, currentScopeRadius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  
+  // Draw scope circle border (crosshair style) - always visible at full opacity
+  ctx.strokeStyle = `rgba(0, 255, 0, 0.6)`;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(centerX, centerY, currentScopeRadius, 0, Math.PI * 2);
+  ctx.stroke();
+  
+  // Draw crosshair in the center
+  const crosshairSize = 30;
+  const crosshairThickness = 2;
+  ctx.strokeStyle = `rgba(0, 255, 0, 0.7)`;
+  ctx.lineWidth = crosshairThickness;
+  
+  // Vertical line
+  ctx.beginPath();
+  ctx.moveTo(centerX, centerY - crosshairSize);
+  ctx.lineTo(centerX, centerY + crosshairSize);
+  ctx.stroke();
+  
+  // Horizontal line
+  ctx.beginPath();
+  ctx.moveTo(centerX - crosshairSize, centerY);
+  ctx.lineTo(centerX + crosshairSize, centerY);
+  ctx.stroke();
+  
+  // Draw small center dot
+  ctx.fillStyle = `rgba(0, 255, 0, 0.8)`;
+  ctx.beginPath();
+  ctx.arc(centerX, centerY, 3, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+// ── State variables ─────────────────────────────────────────────────────────────
+let room        = null;
+let myId        = null;
+let oppId       = null;
+let isHost      = false;
+let presenceRoom = null;
+let currentRoomCode = null;
+let notifications = new Set(); // Track notification IDs to avoid duplicates
+let gameStarted = false;
+
+// Ranked mode state
+let rankedMode = false;
+let isInRankedQueue = false;
+let playerElo = 100;
+let queueUpdateInterval = null;
+
+// Game message state
+let _pendingSkinInfo = null;
+let _pendingNametagInfo = null;
+
+// Loaders (initialized in init())
+let gltfLoader = null;
+let skinMgr = null;
+let hookMgr = null;
+let bombMgr = null;
+let nametags = null;
+let playerMeshMap = null;
+
+// Game functions (defined in init())
+let loadMapGLB = null;
+let buildClientWorld = null;
+let perfMonitor = null;
+let gBombSkins = {};
+
+// ── Gear effects tracking ────────────────────────────────
+const activeGearEffects = new Map();  // shooterId → { model, shooterId, initialOffset, startTime, duration }
+
+// ── Sniper scope effect tracking ─────────────────────────
+let activeScopeEffect = null;  // { startTime, duration, originalFov } or null
+const defaultScopeRadius = 0.35;  // Circle radius as fraction of screen
+const scopeZoomFov = 30;  // Zoomed in FOV for sniper (default is 75)
+
+// ── Ranked mode functions ────────────────────────────────────────────────────────
+
+async function updateRankedStats() {
+  const authUser = getUser();
+  if (!authUser) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/auth/me`, {
+      headers: { Authorization: `Bearer ${authUser.token}` }
+    });
+    const user = await res.json();
+    
+    playerElo = user.elo || 100;
+    const rankInfo = getRankFromElo(playerElo);
+    
+    // Update the ranked menu display
+    document.getElementById('playerRankName').textContent = rankInfo.name;
+    document.getElementById('playerRankName').style.color = rankInfo.color;
+    document.getElementById('playerElo').textContent = rankInfo.elo;
+  } catch (err) {
+    console.error('[updateRankedStats] Failed:', err);
+  }
+}
+
+async function joinRankedQueue() {
+  const authUser = getUser();
+  if (!authUser) return;
+
+  rankedMode = true;
+  isInRankedQueue = true;
+  
+  // Hide all UI screens that shouldn't be visible during queue
+  document.getElementById('page-results').style.display = 'none';
+  document.getElementById('rankedMenu').style.display = 'none';
+  document.getElementById('versusMenu').style.display = 'none';
+  document.getElementById('rankedQueue').style.display = 'flex';
+
+  try {
+    // Fetch user ELO
+    await updateRankedStats();
+    
+    // Join ranked queue  
+    room = await colyseus.joinOrCreate('ranked', {
+      token: authUser.token,
+      ratingMin: Math.max(0, playerElo - 500),
+      ratingMax: playerElo + 500,
+    });
+    myId = room.sessionId;
+
+    // ── Register all game message handlers for ranked mode ──────
+
+    // Register particles handler EARLY - before any gear effects
+    room.onMessage('particles', (data) => {
+      const { position, type, count } = data;
+      if (window.spawnParticles) {
+        window.spawnParticles(position, type, count);
+      }
+    });
+
+    // Ping/pong for latency
+    setInterval(() => {
+      room.send('ping', { t: Date.now() });
+    }, 1000);
+
+    room.onMessage('pong', ({ t }) => {
+      const el = document.getElementById('ping');
+      if (el) el.textContent = (Date.now() - t) + ' ms';
+    });
+
+    // Init message (sent before match starts)
+    room.onMessage('init', (data) => {
+      myId   = data.myId;
+      isHost = data.isHost;
+    });
+
+    // Map chosen (for non-ranked mode, but also sent in ranked for consistency)
+    room.onMessage('mapChosen', ({ mapId, mapName, skyColor }) => {
+      // Hide ALL UI screens (don't show waitingRoom for ranked)
+      document.getElementById('rankedQueue').style.display = 'none';
+      document.getElementById('rankedMenu').style.display = 'none';
+      document.getElementById('versusMenu').style.display = 'none';
+      document.getElementById('waitingRoom').style.display = 'none';
+      if (skyColor && typeof scene !== 'undefined' && scene) {
+        scene.background = new THREE.Color(skyColor);
+      }
+    });
+
+    // Load map (visual + physics)
+    room.onMessage('loadMap', async ({ glb, collision, spawnPoints }) => {
+      try {
+        // Check if loadMapGLB is defined (may be inside init())
+        if (!window.loadMapGLB) {
+          console.error('[Ranked loadMap] loadMapGLB not available');
+          return;
+        }
+        await window.loadMapGLB(glb);
+        const spawnIndex = isHost ? 0 : 1;
+        const spawn      = spawnPoints[spawnIndex] || { x: 0, y: 5, z: 0 };
+        if (!window.buildClientWorld) {
+          console.error('[Ranked loadMap] buildClientWorld not available');
+          return;
+        }
+        await window.buildClientWorld(collision, spawn.x, spawn.y, spawn.z);
+      } catch (e) {
+        console.error('[Ranked loadMap] Error:', e, 'glb:', glb);
+      }
+    });
+
+    // Skin info (opponent skins)
+    room.onMessage('skinInfo', (data) => {
+      _pendingSkinInfo = data;
+    });
+
+    // Nametag info
+    room.onMessage('nametagInfo', (data) => {
+      _pendingNametagInfo = data;
+      if (window.nametags) {
+        window.nametags.register(data);
+      }
+    });
+
+    // Ranked-specific: countdown before match
+    room.onMessage('countdownStart', handleCountdown);
+
+    // Game start (load skins, enable input, lock pointer)
+    room.onMessage('gameStart', async (data) => {
+      try {
+        disableInputDuringCountdown(false);
+        
+        oppId = myId === data.hostId ? data.guestId : data.hostId;
+
+        if (_pendingSkinInfo && window.skinMgr) {
+          const oppSkinData = _pendingSkinInfo[oppId];
+          if (oppSkinData) {
+            await window.skinMgr.assignSkin(oppId, oppSkinData, false);
+            const oppMesh = window.skinMgr.getRoot(oppId);
+            if (oppMesh && window.playerMeshMap) {
+              window.playerMeshMap.set(oppId, oppMesh);
+            }
+            if (window.hookMgr) {
+              window.hookMgr.assignHook(oppId, oppSkinData.grapple, false);
+            }
+          }
+          _pendingSkinInfo = null;
+        }
+
+        const authUserData = JSON.parse(localStorage.getItem('auth_user'));
+        if (authUserData && window.skinMgr && window.hookMgr) {
+          // Load own skins
+          fetch(`${API_BASE}/api/skins/player/${authUserData.username}`)
+            .then(r => r.json())
+            .then(d => {
+              if (window.hookMgr && typeof camera !== 'undefined' && camera) {
+                window.hookMgr.assignHook('local', d.grapple, true);
+                window.hookMgr.setCamera('local', camera);
+              }
+            })
+            .catch(err => console.warn('[Ranked gameStart] Failed to load own skins:', err));
+
+          // Load opponent's skins
+          fetch(`${API_BASE}/api/users-by-id/${oppId}`)
+            .then(r => r.json())
+            .then(oppData => {
+              if (!oppData?.username) return;
+              return fetch(`${API_BASE}/api/skins/load-opponent`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username: oppData.username })
+              });
+            })
+            .then(r => r?.json())
+            .catch(err => console.warn('[Ranked gameStart] Failed to load opponent skins:', err));
+        }
+
+        showGame();
+        gameStarted = true;
+        
+        if (typeof keys !== 'undefined' && keys) {
+          keys.w = false;
+          keys.a = false;
+          keys.s = false;
+          keys.d = false;
+          keys.space = false;
+        }
+        if (typeof prevSpaceState !== 'undefined') {
+          prevSpaceState = false;
+        }
+        
+        if (typeof controls !== 'undefined' && controls) {
+          setTimeout(() => {
+            try {
+              controls.lock();
+            } catch (err) {
+              console.warn('[Ranked gameStart] Pointer lock failed:', err.message);
+            }
+          }, 100);  // Slight delay to ensure game is ready
+        }
+      } catch (e) {
+        console.error('[Ranked gameStart]', e);
+      }
+    });
+
+    // Bomb exploded
+    room.onMessage('bombExploded', (data) => {
+      if (typeof bombMgr !== 'undefined' && bombMgr && bombMgr._bombs?.has(data.id)) {
+        bombMgr.removeBomb(data.id);
+      }
+      if (typeof Explosion !== 'undefined') {
+        explosions.push(new Explosion(data.position));
+      }
+    });
+
+    // Player hit (health update)
+    room.onMessage('playerHit', (data) => {
+      const isMe = data.playerId === myId;
+      const numId = isMe ? 'health'     : 'opponentHP';
+      const barId = isMe ? 'myHpFill'  : 'oppHpFill';
+      const el    = document.getElementById(numId);
+      const fill  = document.getElementById(barId);
+      if (!el) return;
+      const newHP = data.currentHealth !== undefined ? data.currentHealth : Math.max(0, parseInt(el.textContent) - data.damage);
+      el.textContent = newHP;
+      if (fill) fill.style.width = newHP + '%';
+      if (isMe) {
+        renderer.domElement.style.outline = '5px solid red';
+        setTimeout(() => { renderer.domElement.style.outline = ''; }, 200);
+      }
+    });
+
+    // Sniper line visual (beam)
+    room.onMessage('sniperLine', (data) => {
+      let start = new THREE.Vector3(data.start.x, data.start.y, data.start.z);
+      const end = new THREE.Vector3(data.end.x, data.end.y, data.end.z);
+      if (data.direction) {
+        const dir = new THREE.Vector3(data.direction.x, data.direction.y, data.direction.z);
+        const up = new THREE.Vector3(0, 1, 0);
+        const right = new THREE.Vector3().crossVectors(dir, up).normalize();
+        start.addScaledVector(right, 0.5);
+      }
+      const SNIPER_RADIUS = 0.08;
+      const SNIPER_SEGMENTS = 3;
+      const distance = start.distanceTo(end);
+      // Create cylinder geometry with proper distance
+      const geometry = new THREE.CylinderGeometry(SNIPER_RADIUS, SNIPER_RADIUS, distance, SNIPER_SEGMENTS);
+      geometry.rotateX(Math.PI / 2);  // Rotate 90 degrees so cylinder points along Z-axis
+      const material = new THREE.MeshBasicMaterial({ color: 0xff6600, depthWrite: true, transparent: true, opacity: 1.0 });
+      const cylinder = new THREE.Mesh(geometry, material);
+      cylinder.position.copy(start).add(end).divideScalar(2);
+      cylinder.lookAt(end);
+      scene.add(cylinder);
+      setTimeout(() => scene.remove(cylinder), 1000);
+    });
+
+    // Gear effect (mace, shield, etc)
+    room.onMessage('gearEffect', (data) => {
+      const { gearName, shooterId, position, direction, duration } = data;
+      const effectDuration = duration || 2000;
+      
+      // Start scope effect if this is the local player using sniper
+      if (gearName === 'sniper' && shooterId === myId && camera) {
+        const previewDuration = 2000;  // 2 seconds - stays zoomed until bullet travels
+        activeScopeEffect = {
+          startTime: Date.now(),
+          duration: previewDuration,
+          originalFov: camera.fov
+        };
+      }
+      
+      // Check if gltfLoader is available
+      if (!window.gltfLoader) {
+        console.error('[gearEffect] gltfLoader not available');
+        return;
+      }
+      
+      if (gearName === 'mace') {
+        const maceGlbPath = '/gear/mace.glb';
+        window.gltfLoader.load(maceGlbPath, (gltf) => {
+          const model = gltf.scene.clone();
+          model.position.set(position.x, position.y, position.z);
+          scene.add(model);
+          setupGearEffectAnimation(model, shooterId, position, effectDuration);
+        }, undefined, (error) => {
+          console.warn(`[gearEffect] Failed to load ${maceGlbPath}, using procedural model:`, error);
+          const geometry = new THREE.SphereGeometry(0.5, 8, 8);
+          const material = new THREE.MeshPhongMaterial({ color: 0x8B4513 });
+          const model = new THREE.Mesh(geometry, material);
+          model.position.set(position.x, position.y, position.z);
+          scene.add(model);
+          setupGearEffectAnimation(model, shooterId, position, effectDuration);
+        });
+      } else {
+        const gearGlbPath = `/gear/${gearName}.glb`;
+        window.gltfLoader.load(gearGlbPath, (gltf) => {
+          const model = gltf.scene.clone();
+          model.position.set(position.x, position.y, position.z);
+          scene.add(model);
+          setupGearEffectAnimation(model, shooterId, position, effectDuration);
+        }, undefined, (error) => {
+          console.warn(`[gearEffect] Failed to load ${gearGlbPath}, using procedural model:`, error);
+          const geometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+          const material = new THREE.MeshPhongMaterial({ color: 0xffff00 });
+          const model = new THREE.Mesh(geometry, material);
+          model.position.set(position.x, position.y, position.z);
+          scene.add(model);
+          setupGearEffectAnimation(model, shooterId, position, effectDuration);
+        });
+      }
+      
+      function setupGearEffectAnimation(model, shooterId, position, duration) {
+        // Ensure we have a valid duration
+        const finalDuration = Math.max(duration || 3000, 3000);
+        const startTime = Date.now();
+        
+        // Calculate initial offset from shooter's position
+        let initialOffset = new THREE.Vector3();
+        const shooterStateAtStart = room.state.players.get(shooterId);
+        
+        if (shooterStateAtStart && shooterStateAtStart.position) {
+          initialOffset.set(
+            position.x - shooterStateAtStart.position.x,
+            position.y - shooterStateAtStart.position.y,
+            position.z - shooterStateAtStart.position.z
+          );
+        }
+        
+        // Initialize current position for smooth interpolation
+        const currentPosition = new THREE.Vector3();
+        currentPosition.copy(model.position);
+        
+        // Store the initial rotation quaternion so we can preserve pitch
+        const initialRotation = new THREE.Quaternion();
+        initialRotation.copy(model.quaternion);
+        
+        // Determine animation type based on model
+        let animationType = 'gear';
+        if (position.z > 100) animationType = 'sniper'; // Rough check for sniper gear
+        
+        // Register this effect for frame-by-frame updates (use the shared module-level map)
+        const effect = { model, shooterId, initialOffset, startTime, duration: finalDuration, animationType, currentPosition, initialRotation };
+        activeGearEffects.set(shooterId, effect);
+        
+        // Handle cleanup after duration
+        const cleanupTimeout = setTimeout(() => {
+          activeGearEffects.delete(shooterId);
+          if (scene && model) {
+            scene.remove(model);
+          }
+        }, finalDuration);
+      }
+    });
+
+    // Parry success
+    room.onMessage('parrySuccess', (data) => {
+      addInGameNotification('+ PARRY', 3000);
+    });
+
+    // Player left
+    room.onMessage('playerLeft', (data) => {
+    });
+
+    // Game end
+    room.onMessage('gameEnd', async (data) => {
+      try {
+        if (typeof controls !== 'undefined' && controls && controls.isLocked) {
+          controls.unlock();
+        }
+        gameStarted = false;
+        
+        if (typeof keys !== 'undefined' && keys) {
+          keys.w = false;
+          keys.a = false;
+          keys.s = false;
+          keys.d = false;
+          keys.space = false;
+          prevSpaceState = false;
+        }
+        
+        if (typeof skinMgr !== 'undefined' && skinMgr) skinMgr.removeAll();
+        if (typeof hookMgr !== 'undefined' && hookMgr) hookMgr.removeAll();
+        if (typeof bombMgr !== 'undefined' && bombMgr) bombMgr.removeAll();
+        if (typeof nametags !== 'undefined' && nametags) nametags.dispose();
+        if (typeof playerMeshMap !== 'undefined' && playerMeshMap) playerMeshMap.clear();
+
+        const authUser = JSON.parse(localStorage.getItem('auth_user'));
+        const myDbId = authUser ? getUserIdFromToken(authUser.token) : null;
+        const won = data.winner === myDbId;
+
+        const resultTitle = document.getElementById('resultTitle');
+        if (resultTitle) {
+          resultTitle.textContent = won ? 'you won' : 'you lost';
+          resultTitle.style.color = won ? '#00ff88' : '#ff4444';
+        }
+
+        const resultSub = document.getElementById('resultSub');
+        if (resultSub) {
+          resultSub.innerHTML = won ? 'opponent eliminated' : 'you were eliminated';
+          if (rankedMode && data.eloChange !== undefined) {
+            const eloText = data.eloChange > 0 ? `+${data.eloChange}` : `${data.eloChange}`;
+            const eloColor = data.eloChange > 0 ? '#00ff88' : '#ff4444';
+            const rank = getRankFromElo(data.newElo);
+            resultSub.innerHTML += `<br><span style="color:${eloColor}; font-family:'Space Mono',monospace; font-size:14px;">ELO: ${eloText} → ${rank.elo}</span>`;
+          }
+        }
+
+        showResults(won);
+        
+        if (rankedMode) {
+          setTimeout(() => updateRankedStats(), 500);
+        }
+      } catch (e) {
+        console.error('[Ranked gameEnd]', e);
+      }
+    });
+
+    // Update queue count every 2 seconds
+    queueUpdateInterval = setInterval(async () => {
+      const countEl = document.getElementById('queueCount');
+      if (countEl) {
+        countEl.textContent = 'searching for opponent...';
+      }
+    }, 2000);
+
+  } catch (err) {
+    console.error('[joinRankedQueue] Failed:', err);
+    rankedMode = false;
+    isInRankedQueue = false;
+    
+    let errorMsg = 'Failed to join queue. Try again.';
+    if (err.message?.includes('same account')) {
+      errorMsg = 'Cannot queue with the same account in ranked mode.';
+    }
+    
+    document.getElementById('rankedErrorMsg').textContent = errorMsg;
+    document.getElementById('rankedQueue').style.display = 'none';
+    document.getElementById('rankedMenu').style.display = 'flex';
+  }
+}
+
+function cancelRankedQueue() {
+  rankedMode = false;
+  isInRankedQueue = false;
+  
+  if (queueUpdateInterval) {
+    clearInterval(queueUpdateInterval);
+    queueUpdateInterval = null;
+  }
+  
+  if (room) {
+    room.leave();
+    room = null;
+  }
+  
+  document.getElementById('rankedQueue').style.display = 'none';
+  document.getElementById('rankedMenu').style.display = 'flex';
+  document.getElementById('menu').style.display = 'flex';
+}
+
+function resetRankedGame() {
+  // Clean up all game state before requeuing
+  gameStarted = false;
+  
+  // Hide results screen
+  document.getElementById('page-results').style.display = 'none';
+  
+  // Leave current room
+  if (room) {
+    room.leave();
+    room = null;
+  }
+  
+  // Clear all game object managers
+  if (typeof skinMgr !== 'undefined' && skinMgr) skinMgr.removeAll();
+  if (typeof hookMgr !== 'undefined' && hookMgr) hookMgr.removeAll();
+  if (typeof bombMgr !== 'undefined' && bombMgr) bombMgr.removeAll();
+  if (typeof nametags !== 'undefined' && nametags) nametags.dispose();
+  if (typeof playerMeshMap !== 'undefined' && playerMeshMap) playerMeshMap.clear();
+  if (typeof activeGearEffects !== 'undefined' && activeGearEffects) activeGearEffects.clear();
+  
+  // Clear scope effect
+  if (typeof activeScopeEffect !== 'undefined') {
+    activeScopeEffect = null;
+    const vignetteCanvas = document.getElementById('scopeVignette');
+    if (vignetteCanvas) {
+      vignetteCanvas.classList.remove('active');
+    }
+  }
+  
+  // Clear all active explosions
+  if (typeof explosions !== 'undefined') {
+    explosions.length = 0;
+  }
+  
+  // Reset key states
+  if (typeof keys !== 'undefined' && keys) {
+    keys.w = false;
+    keys.a = false;
+    keys.s = false;
+    keys.d = false;
+    keys.space = false;
+    prevSpaceState = false;
+  }
+  
+  // Unlock pointer if locked
+  if (typeof controls !== 'undefined' && controls && controls.isLocked) {
+    controls.unlock();
+  }
+}
+
+
+function handleCountdown(data) {
+  isInRankedQueue = false;
+  
+  if (queueUpdateInterval) {
+    clearInterval(queueUpdateInterval);
+    queueUpdateInterval = null;
+  }
+  
+  // Hide ALL UI screens completely
+  document.getElementById('rankedQueue').style.display = 'none';
+  document.getElementById('rankedMenu').style.display = 'none';
+  document.getElementById('versusMenu').style.display = 'none';
+  document.getElementById('waitingRoom').style.display = 'none';
+  document.getElementById('menu').style.display = 'none';
+  
+  // Show countdown
+  const countdownEl = document.getElementById('rankedCountdown');
+  countdownEl.style.display = 'flex';
+  countdownEl.classList.add('show');
+  
+  // Get players data for display
+  const myPlayerData = data.players[myId];
+  const oppPlayerData = Object.values(data.players).find(p => p.sessionId !== myId);
+  
+  if (myPlayerData && oppPlayerData) {
+    // Fetch player names and ELO from server
+    fetchCountdownPlayerInfo(myId, 1);
+    fetchCountdownPlayerInfo(oppPlayerData.sessionId, 2);
+  }
+  
+  // Start countdown
+  let secondsLeft = 3;
+  document.getElementById('countdownNumber').textContent = secondsLeft;
+  
+  const countdownInterval = setInterval(() => {
+    secondsLeft--;
+    if (secondsLeft > 0) {
+      document.getElementById('countdownNumber').textContent = secondsLeft;
+    } else {
+      clearInterval(countdownInterval);
+      // Countdown finished, hide countdown overlay
+      countdownEl.classList.remove('show');
+      countdownEl.style.display = 'none';
+    }
+  }, 1000);
+  
+  // Disable all input during countdown
+  disableInputDuringCountdown(true);
+}
+
+async function fetchCountdownPlayerInfo(sessionId, playerNumber) {
+  try {
+    const userIdMatch = sessionId.match(/^[a-f0-9]{24}$/i);
+    if (!userIdMatch) {
+      // Try to get from room state
+      const playerState = room.state.players.get(sessionId);
+      if (playerState) {
+        const rankInfo = getRankFromElo(playerState.elo || 100);
+        document.getElementById(`player${playerNumber}Elo`).textContent = `${rankInfo.elo} ELO`;
+        document.getElementById(`player${playerNumber}Rank`).textContent = rankInfo.name;
+        document.getElementById(`player${playerNumber}Rank`).style.color = rankInfo.color;
+      }
+      return;
+    }
+
+    // Fetch user info
+    const res = await fetch(`${API_BASE}/api/users-by-id/${sessionId}`);
+    if (!res.ok) return;
+    
+    const user = await res.json();
+    document.getElementById(`player${playerNumber}Name`).textContent = user.username || 'Player ' + playerNumber;
+    
+    const rankInfo = getRankFromElo(user.elo || 100);
+    document.getElementById(`player${playerNumber}Rank`).textContent = rankInfo.name;
+    document.getElementById(`player${playerNumber}Rank`).style.color = rankInfo.color;
+    document.getElementById(`player${playerNumber}Elo`).textContent = `${rankInfo.elo} ELO`;
+  } catch (err) {
+    console.warn(`[fetchCountdownPlayerInfo] Failed for player ${playerNumber}:`, err);
+  }
+}
+
+function disableInputDuringCountdown(disable) {
+  // Disable keyboard/mouse input
+  if (disable) {
+    document.addEventListener('keydown', blockInputHandler, true);
+    document.addEventListener('mousedown', blockInputHandler, true);
+  } else {
+    document.removeEventListener('keydown', blockInputHandler, true);
+    document.removeEventListener('mousedown', blockInputHandler, true);
+  }
+}
+
+function blockInputHandler(e) {
+  e.preventDefault();
+  e.stopPropagation();
+}
+
+// Expose functions to global scope for HTML onclick handlers
+window.joinRankedQueue = joinRankedQueue;
+window.cancelRankedQueue = cancelRankedQueue;
 
 function getUser() {
   try { return JSON.parse(localStorage.getItem('auth_user')); }
@@ -126,14 +858,20 @@ async function fetchAndDisplayStats(token) {
       <span style="color: ${user.usernameColor || '#ffffff'}">${user.username}</span>
     `.trim();
 
+    const fullRankedRank = `<span style="color: ${getRankFromElo(user.elo ?? 100).color}">${getRankFromElo(user.elo ?? 100).name}</span>`;
+
     document.getElementById('stat-user').innerHTML = `your user: ${displayNameHTML}`;
     
     document.getElementById('stat-wins').textContent   = `games won: ${user.wins ?? 0}`;
     document.getElementById('stat-deaths').textContent = `times died: ${user.deaths ?? 0}`;
+
+    document.getElementById('stat-rank').innerHTML = `ranked rank: ${fullRankedRank}`;
+    document.getElementById('stat-elo').textContent = `ranked ELO: ${user.elo ?? 100}`;
   } catch { showAuthOverlay(); }
 }
 
 function showAuthOverlay() {
+  hideLoadingScreen();  // Hide loading screen when showing auth
   document.getElementById('menu').style.display = 'none';
   const overlay = document.createElement('div');
   overlay.id = 'authOverlay';
@@ -208,8 +946,13 @@ function showAuthOverlay() {
       localStorage.setItem('auth_user', JSON.stringify({ username: data.username, token: data.token }));
       document.removeEventListener('keydown', onEnter);
       overlay.remove();
+      hideLoadingScreen();  // Hide loading screen after successful login
       document.getElementById('menu').style.display = 'flex';
+      window.location.reload();
       fetchAndDisplayStats(data.token);
+      
+      // Refresh cosmetics UI after login
+      refreshCosmeticsUI().catch(err => console.error('[Login] Cosmetics refresh error:', err));
       
       // Preload user's unlocked skins on login
       fetch(`${API_BASE}/api/skins/preload`, {
@@ -217,7 +960,6 @@ function showAuthOverlay() {
         headers: { 'Authorization': `Bearer ${data.token}` }
       })
       .then(r => r.json())
-      .then(result => console.log('[Login] Preloaded skins:', result))
       .catch(err => console.warn('[Login] Failed to preload skins:', err));
       
       // Load and cache user settings after login
@@ -226,7 +968,6 @@ function showAuthOverlay() {
       })
       .then(r => r.json())
       .then(user => {
-        console.log('[Login] Fetched user data, settings:', user.settings);
         if (user.settings) {
           // Update gameSettings with loaded values
           Object.assign(gameSettings.graphics, user.settings.graphics || {});
@@ -234,12 +975,9 @@ function showAuthOverlay() {
           Object.assign(gameSettings.mouse, user.settings.mouse || {});
           Object.assign(window.keybinds, user.settings.keybinds || {});
           
-          console.log('[Login] Updated gameSettings:', gameSettings);
-          
           // Cache the settings
           try {
             localStorage.setItem('cached_settings', JSON.stringify(user.settings));
-            console.log('[Login] Cached settings to localStorage');
           } catch (e) {
             console.warn('Failed to cache settings after login:', e);
           }
@@ -249,21 +987,15 @@ function showAuthOverlay() {
           const maxRetries = 150; // 15 seconds with 100ms intervals
           const applySettingsWhenReady = () => {
             retryCount++;
-            console.log(`[Login] Retry ${retryCount}/${maxRetries} - Checking game readiness...`);
-            console.log(`[Login] State: applySettings=${!!window.applySettings}, controls=${!!window.controls}, camera=${!!window.camera}`);
             if (window.applySettings && window.controls && window.camera) {
-              console.log('[Login] ✓ Game ready, applying loaded settings');
               const result = window.applySettings();
-              console.log('[Login] Apply result:', result);
               // Also reconnect to presence room to ensure websocket works
               if (window.joinPresence) {
-                console.log('[Login] Reconnecting presence room after settings applied');
                 window.joinPresence().catch(e => console.error('[Login] Failed to reconnect presence:', e));
               }
             } else if (retryCount >= maxRetries) {
               console.error('[Login] ✗ Game failed to initialize after 15 seconds, giving up');
             } else {
-              console.log('[Login] Waiting for game to initialize...');
               setTimeout(applySettingsWhenReady, 100);
             }
           };
@@ -309,12 +1041,25 @@ if (!_savedUser) {
   setTimeout(() => {
     const menuEl = document.getElementById('menu');
     if (menuEl) {
-      console.log('[Init] Found menu element, showing...');
       showMenu();
     } else {
       console.error('[Init] Menu element not found!');
     }
   }, 100);
+}
+
+// Update ranked stats when ranked menu is shown
+const rankedMenuEl = document.getElementById('rankedMenu');
+if (rankedMenuEl) {
+  const rankedMenuObserver = new MutationObserver((mutations) => {
+    mutations.forEach((mutation) => {
+      if (mutation.attributeName === 'style' && rankedMenuEl.style.display !== 'none') {
+        updateRankedStats();
+      }
+    });
+  });
+  
+  rankedMenuObserver.observe(rankedMenuEl, { attributes: true, attributeFilter: ['style'] });
 }
 
 
@@ -355,7 +1100,6 @@ renderer.domElement.style.inset = '0';
 renderer.domElement.style.zIndex = '50';  // Above background (0) but below menus (1000)
 renderer.domElement.style.display = 'none';
 renderer.domElement.style.pointerEvents = 'none';
-console.log('[Init] Game canvas z-index:', renderer.domElement.style.zIndex, ', menu z-index: 1000');
 document.body.appendChild(renderer.domElement);
 
 // Store default lights for fallback when maps have no lights
@@ -390,26 +1134,54 @@ camera.add(crosshair);
 scene.add(camera);
 
 // ── Game state ────────────────────────────────────────────────────────────────────────────────────────────────
-let room        = null;
-let myId        = null;
-let oppId       = null;
-let isHost      = false;
-let presenceRoom = null;
-let currentRoomCode = null;
-let notifications = new Set(); // Track notification IDs to avoid duplicates
-
-// Menu and game state management
-let gameStarted = false;
+// State variables moved to top of file (before ranked functions that use them)
 
 // Results buttons
 document.getElementById('playAgainBtn').onclick = () => {
-  if (room) {
-    room.send('rematch', {});
+  const btn = document.getElementById('playAgainBtn');
+  if (rankedMode) {
+    btn.textContent = 'requeue';
+    // Completely reset game state before requeuing
+    resetRankedGame();
+    // Re-enter ranked queue
+    joinRankedQueue();
+  } else {
+    btn.textContent = 'rematch';
+    if (room) {
+      // For 1v1, send rematch
+      room.send('rematch', {});
+    }
   }
 }
 document.getElementById('menuBtn').onclick      = () => {
+  rankedMode = false;
+  isInRankedQueue = false;
   location.reload();
   showBackground();
+}
+
+// Debug: Track versusMenu visibility changes
+const versusMenuEl = document.getElementById('versusMenu');
+if (versusMenuEl) {
+  const observer = new MutationObserver((mutations) => {
+    mutations.forEach(mutation => {
+      if (mutation.attributeName === 'style') {
+      }
+    });
+  });
+  observer.observe(versusMenuEl, { attributes: true, attributeFilter: ['style'] });
+}
+
+// Debug: Track waitingRoom visibility changes
+const waitingRoomEl = document.getElementById('waitingRoom');
+if (waitingRoomEl) {
+  const observer = new MutationObserver((mutations) => {
+    mutations.forEach(mutation => {
+      if (mutation.attributeName === 'style') {
+      }
+    });
+  });
+  observer.observe(waitingRoomEl, { attributes: true, attributeFilter: ['style'] });
 }
 
 // Menu ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -452,8 +1224,6 @@ async function databaseSave(info) {
 }
 
 function applySettings() {
-  console.log('[applySettings] Called, gameSettings object:', gameSettings);
-  console.log('[applySettings] Checking initialization state - controls:', !!controls, 'camera:', !!camera);
   
   // Read from gameSettings directly instead of DOM elements
   const fov = gameSettings.graphics.fov || 75;
@@ -463,7 +1233,6 @@ function applySettings() {
   const showSpeed = gameSettings.interface.showSpeed !== false;
   const showPing = gameSettings.interface.showPing !== false;
 
-  console.log('[applySettings] Parsed values - FOV:', fov, 'Sensitivity:', sensitivity, 'InvertY:', invertY, 'ShowHints:', showHints, 'ShowSpeed:', showSpeed, 'ShowPing:', showPing);
 
   if (!controls) {
     console.error('[applySettings] FAILED: controls not initialized! Type:', typeof controls);
@@ -476,19 +1245,15 @@ function applySettings() {
 
   try {
     controls.pointerSpeed = sensitivity;
-    console.log('[applySettings] Set controls.pointerSpeed to', controls.pointerSpeed, '(verify:', controls.pointerSpeed === sensitivity, ')');
     
     controls.invertYAxis = invertY;
-    console.log('[applySettings] Set controls.invertYAxis to', controls.invertYAxis, '(verify:', controls.invertYAxis === invertY, ')');
     
     camera.fov = fov;
-    console.log('[applySettings] Set camera.fov to', camera.fov, '(verify:', camera.fov === fov, ')');
 
     // UI visibility updates with verification
     const hintsEl = document.getElementById('controls-hint');
     if (hintsEl) {
       hintsEl.style.display = showHints ? 'block' : 'none';
-      console.log('[applySettings] Updated controls-hint to', hintsEl.style.display);
     } else {
       console.warn('[applySettings] controls-hint element not found');
     }
@@ -496,7 +1261,6 @@ function applySettings() {
     const velocityEl = document.getElementById('velocity');
     if (velocityEl) {
       velocityEl.style.display = showSpeed ? 'block' : 'none';
-      console.log('[applySettings] Updated velocity to', velocityEl.style.display);
     } else {
       console.warn('[applySettings] velocity element not found');
     }
@@ -504,14 +1268,11 @@ function applySettings() {
     const pingEl = document.getElementById('ping');
     if (pingEl) {
       pingEl.style.display = showPing ? 'block' : 'none';
-      console.log('[applySettings] Updated ping to', pingEl.style.display);
     } else {
       console.warn('[applySettings] ping element not found');
     }
 
     camera.updateProjectionMatrix();
-    console.log('[applySettings] Called updateProjectionMatrix, Camera FOV is now:', camera.fov);
-    console.log('[applySettings] SUCCESS - all settings applied!');
     return true;
   } catch (err) {
     console.error('[applySettings] EXCEPTION during apply:', err);
@@ -521,7 +1282,6 @@ function applySettings() {
 
 
 document.getElementById('saveBtn').addEventListener('click', () => {
-  console.log('[Save] User clicked save button');
   const settings = {
     graphics: {
       fov:      parseInt(document.getElementById('fov').value),
@@ -539,32 +1299,24 @@ document.getElementById('saveBtn').addEventListener('click', () => {
     keybinds: { ...window.keybinds },
   };
 
-  console.log('[Save] Collected settings from DOM:', settings);
-
   // Update gameSettings from form values
   Object.assign(gameSettings.graphics, settings.graphics);
   Object.assign(gameSettings.interface, settings.interface);
   Object.assign(gameSettings.mouse, settings.mouse);
 
-  console.log('[Save] Updated gameSettings:', gameSettings);
-
   // Cache settings in localStorage as backup
   try {
     localStorage.setItem('cached_settings', JSON.stringify(settings));
-    console.log('[Save] Cached settings to localStorage');
   } catch (e) {
     console.warn('Failed to cache settings in localStorage:', e);
   }
 
-  console.log('[Save] Calling applySettings()');
   const applied = applySettings();
   if (applied) {
-    console.log('[Save] Settings applied successfully, closing menu');
     // Close the settings menu after applying
     const settingsPanel = document.getElementById('panel-settings');
     if (settingsPanel) {
       settingsPanel.style.display = 'none';
-      console.log('[Save] Settings panel hidden');
     }
   } else {
     console.warn('[Save] Settings were not applied successfully');
@@ -576,9 +1328,7 @@ document.getElementById('saveBtn').addEventListener('click', () => {
 if (window.displayStoredSettings) {
   const originalDisplay = window.displayStoredSettings;
   window.displayStoredSettings = function() {
-    console.log('[Settings] displayStoredSettings called');
     originalDisplay.call(this);
-    console.log('[Settings] Calling applySettings after display');
     applySettings();
   };
 }
@@ -745,7 +1495,6 @@ async function loadFriendRequests() {
 
 // Context menu for friend actions
 function showFriendContextMenu(event, username) {
-  console.log('[Friends] Right-click on friend:', username);
   
   // Remove any existing context menu
   const existing = document.getElementById('friend-context-menu');
@@ -790,7 +1539,6 @@ function showFriendContextMenu(event, username) {
 
 // Remove a friend with confirmation
 async function unfriend(username) {
-  console.log('[Friends] Unfriending:', username);
   
   // Close context menu
   const menu = document.getElementById('friend-context-menu');
@@ -799,7 +1547,6 @@ async function unfriend(username) {
   // Show confirmation dialog
   const confirmed = confirm(`Are you sure you want to unfriend ${username}?`);
   if (!confirmed) {
-    console.log('[Friends] Unfriend cancelled');
     return;
   }
   
@@ -810,7 +1557,6 @@ async function unfriend(username) {
   }
   
   try {
-    console.log('[Friends] Sending unfriend request for:', username);
     const res = await fetch(`${API_BASE}/api/friends/remove`, {
       method: 'POST',
       headers: { 
@@ -827,8 +1573,6 @@ async function unfriend(username) {
       return;
     }
     
-    console.log('[Friends] Successfully unfriended:', username);
-    
     // Remove the friend row with animation
     const friendRow = document.getElementById(`friend-${username}`);
     if (friendRow) {
@@ -841,7 +1585,6 @@ async function unfriend(username) {
     
     // Refresh friends list to ensure consistency
     await loadFriends();
-    console.log('[Friends] Friends list refreshed after unfriend');
     
   } catch (e) {
     console.error('[Friends] Error unfriending:', e);
@@ -933,7 +1676,6 @@ async function sendInvite(friendUsername) {
 }
 
 async function joinInvite(code) {
-  console.log('[Friends] Joining invite with code:', code);
   // Close chat menu and friends menu
   document.getElementById('chatMenu').style.display = 'none';
   
@@ -946,11 +1688,10 @@ async function joinInvite(code) {
   if (offlineFriends) offlineFriends.style.display = 'none';
   
   document.getElementById('menu').style.display = 'none';
-  document.getElementById('versusMenu').style.display = 'flex';
+  // Don't show versusMenu - just silently fill in code and join
   
   // Fill in code and attempt join
   document.getElementById('codeInput').value = code.toUpperCase();
-  console.log('[Friends] Filled code input, attempting join');
   
   // Give it a moment to render, then click join
   setTimeout(() => {
@@ -962,7 +1703,6 @@ loadFriendRequests();
 loadFriends();
 
 document.getElementById('friendsMenuBtn').addEventListener('click', () => {
-  console.log('[Friends] Friends menu button clicked, refreshing');
   loadFriendRequests();
   loadFriends();
 })
@@ -970,12 +1710,10 @@ document.getElementById('friendsMenuBtn').addEventListener('click', () => {
 // Refresh friends when any friend action button is clicked
 try {
   document.querySelector('.friend-action-btn')?.addEventListener('click', () => {
-    console.log('[Friends] Friend action button clicked, refreshing');
     loadFriendRequests();
     loadFriends();
   });
 } catch (e) {
-  console.log('[Friends] Friend action button not found yet (will be available at runtime)', e.message);
 }
 
 // ── Chat ─────────────────────────────────────────────────────
@@ -1147,7 +1885,6 @@ document.querySelector('.send-btn').addEventListener('click', sendMessage);
 
 // Wrapper for acceptRequest to also refresh the friends menu
 async function acceptRequest(userId, username) {
-  console.log('[Friends] Accepting request from', username, 'userId:', userId);
   const authUser = JSON.parse(localStorage.getItem('auth_user'));
   if (!authUser) return;
   
@@ -1166,8 +1903,6 @@ async function acceptRequest(userId, username) {
       console.error('[Friends] Failed to accept request:', data.error);
       return;
     }
-    
-    console.log('[Friends] Request accepted, refreshing menu');
     await loadFriendRequests();
     await loadFriends();
   } catch (e) {
@@ -1177,7 +1912,6 @@ async function acceptRequest(userId, username) {
 
 // Wrapper for declineRequest
 async function declineRequest(userId) {
-  console.log('[Friends] Declining request from user', userId);
   const authUser = JSON.parse(localStorage.getItem('auth_user'));
   if (!authUser) return;
   
@@ -1196,8 +1930,6 @@ async function declineRequest(userId) {
       console.error('[Friends] Failed to decline request:', data.error);
       return;
     }
-    
-    console.log('[Friends] Request declined, refreshing menu');
     await loadFriendRequests();
   } catch (e) {
     console.error('[Friends] Failed to decline request:', e);
@@ -1305,11 +2037,19 @@ let gBombSkins = {};
 
 async function forEachUnlockedSkin(skinCallback, grappleCallback, bombCallback) {
   const authUser = JSON.parse(localStorage.getItem('auth_user'));
-  if (!authUser) return;
+  if (!authUser) {
+    console.warn('[forEachUnlockedSkin] No auth user found');
+    return;
+  }
   const res  = await fetch(`${API_BASE}/api/skins`, {
     headers: { Authorization: `Bearer ${authUser.token}` }
   });
+  if (!res.ok) {
+    console.error('[forEachUnlockedSkin] API error:', res.status);
+    return;
+  }
   const { skins, unlockedSkins, equippedSkin, grapples, unlockedGrapples, equippedGrapple, bombs, unlockedBombs, equippedBomb } = await res.json();
+
 
   // Store bomb skins for gameplay use
   gBombSkins = {};
@@ -1414,16 +2154,23 @@ forEachUnlockedSkin(createPlayerSkinCard, createGrappleCard, createBombCard);
 
 function forEachTitleCard(titleCallback) {
   const authUser = JSON.parse(localStorage.getItem('auth_user'));
-  if (!authUser) return;
-  fetch(`${API_BASE}/api/titles`, {
+  if (!authUser) {
+    console.warn('[forEachTitleCard] No auth user found');
+    return Promise.resolve();
+  }
+  return fetch(`${API_BASE}/api/titles`, {
     headers: { Authorization: `Bearer ${authUser.token}` }
   })
-  .then(res => res.json())
+  .then(res => {
+    if (!res.ok) throw new Error(`API error: ${res.status}`);
+    return res.json();
+  })
   .then(({ titles, unlockedTitles, equippedTitle }) => {
     for (const title of titles) {
       titleCallback(title, unlockedTitles.includes(title.id), title.name === equippedTitle);
     }
-  });
+  })
+  .catch(err => console.error('[forEachTitleCard] Error:', err));
 }
 
 function createTitleCard(title, unlocked, equipped) {
@@ -1491,7 +2238,6 @@ async function loadGearData() {
 
     const data = await res.json();
     gearItems = data.gear;
-    console.log('[loadGearData] Loaded', gearItems.length, 'gear items');
   } catch (err) {
     console.error('[loadGearData] Error:', err);
   }
@@ -1548,7 +2294,6 @@ function equipGear(gearId, cardElement) {
       body: JSON.stringify({ gearId })
     }).catch(err => console.error('[equipGear] Error:', err));
   }
-  console.log('Equipped gear:', gearId);
 }
 
 function initializeGearCards() {
@@ -1580,6 +2325,52 @@ if (document.readyState === 'loading') {
   initGearOnLoad();
 }
 
+// ── Refresh cosmetics UI (called after login) ───────────────────────────────────────
+async function refreshCosmeticsUI() {
+  try {
+    // Clear existing cards
+    const panelSkins = document.getElementById('panel-skinCards');
+    const panelGrapples = document.getElementById('panel-grappleSkinCards');
+    const panelBombs = document.getElementById('panel-bombSkinCards');
+    const titleUnlocked = document.getElementById('titleCardsUnlocked');
+    const titleLocked = document.getElementById('titleCardsLocked');
+    
+    if (panelSkins) panelSkins.innerHTML = '';
+    if (panelGrapples) panelGrapples.innerHTML = '';
+    if (panelBombs) panelBombs.innerHTML = '';
+    if (titleUnlocked) titleUnlocked.innerHTML = '';
+    if (titleLocked) titleLocked.innerHTML = '';
+    
+    // Reload and display cosmetics
+    await forEachUnlockedSkin(createPlayerSkinCard, createGrappleCard, createBombCard);
+    await forEachTitleCard(createTitleCard);
+    
+    // Refresh gear cards
+    await loadGearData();
+    initializeGearCards();
+    
+    // Wait for preview system to be initialized before updating
+    if (typeof previewSystem !== 'undefined') {
+      let retries = 0;
+      const maxRetries = 50; // 5 seconds max wait
+      const waitForPreviewInit = () => {
+        retries++;
+        if (previewSystem.isInitialized) {
+          previewSystem.updatePreview().catch(e => console.error('[Preview Update after cosmetics refresh]', e));
+        } else if (retries < maxRetries) {
+          setTimeout(waitForPreviewInit, 100);
+        } else {
+          console.warn('[refreshCosmeticsUI] Preview system took too long to initialize');
+        }
+      };
+      waitForPreviewInit();
+    }
+    
+  } catch (err) {
+    console.error('[refreshCosmeticsUI] Error:', err);
+  }
+}
+
 // ── PLAYER PREVIEW SYSTEM ───────────────────────────────────────────────────────────────────────────────────────────────────────
 
 class PlayerPreviewSystem {
@@ -1594,6 +2385,7 @@ class PlayerPreviewSystem {
     this.buttonRenderer = null;
     this.animationFrameId = null;
     this.resizeHandler = null;
+    this._resizeObserver = null;
     this.isInitialized = false;
   }
 
@@ -1625,7 +2417,7 @@ class PlayerPreviewSystem {
         previewCanvas.height = displayHeight;
         
         this.previewScene = new THREE.Scene();
-        this.previewScene.background = new THREE.Color(`rgba(104, 101, 101, 0.95)`);
+        this.previewScene.background = new THREE.Color(0x686565);
         
         this.previewCamera = new THREE.PerspectiveCamera(
           40,
@@ -1660,7 +2452,7 @@ class PlayerPreviewSystem {
         
         // Add floor
         const floorGeom = new THREE.PlaneGeometry(20, 20);
-        const floorMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(`rgba(104, 103, 103, 0.95)`) });
+        const floorMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(0x686767) });
         const floorMesh = new THREE.Mesh(floorGeom, floorMat);
         floorMesh.rotation.x = -Math.PI / 2;
         floorMesh.position.y = -1.5;
@@ -1695,31 +2487,30 @@ class PlayerPreviewSystem {
       
       // Handle window resize
       const handleResize = () => {
-        if (previewCanvas) {
-          const newDisplayWidth = previewCanvas.clientWidth;
-          const newDisplayHeight = previewCanvas.clientHeight;
-          
-          if (newDisplayWidth > 0 && newDisplayHeight > 0) {
-            this.previewRenderer?.setSize(newDisplayWidth, newDisplayHeight);
-            this.previewCamera.aspect = newDisplayWidth / newDisplayHeight;
-            this.previewCamera?.updateProjectionMatrix();
-          }
-        }
-        
-        if (buttonCanvas) {
-          const newBtnDisplayWidth = buttonCanvas.clientWidth;
-          const newBtnDisplayHeight = buttonCanvas.clientHeight;
-          
-          if (newBtnDisplayWidth > 0 && newBtnDisplayHeight > 0) {
-            this.buttonRenderer?.setSize(newBtnDisplayWidth, newBtnDisplayHeight);
-          }
-        }
+        this.resizeCanvases();
       };
       window.addEventListener('resize', handleResize);
       
       this.resizeHandler = handleResize;
       
+      // Also use ResizeObserver to track preview container size changes
+      const previewContainer = document.querySelector('.preview');
+      const buttonContainer = document.querySelector('.playerIcon');
+      if (typeof ResizeObserver !== 'undefined') {
+        const resizeObserver = new ResizeObserver(() => {
+          this.resizeCanvases();
+        });
+        if (previewContainer) {
+          resizeObserver.observe(previewContainer);
+        }
+        if (buttonContainer) {
+          resizeObserver.observe(buttonContainer);
+        }
+        this._resizeObserver = resizeObserver;
+      }
+      
       this.isInitialized = true;
+      this.resizeCanvases();  // Ensure correct sizing after init
       await this.updatePreview();
       this.startAnimation();
     } catch (e) {
@@ -1795,7 +2586,6 @@ class PlayerPreviewSystem {
         });
       }
       
-      console.log('[PlayerPreviewSystem] Preview updated');
     } catch (e) {
       console.error('[PlayerPreviewSystem] Update failed:', e);
     }
@@ -1860,12 +2650,83 @@ class PlayerPreviewSystem {
     animate();
   }
 
+  // Recalculate canvas display size when container dimensions change (e.g., when menu opens)
+  resizeCanvases() {
+    // Use requestAnimationFrame to ensure layout is computed
+    requestAnimationFrame(() => {
+      const previewContainer = document.querySelector('.preview');
+      const previewCanvas = document.getElementById('previewCanvas');
+      
+      if (previewContainer && previewCanvas && this.previewRenderer && this.previewCamera) {
+        // Get the preview container's actual dimensions
+        const containerRect = previewContainer.getBoundingClientRect();
+        let displayWidth = containerRect.width;
+        let displayHeight = containerRect.height;
+        
+        // Account for title bar (approximately 35px)
+        const titleBar = previewContainer.querySelector('.title-bar');
+        if (titleBar) {
+          const titleBarRect = titleBar.getBoundingClientRect();
+          displayHeight -= titleBarRect.height;
+        } else {
+          // Fallback: assume title bar is ~35px
+          displayHeight -= 35;
+        }
+        
+        // Use the container width as fallback
+        if (displayWidth <= 0) displayWidth = 400;
+        if (displayHeight <= 0) displayHeight = 515;
+        
+        if (displayWidth > 0 && displayHeight > 0) {
+          // Update canvas internal resolution
+          previewCanvas.width = displayWidth;
+          previewCanvas.height = displayHeight;
+          
+          // Update renderer
+          this.previewRenderer.setSize(displayWidth, displayHeight);
+          
+          // Update camera aspect and projection
+          this.previewCamera.aspect = displayWidth / displayHeight;
+          this.previewCamera.updateProjectionMatrix();
+        }
+      }
+
+      const buttonCanvas = document.getElementById('customizationButtonCanvas');
+      if (buttonCanvas && this.buttonRenderer) {
+        const btnContainer = buttonCanvas.parentElement;
+        const btnContainerRect = btnContainer.getBoundingClientRect();
+        let btnDisplayWidth = btnContainerRect.width;
+        let btnDisplayHeight = btnContainerRect.height;
+        
+        // Get the gamemode bar if it exists
+        const gamemodeBar = btnContainer.querySelector('.gamemode-bar');
+        if (gamemodeBar) {
+          const gamemodeBarRect = gamemodeBar.getBoundingClientRect();
+          btnDisplayHeight -= gamemodeBarRect.height;
+        }
+        
+        // Fallback values
+        if (btnDisplayWidth <= 0) btnDisplayWidth = 120;
+        if (btnDisplayHeight <= 0) btnDisplayHeight = 120;
+        
+        if (btnDisplayWidth > 0 && btnDisplayHeight > 0) {
+          buttonCanvas.width = btnDisplayWidth;
+          buttonCanvas.height = btnDisplayHeight;
+          this.buttonRenderer.setSize(btnDisplayWidth, btnDisplayHeight);
+        }
+      }
+    });
+  }
+
   dispose() {
     if (this.animationFrameId) {
       cancelAnimationFrame(this.animationFrameId);
     }
     if (this.resizeHandler) {
       window.removeEventListener('resize', this.resizeHandler);
+    }
+    if (this._resizeObserver) {
+      this._resizeObserver.disconnect();
     }
     if (this.previewRenderer) {
       this.previewRenderer.dispose();
@@ -1935,7 +2796,6 @@ async function joinPresence() {
       const { from } = data;
       addNotification('friend-accepted', from, `[Friend] Your friend request to ${from} was accepted`);
       // Reload friends list and requests
-      console.log('[Presence] Friend accepted, refreshing friends menu');
       await loadFriends();
       await loadFriendRequests();
     });
@@ -2119,10 +2979,20 @@ function interpolateOpp() {
 }
 
 // Scene objets
-const gltfLoader = new GLTFLoader();
-const skinMgr = new SkinManager(scene, gltfLoader);
-const hookMgr = new HookManager(scene);
-const bombMgr = new BombManager(scene, gltfLoader);
+try {
+  gltfLoader = new GLTFLoader();
+} catch (e) {
+  console.error('[Init] Failed to create GLTFLoader:', e);
+}
+if (!skinMgr && gltfLoader) {
+  skinMgr = new SkinManager(scene, gltfLoader);
+}
+if (!hookMgr) {
+  hookMgr = new HookManager(scene);
+}
+if (!bombMgr && gltfLoader) {
+  bombMgr = new BombManager(scene, gltfLoader);
+}
 
 //nametags --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 const nametags = new Nametags(scene);
@@ -2141,6 +3011,8 @@ const customizationEl = document.getElementById('customization');
 if (customizationEl) {
   const observer = new MutationObserver(() => {
     if (customizationEl.style.display === 'flex') {
+      // Resize canvases first, then update preview
+      previewSystem.resizeCanvases();
       previewSystem.updatePreview().catch(e => console.error('[Preview Update]', e));
     }
   });
@@ -2171,6 +3043,10 @@ async function loadMapGLB(glbPath) {
   currentMapLights = [];
 
   try {
+    if (!gltfLoader) {
+      console.error('[LoadMap] gltfLoader is null, cannot load map');
+      throw new Error('gltfLoader not initialized');
+    }
     const gltf = await gltfLoader.loadAsync(glbPath);
     currentMapRoot = gltf.scene;
 
@@ -2183,7 +3059,6 @@ async function loadMapGLB(glbPath) {
         scene.add(clonedLight);
         currentMapLights.push(clonedLight);
         foundLights = true;
-        console.log(`[LoadMap] Found light in GLB: ${obj.type} at position`, obj.position);
       }
     });
 
@@ -2197,13 +3072,11 @@ async function loadMapGLB(glbPath) {
           scene.add(light);
         }
       });
-      console.log('[LoadMap] No lights found in GLB, using default lights');
     } else {
       // Hide directional light when using map lights, but keep ambient light darker
       dirLight.visible = false;
       defaultAmbientLight.visible = true;
       defaultAmbientLight.intensity = 0.2;  // Darker ambient for fill light
-      console.log('[LoadMap] Using map lights with reduced ambient fill');
     }
 
     // Enable shadows on every mesh in the loaded scene
@@ -2355,8 +3228,82 @@ class Explosion {
   }
 }
 
-// ── Gear effects tracking ────────────────────────────────
-const activeGearEffects = new Map();  // shooterId → { model, shooterId, initialOffset, startTime, duration }
+// ── Particle spawning (shared between ranked and non-ranked) ────────────────────────────────
+function spawnParticles(position, type, count) {
+  // Create particles for impact effects
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 5 + Math.random() * 10;
+    const velocity = {
+      x: Math.cos(angle) * speed,
+      y: 3 + Math.random() * 4,  // Always go up
+      z: Math.sin(angle) * speed
+    };
+    
+    // All particles use the same color
+    const color = 0x2e2e2e;  // Consistent dark gray
+    
+    // Create simple particle mesh
+    const geo = new THREE.SphereGeometry(0.1, 4, 4);
+    const mat = new THREE.MeshBasicMaterial({ color });
+    const particle = new THREE.Mesh(geo, mat);
+    particle.position.set(position.x, position.y, position.z);
+    scene.add(particle);
+    
+    // Store particle with lifetime
+    const particleData = {
+      mesh: particle,
+      position: { x: position.x, y: position.y, z: position.z },
+      velocity: velocity,
+      lifetime: 1.0,  // seconds
+      maxLifetime: 1.0,
+      gravity: -9.8
+    };
+    
+    // Update particle each frame and remove when done
+    const updateParticle = () => {
+      const deltaTime = 1 / 60;  // Assume 60 FPS
+      particleData.lifetime -= deltaTime;
+      
+      if (particleData.lifetime <= 0) {
+        scene.remove(particle);
+        geo.dispose();
+        mat.dispose();
+        return true;  // Signal removal
+      }
+      
+      // Update velocity (gravity)
+      particleData.velocity.y += particleData.gravity * deltaTime;
+      
+      // Update position
+      particleData.position.x += particleData.velocity.x * deltaTime;
+      particleData.position.y += particleData.velocity.y * deltaTime;
+      particleData.position.z += particleData.velocity.z * deltaTime;
+      
+      particle.position.set(
+        particleData.position.x,
+        particleData.position.y,
+        particleData.position.z
+      );
+      
+      // Fade out
+      const alpha = particleData.lifetime / particleData.maxLifetime;
+      particle.material.opacity = alpha;
+      
+      return false;
+    };
+    
+    // Add to particle update queue (we'll process this in the animation loop)
+    // For now, just add a simple fallback update
+    let elapsed = 0;
+    const particleInterval = setInterval(() => {
+      elapsed += 1 / 60;
+      if (updateParticle() || elapsed > 2) {
+        clearInterval(particleInterval);
+      }
+    }, 1000 / 60);
+  }
+}
 
 function updateGearEffectPosition(effect) {
   const LERP_FACTOR = 0.1;  // Easing factor (0-1, lower = smoother)
@@ -2453,13 +3400,31 @@ function updateGearEffectPosition(effect) {
       effect.currentPosition.lerp(targetPos, LERP_FACTOR);
       effect.model.position.copy(effect.currentPosition);
       
-      const oppMesh = skinMgr.getRoot(effect.shooterId);
-      if (oppMesh) {
-        effect.model.quaternion.copy(oppMesh.quaternion);
-        // Re-apply 180 degree yaw rotation for sniper
-        const yawRotation = new THREE.Quaternion();
-        yawRotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
-        effect.model.quaternion.multiplyQuaternions(effect.model.quaternion, yawRotation);
+      // For sniper gear, preserve the initial rotation (which has correct pitch) but update yaw based on opponent direction
+      if (effect.initialRotation) {
+        // Start with the initial rotation (has correct pitch and initial direction)
+        effect.model.quaternion.copy(effect.initialRotation);
+        
+        // Extract only the yaw from the opponent's mesh and apply it
+        const oppMesh = skinMgr.getRoot(effect.shooterId);
+        if (oppMesh) {
+          // Get opponent's yaw rotation
+          const meshEuler = new THREE.Euler().setFromQuaternion(oppMesh.quaternion, 'YXZ');
+          const yawQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), meshEuler.y);
+          
+          // Apply the yaw update to preserve pitch from initialRotation
+          effect.model.quaternion.multiplyQuaternions(effect.model.quaternion, yawQuat);
+        }
+      } else {
+        // Fallback if initialRotation not set
+        const oppMesh = skinMgr.getRoot(effect.shooterId);
+        if (oppMesh) {
+          effect.model.quaternion.copy(oppMesh.quaternion);
+          // Re-apply 180 degree yaw rotation for sniper
+          const yawRotation = new THREE.Quaternion();
+          yawRotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+          effect.model.quaternion.multiplyQuaternions(effect.model.quaternion, yawRotation);
+        }
       }
     }
   }
@@ -2581,7 +3546,6 @@ function useGear() {
   }
   
   const gearName = equippedGear.id;
-  console.log('[useGear] Using gear:', gearName);
   
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
@@ -2595,7 +3559,6 @@ function useGear() {
     .addScaledVector(dir, 0.5)
     .addScaledVector(right, 0.5);
   
-  console.log('[useGear] Sending message with gearName:', gearName);
   room.send('useGear', {
     gearName: gearName,
     cameraPos: { x: pos.x, y: pos.y, z: pos.z },
@@ -2666,23 +3629,19 @@ async function setupRoom(r) {
 
   room.onMessage('mapChosen', ({ mapId, mapName, skyColor }) => {
     hideMapVotePicker();
-    // Show lobby while map loads
+    // Show lobby while map loads (for versus matches)
     const title = document.getElementById('waitingTitle');
     if (title) title.textContent = `loading ${mapName}...`;
     // Apply map sky color to the renderer
-    if (skyColor) {
+    if (skyColor && scene) {
       scene.background = new THREE.Color(skyColor);
     }
     showWaiting();
   });
 
-  let _pendingSkinInfo = null;
-
   room.onMessage('skinInfo', (data) => {
     _pendingSkinInfo = data;
   });
-
-  let _pendingNametagInfo = null;
 
   room.onMessage('nametagInfo', (data) => {
     _pendingNametagInfo = data;
@@ -2691,6 +3650,9 @@ async function setupRoom(r) {
 
   
   room.onMessage('gameStart', async (data) => {
+    // Re-enable input if it was disabled during ranked countdown
+    disableInputDuringCountdown(false);
+    
     oppId = myId === data.hostId ? data.guestId : data.hostId;
 
     if (_pendingSkinInfo) {
@@ -2740,7 +3702,6 @@ async function setupRoom(r) {
           return r.json();
         })
         .then(result => {
-          if (result) console.log('[GameStart] Loaded opponent skins:', result);
         })
         .catch(err => console.warn('[GameStart] Failed to load opponent skins:', err));
     }
@@ -2767,82 +3728,7 @@ async function setupRoom(r) {
     explosions.push(new Explosion(data.position));
   });
 
-  // ── Particle spawning ────────────────────────────────────────
-  function spawnParticles(position, type, count) {
-    // Create particles for impact effects
-    for (let i = 0; i < count; i++) {
-      const angle = Math.random() * Math.PI * 2;
-      const speed = 5 + Math.random() * 10;
-      const velocity = {
-        x: Math.cos(angle) * speed,
-        y: 3 + Math.random() * 4,  // Always go up
-        z: Math.sin(angle) * speed
-      };
-      
-      // All particles use the same color
-      const color = 0x2e2e2e;  // Consistent dark gray
-      
-      // Create simple particle mesh
-      const geo = new THREE.SphereGeometry(0.1, 4, 4);
-      const mat = new THREE.MeshBasicMaterial({ color });
-      const particle = new THREE.Mesh(geo, mat);
-      particle.position.set(position.x, position.y, position.z);
-      scene.add(particle);
-      
-      // Store particle with lifetime
-      const particleData = {
-        mesh: particle,
-        position: { x: position.x, y: position.y, z: position.z },
-        velocity: velocity,
-        lifetime: 1.0,  // seconds
-        maxLifetime: 1.0,
-        gravity: -9.8
-      };
-      
-      // Update particle each frame and remove when done
-      const updateParticle = () => {
-        const deltaTime = 1 / 60;  // Assume 60 FPS
-        particleData.lifetime -= deltaTime;
-        
-        if (particleData.lifetime <= 0) {
-          scene.remove(particle);
-          geo.dispose();
-          mat.dispose();
-          return true;  // Signal removal
-        }
-        
-        // Update velocity (gravity)
-        particleData.velocity.y += particleData.gravity * deltaTime;
-        
-        // Update position
-        particleData.position.x += particleData.velocity.x * deltaTime;
-        particleData.position.y += particleData.velocity.y * deltaTime;
-        particleData.position.z += particleData.velocity.z * deltaTime;
-        
-        particle.position.set(
-          particleData.position.x,
-          particleData.position.y,
-          particleData.position.z
-        );
-        
-        // Fade out
-        const alpha = particleData.lifetime / particleData.maxLifetime;
-        particle.material.opacity = alpha;
-        
-        return false;
-      };
-      
-      // Add to particle update queue (we'll process this in the animation loop)
-      // For now, just add a simple fallback update
-      let elapsed = 0;
-      const particleInterval = setInterval(() => {
-        elapsed += 1 / 60;
-        if (updateParticle() || elapsed > 2) {
-          clearInterval(particleInterval);
-        }
-      }, 1000 / 60);
-    }
-  }
+  // spawnParticles is now at module level, available to both ranked and non-ranked modes
 
   room.onMessage('playerHit', (data) => {
     const isMe = data.playerId === myId;
@@ -2934,8 +3820,6 @@ async function setupRoom(r) {
 
   room.onMessage('gearEffect', (data) => {
     const { gearName, shooterId, position, rotation, duration } = data;
-    console.log('[gearEffect] Received:', { gearName, shooterId, duration });
-    
     // Create procedural sniper rifle model (fallback if GLB fails)
     function createSniperModel() {
       const group = new THREE.Group();
@@ -3026,7 +3910,6 @@ async function setupRoom(r) {
           model.position.set(position.x, position.y, position.z);
           model.scale.set(0.5, 0.5, 0.5);
           scene.add(model);
-          console.log('[gearEffect] Mace GLB loaded, starting animation with duration:', effectDuration);
           setupMaceAnimation(model, shooterId, position, effectDuration);
         },
         undefined,
@@ -3036,7 +3919,6 @@ async function setupRoom(r) {
           model = createMaceModel();
           model.position.set(position.x, position.y, position.z);
           scene.add(model);
-          console.log('[gearEffect] Procedural mace created, starting animation with duration:', effectDuration);
           setupMaceAnimation(model, shooterId, position, effectDuration);
         }
       );
@@ -3046,7 +3928,14 @@ async function setupRoom(r) {
         'sniper': '/gear/sniper.glb',
       }[gearName] || '/gear/sniper.glb';
       
-      const gltfLoader = new GLTFLoader();
+      if (!gltfLoader) {
+        console.warn('[gearEffect] gltfLoader not available, using procedural model');
+        const model = createSniperModel();
+        model.position.set(position.x, position.y, position.z);
+        scene.add(model);
+        setupGearEffectAnimation(model, shooterId, position, effectDuration);
+        return;
+      }
       gltfLoader.load(
         gearGlbPath,
         (gltf) => {
@@ -3070,7 +3959,6 @@ async function setupRoom(r) {
           model.quaternion.multiplyQuaternions(model.quaternion, yawRotation);
           
           scene.add(model);
-          console.log('[gearEffect] GLB loaded, starting animation with duration:', effectDuration);
           setupGearEffectAnimation(model, shooterId, position, effectDuration);
         },
         undefined,
@@ -3096,7 +3984,6 @@ async function setupRoom(r) {
           model.quaternion.multiplyQuaternions(model.quaternion, yawRotation);
           
           scene.add(model);
-          console.log('[gearEffect] Procedural model created, starting animation with duration:', effectDuration);
           setupGearEffectAnimation(model, shooterId, position, effectDuration);
         }
       );
@@ -3172,7 +4059,6 @@ async function setupRoom(r) {
 
   room.onMessage('particles', (data) => {
     const { position, type, count } = data;
-    console.log('[particles] Received:', { type, count });
     
     // Create particles at the given position
     spawnParticles(position, type, count);
@@ -3210,7 +4096,7 @@ async function setupRoom(r) {
     }
     
     try {
-      // Fetch opponent's username
+      // Fetch opponent's username and ELO
       const oppId = data.winner === myDbId ? data.loser : data.winner;
       const oppRes = await fetch(`${API_BASE}/api/users-by-id/${oppId}`);
       if (oppRes.ok) {
@@ -3228,7 +4114,6 @@ async function setupRoom(r) {
             body: JSON.stringify({ username: oppUsername })
           })
           .then(r => r.json())
-          .then(result => console.log('[GameEnd] Unloaded opponent skins:', result))
           .catch(err => console.warn('[GameEnd] Failed to unload opponent skins:', err));
         }
       }
@@ -3237,7 +4122,6 @@ async function setupRoom(r) {
     }
 
     const won = data.winner === myDbId;
-    console.log('gameEnd: myDbId=', myDbId, 'winner=', data.winner, 'loser=', data.loser, 'won=', won);
 
     const resultTitle = document.getElementById('resultTitle');
     if (resultTitle) {
@@ -3245,9 +4129,25 @@ async function setupRoom(r) {
       resultTitle.style.color = won ? '#00ff88' : '#ff4444';
     }
     const resultSub = document.getElementById('resultSub');
-    if (resultSub) resultSub.textContent = won ? 'opponent eliminated' : 'you were eliminated by ' + oppUsername;
+    if (resultSub) {
+      resultSub.textContent = won ? 'opponent eliminated' : 'you were eliminated by ' + oppUsername;
+      
+      // For ranked mode, show ELO changes
+      if (rankedMode && data.eloChange !== undefined) {
+        const eloChange = data.eloChange;
+        const eloText = eloChange > 0 ? `+${eloChange}` : `${eloChange}`;
+        const eloColor = eloChange > 0 ? '#00ff88' : '#ff4444';
+        const rank = getRankFromElo(data.newElo);
+        resultSub.innerHTML += `<br><span style="color:${eloColor}; font-family:'Space Mono',monospace; font-size:14px;">ELO: ${eloText} → ${rank.elo}</span>`;
+      }
+    }
 
     showResults(won);
+    
+    // Update ranked stats if in ranked mode
+    if (rankedMode) {
+      setTimeout(() => updateRankedStats(), 500);
+    }
   });
 
   room.onMessage('unlocksNotification', (data) => {
@@ -3275,10 +4175,8 @@ async function setupRoom(r) {
     
     // Display unlock notifications
     if (myUnlocks.length > 0) {
-      console.log('🎉 New unlocks:', myUnlocks);
       myUnlocks.forEach(unlock => {
         const msg = `🎉 Unlocked: ${unlock.name} (${unlock.type})`;
-        console.log(msg);
         // TODO: Display UI notification for each unlock
       });
     }
@@ -3293,6 +4191,20 @@ async function setupRoom(r) {
   });
 
   room.onMessage('rematchStart', async () => {
+    // Clear scope effect from previous round
+    if (activeScopeEffect) {
+      activeScopeEffect = null;
+      const vignetteCanvas = document.getElementById('scopeVignette');
+      if (vignetteCanvas) {
+        vignetteCanvas.classList.remove('active');
+        vignetteCanvas.getContext('2d').clearRect(0, 0, vignetteCanvas.width, vignetteCanvas.height);
+      }
+      if (camera) {
+        camera.fov = 75;  // Reset to default FOV
+        camera.updateProjectionMatrix();
+      }
+    }
+
     // Reset all keyboard input to prevent carryover movement from previous match
     keys.w = false;
     keys.a = false;
@@ -3428,6 +4340,7 @@ document.getElementById('hostBtn').onclick = async () => {
     const authUser = JSON.parse(localStorage.getItem('auth_user'));
     const r = await colyseus.create('private', { token: authUser?.token });
     setupRoom(r);
+    showWaiting();  // Display the waiting room with code display
 
     // Server sends us the short code via message once metadata is ready
     r.onMessage('roomCode', async (code) => {
@@ -3442,8 +4355,6 @@ document.getElementById('hostBtn').onclick = async () => {
       const friends = user.friends?.list || {};
       await displayInviteFriends(friends);
     });
-
-    showWaiting();
   } catch (e) {
     console.error('Failed to create room:', e);
     const el = document.getElementById('errorMsg');
@@ -3467,22 +4378,29 @@ document.getElementById('joinBtn').onclick = async () => {
     if (!res.ok) {
       if (errEl) {
         errEl.textContent = data.error || 'Room not found';
-        // Show the join menu so user can try again
+        // Show the join menu so user can try again (but not in ranked mode)
         document.getElementById('waitingRoom').style.display = 'none';
-        document.getElementById('versusMenu').style.display = 'flex';
+        if (!rankedMode) {
+          document.getElementById('versusMenu').style.display = 'flex';
+        }
       }
       return;
     }
     const authUser = JSON.parse(localStorage.getItem('auth_user'));
     const r = await colyseus.joinById(data.roomId, { token: authUser?.token });
+    // Hide versusMenu and results screen when successfully joining a room
+    document.getElementById('versusMenu').style.display = 'none';
+    document.getElementById('page-results').style.display = 'none';
     setupRoom(r);
   } catch (e) {
     console.error('Failed to join room:', e);
     if (errEl) {
       errEl.textContent = 'Failed to join room';
-      // Show the join menu so user can try again
+      // Show the join menu so user can try again (but not in ranked mode)
       document.getElementById('waitingRoom').style.display = 'none';
-      document.getElementById('versusMenu').style.display = 'flex';
+      if (!rankedMode) {
+        document.getElementById('versusMenu').style.display = 'flex';
+      }
     }
   }
 };
@@ -3497,7 +4415,6 @@ window.controls = controls;
 window.applySettings = applySettings;
 window.gameSettings = gameSettings;
 window.colyseus = colyseus;
-console.log('[Init] Global game objects exposed - camera, controls, applySettings, gameSettings, colyseus');
 
 // ── Main loop ─────────────────────────────────────────────
 const FT   = 1 / 60;
@@ -3572,13 +4489,6 @@ function animate() {
       }
     }
 
-    // ── Camera & my mesh ──────────────────────────────────────
-    const p      = cBody.translation();
-    const eyeOff = 1
-    camera.position.set(p.x, p.y + eyeOff, p.z);
-
-    updateBarrelPos();
-
     // ── Update active gear effects (snipers) ──────────────────
     for (const effect of activeGearEffects.values()) {
       const elapsed = Date.now() - effect.startTime;
@@ -3596,11 +4506,55 @@ function animate() {
       });
     }
 
+    // ── Update sniper scope effect ─────────────────────────────
+    if (activeScopeEffect && camera) {
+      const elapsed = Date.now() - activeScopeEffect.startTime;
+      const progress = elapsed / activeScopeEffect.duration;
+      
+      if (progress >= 1) {
+        // Scope effect expired, restore original FOV and hide vignette
+        camera.fov = activeScopeEffect.originalFov;
+        camera.updateProjectionMatrix();
+        activeScopeEffect = null;
+        
+        const vignetteCanvas = document.getElementById('scopeVignette');
+        if (vignetteCanvas) {
+          vignetteCanvas.classList.remove('active');
+          vignetteCanvas.getContext('2d').clearRect(0, 0, vignetteCanvas.width, vignetteCanvas.height);
+        }
+      } else {
+        // Scope effect is active - zoom quickly then hold
+        const zoomDurationMs = 200;  // Zoom completes in 200ms
+        const zoomProgress = Math.min(elapsed / zoomDurationMs, 1);  // Clamp to 1
+        
+        const targetFov = scopeZoomFov;
+        const currentFov = activeScopeEffect.originalFov + (targetFov - activeScopeEffect.originalFov) * zoomProgress;
+        camera.fov = currentFov;
+        camera.updateProjectionMatrix();
+        
+        // Update vignette - stay visible for entire duration, don't fade
+        const vignetteCanvas = document.getElementById('scopeVignette');
+        if (vignetteCanvas) {
+          vignetteCanvas.classList.add('active');
+          const ctx = vignetteCanvas.getContext('2d');
+          drawScopeVignette(vignetteCanvas, ctx, zoomProgress);  // Use zoomProgress not progress
+        }
+      }
+    }
+
     // ── HUD: speed ────────────────────────────────────────────
     const v   = cBody.linvel();
     const spd = Math.sqrt(v.x**2 + v.y**2 + v.z**2);
     const vel = document.getElementById('velocity');
     if (vel) vel.textContent = spd.toFixed(2);
+  }
+
+  // ── Camera positioning (always update when game is started and player body exists)
+  if (gameStarted && cBody) {
+    const p      = cBody.translation();
+    const eyeOff = 1;
+    camera.position.set(p.x, p.y + eyeOff, p.z);
+    updateBarrelPos();
   }
 
   // ── Opponent interpolation ─────────────────────────────────
@@ -3610,13 +4564,15 @@ function animate() {
     interpolateOpp();
 
     // Opponent grapple visuals
-    const oppRoot = skinMgr.getRoot(oppId);
-    if (os && oppRoot) {
-      oppYaw = SkinManager.yawFromVelocity(os.velocity.x, os.velocity.z, oppYaw);
-      skinMgr.setRotationY(oppId, oppYaw);
-      hookMgr.update(oppId, oppRoot.position,
-        { x: os.grapple.hx, y: os.grapple.hy, z: os.grapple.hz },
-        os.grapple.active);
+    if (skinMgr && hookMgr) {
+      const oppRoot = skinMgr.getRoot(oppId);
+      if (os && oppRoot) {
+        oppYaw = SkinManager.yawFromVelocity(os.velocity.x, os.velocity.z, oppYaw);
+        skinMgr.setRotationY(oppId, oppYaw);
+        hookMgr.update(oppId, oppRoot.position,
+          { x: os.grapple.hx, y: os.grapple.hy, z: os.grapple.hz },
+          os.grapple.active);
+      }
     }
   }
 
@@ -3626,7 +4582,7 @@ function animate() {
   }
 
   // ── My grapple visuals ───────────
-  if (gameStarted && room && myId) {
+  if (gameStarted && room && myId && hookMgr) {
     const ms = room.state.players.get(myId);
     if (!ms) return;
 
@@ -3686,11 +4642,9 @@ animate();
 // ── DEBUG: Console functions for development ────────────────────────────────
 window.getPlayerPos = function() {
   if (!cBody) {
-    console.log('Player body not initialized');
     return null;
   }
   const pos = cBody.translation();
-  console.log(`Player Position: x=${pos.x.toFixed(2)}, y=${pos.y.toFixed(2)}, z=${pos.z.toFixed(2)}`);
   console.table({
     x: pos.x.toFixed(4),
     y: pos.y.toFixed(4),
@@ -3701,11 +4655,9 @@ window.getPlayerPos = function() {
 
 window.getPlayerVel = function() {
   if (!cBody) {
-    console.log('Player body not initialized');
     return null;
   }
   const vel = cBody.linvel();
-  console.log(`Player Velocity: x=${vel.x.toFixed(2)}, y=${vel.y.toFixed(2)}, z=${vel.z.toFixed(2)}`);
   console.table({
     x: vel.x.toFixed(4),
     y: vel.y.toFixed(4),
@@ -3720,6 +4672,19 @@ window.addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
 });
+
+// ── Expose functions and objects globally for ranked mode ────────────────────────────────
+window.loadMapGLB = loadMapGLB;
+window.buildClientWorld = buildClientWorld;
+window.playerMeshMap = playerMeshMap;
+window.gltfLoader = gltfLoader;
+window.skinMgr = skinMgr;
+window.hookMgr = hookMgr;
+window.bombMgr = bombMgr;
+window.nametags = nametags;
+window.gBombSkins = gBombSkins;
+window.activeGearEffects = activeGearEffects;
+window.spawnParticles = spawnParticles;
 
 } // end init()
 init().catch(console.error);

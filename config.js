@@ -76,4 +76,11 @@ module.exports = {
   SNIPER_COOLDOWN_MS: 25000,      // 25s cooldown after using sniper
   MACE_COOLDOWN_MS:   10000,      // 10s cooldown after using mace
 
+  // ── Ranked Mode ────────────────────────────────────────────
+  RANKED_MAX_ELO_GAP:   500,       // Max ELO difference for matchmaking
+  RANKED_COUNTDOWN_MS:  3000,      // 3 seconds countdown before game starts
+  RANKED_K_FACTOR_HIGH: 16,        // K factor for ELO < 1600
+  RANKED_K_FACTOR_LOW:  8,         // K factor for ELO >= 1600
+  RANKED_ELO_THRESHOLD: 1600,      // ELO threshold for reduced K factor
+
 };

@@ -136,11 +136,9 @@ if (require.main === module) {
   mongoose
     .connect(mongoUri)
     .then(() => {
-      console.log('Connected to MongoDB');
       return migrateSkinsStructure();
     })
     .then(() => {
-      console.log('Migration completed successfully');
       process.exit(0);
     })
     .catch((err) => {

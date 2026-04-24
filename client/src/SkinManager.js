@@ -40,7 +40,9 @@ import * as THREE from 'three';
 const _texCache = new Map();
 function _loadTex(path) {
   if (_texCache.has(path)) return _texCache.get(path);
-  const t = new THREE.TextureLoader().load(path);
+  // Add cache busting to prevent stale texture loads
+  const pathWithCache = `${path}?v=${Date.now()}`;
+  const t = new THREE.TextureLoader().load(pathWithCache);
   t.colorSpace = THREE.SRGBColorSpace;
   _texCache.set(path, t);
   return t;
@@ -114,7 +116,8 @@ export class SkinManager {
     return new Promise(resolve => {
       // Extract skin ID from path (e.g., "/skins/cube.glb" -> "cube")
       const skinId = path.split('/').pop().replace('.glb', '');
-      const apiUrl = `${window.API_BASE}/api/skins/download/player/${skinId}`;
+      // Add cache busting query parameter with current timestamp
+      const apiUrl = `${window.API_BASE}/api/skins/download/player/${skinId}?v=${Date.now()}`;
       this._loader.load(apiUrl, gltf => {
         gltf.scene.traverse(o => { if (o.isMesh) { o.castShadow = o.receiveShadow = true; } });
         resolve(gltf.scene);
@@ -196,7 +199,6 @@ export class HookManager {
         const plane = new THREE.Mesh(geo, mat);
         hookPivot.add(plane);
         hookPivot._isBillboard = true;  // flag so update() knows to billboard it
-        console.log('[assignHook] isLocal:', isLocal, 'image:', image, 'localImage:', grappleData.localImage);
       } else {
         // X cross for opponent
         const planeA = new THREE.Mesh(geo, mat);
@@ -349,7 +351,8 @@ export class BombManager {
     return new Promise(resolve => {
       // Extract bomb skin ID from path (e.g., "/skins/bomb_metallic.glb" -> "bomb_metallic")
       const skinId = path.split('/').pop().replace('.glb', '');
-      const apiUrl = `${window.API_BASE}/api/skins/download/bomb/${skinId}`;
+      // Add cache busting query parameter with current timestamp
+      const apiUrl = `${window.API_BASE}/api/skins/download/bomb/${skinId}?v=${Date.now()}`;
       this._loader.load(apiUrl, gltf => {
         gltf.scene.traverse(o => { if (o.isMesh) { o.castShadow = o.receiveShadow = true; } });
         resolve(gltf.scene);

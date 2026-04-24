@@ -25,12 +25,10 @@ class PrivateRoom extends BaseGameRoom {
     // Short code stored in metadata — clients filter rooms by it
     const shortCode = generateShortCode();
     await this.setMetadata({ shortCode });
-    console.log(`[PrivateRoom] Created with code: ${shortCode}`);
   }
 
 
   onJoin(client, opts = {}) {
-    console.log('Client joined the room');
     const isFirst = this.clients.length === 1;
     const result  = super.onJoin(client, opts);
 
@@ -47,7 +45,6 @@ class PrivateRoom extends BaseGameRoom {
   }
 
   onGameEnd(winnerId, loserId) {
-    console.log(`[PrivateRoom ${this.metadata?.shortCode}] Winner: ${winnerId}`);
   }
 }
 
