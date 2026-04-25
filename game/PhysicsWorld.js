@@ -93,7 +93,26 @@ class PhysicsWorld {
   getSpawnPoint(index) {
     return this.map.spawnPoints[index] || { x: index === 0 ? -20 : 20, y: 5, z: 0 };
   }
-
+  // ── Ground detection ───────────────────────────────────
+  /**
+   * Check if a player body is touching ground (for jump logic).
+   * Casts a small ray downward from the player's center.
+   */
+  isGrounded(body) {
+    if (!body) return false;
+    const pos = body.translation();
+    const rayOrigin = { x: pos.x, y: pos.y - 0.5, z: pos.z };
+    const rayDir = { x: 0, y: -1, z: 0 };
+    const hit = this.world.castRay(
+      new RAPIER.Ray(rayOrigin, rayDir),
+      0.6,  // Check 0.6 units down
+      false,  // Don't hit sensor colliders
+      -1,  // Query filter
+      null,  // No user data
+      body  // Exclude the player body itself
+    );
+    return hit !== null;
+  }
   // ── Player body factory ──────────────────────────────────────
   createPlayerBody(spawnIndex) {
     const sp   = this.getSpawnPoint(spawnIndex);

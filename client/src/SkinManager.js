@@ -304,15 +304,27 @@ export class BombManager {
     this._scene   = scene;
     this._loader  = gltfLoader;
     this._bombs   = new Map();  // bombId → { root, bombSkinData }
-    this._cache   = new Map();  // glbPath → Promise<Group>
+    this._cache   = new Map();  // glbPath → Promise<Group> (template)
   }
 
   // ── Public ───────────────────────────────────────────────────
 
-  async assignBomb(bombId, bombSkinData) {
+  async assignBomb(bombId, bombSkinData, x = 0, y = 0, z = 0) {
     this._removeBomb(bombId);
     const root = await this._loadBombMesh(bombSkinData);
+    if (!root) return;
+    
+    // Ensure root is completely detached from any parent
+    if (root.parent) {
+      root.parent.remove(root);
+    }
+    
+    // Set position BEFORE adding to scene to prevent visible 0,0,0 spawn
+    root.position.set(x, y, z);
+    
+    // Add to main scene
     this._scene.add(root);
+    
     this._bombs.set(bombId, { root, bombSkinData });
     return root;
   }
@@ -344,7 +356,9 @@ export class BombManager {
     if (!this._cache.has(bombSkinData.glb)) {
       this._cache.set(bombSkinData.glb, this._fetchGLB(bombSkinData.glb));
     }
-    return this._cloneGLB(await this._cache.get(bombSkinData.glb), bombSkinData.scale ?? 1.0);
+    const templateData = await this._cache.get(bombSkinData.glb);
+    // Always create a completely fresh instance, never reuse cached objects
+    return this._createFreshBomb(templateData, bombSkinData.scale ?? 1.0);
   }
 
   _fetchGLB(path) {
@@ -354,17 +368,100 @@ export class BombManager {
       // Add cache busting query parameter with current timestamp
       const apiUrl = `${window.API_BASE}/api/skins/download/bomb/${skinId}?v=${Date.now()}`;
       this._loader.load(apiUrl, gltf => {
-        gltf.scene.traverse(o => { if (o.isMesh) { o.castShadow = o.receiveShadow = true; } });
-        resolve(gltf.scene);
+        // CRITICAL: Must completely isolate from gltf.scene
+        const freshTemplate = new THREE.Group();
+        
+        // Deep clone all children to completely disconnect from loaded scene
+        const childClones = [];
+        for (const child of gltf.scene.children) {
+          childClones.push(child.clone(true));
+        }
+        
+        // Add clones to fresh template
+        for (const clone of childClones) {
+          freshTemplate.add(clone);
+        }
+        
+        // Setup shadow properties
+        freshTemplate.traverse(o => { 
+          if (o.isMesh) { 
+            o.castShadow = o.receiveShadow = true;
+          }
+        });
+        
+        // CRITICAL: Completely disconnect the original loaded scene
+        // This prevents it from being rendered even if cached by loader
+        while (gltf.scene.children.length > 0) {
+          const child = gltf.scene.children[0];
+          gltf.scene.remove(child);
+        }
+        
+        // Remove from any parent
+        if (gltf.scene.parent) {
+          gltf.scene.parent.remove(gltf.scene);
+        }
+        
+        // Make it invisible just in case
+        gltf.scene.visible = false;
+        
+        resolve(freshTemplate);
       }, undefined, err => { console.warn('[BombManager] GLB failed:', path, err); resolve(null); });
     });
+  }
+
+  _extractStructure(group) {
+    // Not used anymore
+    return [];
+  }
+
+  _createFreshBomb(templateData, scale) {
+    if (!templateData) return this._makeSphereRoot(scale);
+    
+    // Create a completely fresh instance by cloning with fresh materials
+    const clone = templateData.clone(true);
+    
+    // Force clone all geometries and materials to prevent any shared state
+    const clonedMeshes = [];
+    clone.traverse(o => {
+      if (o.isMesh) {
+        clonedMeshes.push(o);
+      }
+    });
+    
+    for (const mesh of clonedMeshes) {
+      // Clone geometry for this mesh
+      if (mesh.geometry) {
+        mesh.geometry = mesh.geometry.clone();
+      }
+      
+      // Clone all materials
+      if (Array.isArray(mesh.material)) {
+        mesh.material = mesh.material.map(m => m.clone());
+      } else if (mesh.material) {
+        mesh.material = mesh.material.clone();
+      }
+    }
+    
+    clone.scale.setScalar(scale);
+    clone.traverse(o => { 
+      if (o.isMesh) { 
+        o.castShadow = o.receiveShadow = true;
+      }
+    });
+    
+    return clone;
   }
 
   _cloneGLB(template, scale) {
     if (!template) return this._makeSphereRoot(scale);
     const clone = template.clone(true);
+    clone.userData.isTemplate = false;
     clone.scale.setScalar(scale);
-    clone.traverse(o => { if (o.isMesh) { o.castShadow = o.receiveShadow = true; } });
+    clone.traverse(o => { 
+      if (o.isMesh) { 
+        o.castShadow = o.receiveShadow = true;
+      }
+    });
     return clone;
   }
 

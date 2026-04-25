@@ -7,6 +7,9 @@
 //   nametags.register(info);          // { sessionId, username, userPrefix,
 //                                     //   prefixColor, usernameColor }
 //
+//   // For FFA mode, set health on players:
+//   nametags.setHealth(sessionId, currentHP, maxHP);
+//
 //   // Every animation frame (after player mesh positions are updated):
 //   nametags.update(playerMeshMap, mySessionId, camera);
 //   // playerMeshMap: Map<sessionId, THREE.Object3D>
@@ -24,6 +27,8 @@ const CANVAS_H    = 128;   // texture height
 const SPRITE_SCALE_X = 3.2;  // world-space width of the sprite quad
 const SPRITE_SCALE_Y = 0.8;  // world-space height
 const VERTICAL_OFFSET = 2.6; // units above mesh origin (player radius = 1)
+const HP_BAR_CANVAS_W = 256;  // HP bar texture width
+const HP_BAR_CANVAS_H = 32;   // HP bar texture height
 
 /**
  * Draw the nametag onto an offscreen canvas and return a THREE.CanvasTexture.
@@ -87,6 +92,41 @@ function buildTexture(canvas, ctx, info) {
   ctx.globalAlpha = 1;
 }
 
+/**
+ * Draw an HP bar onto a canvas.
+ */
+function buildHPBarTexture(canvas, ctx, health, maxHealth) {
+  // Clear
+  ctx.clearRect(0, 0, HP_BAR_CANVAS_W, HP_BAR_CANVAS_H);
+
+  const pad = 4;
+  const barW = HP_BAR_CANVAS_W - pad * 2;
+  const barH = HP_BAR_CANVAS_H - pad * 2;
+  const healthPercent = Math.max(0, Math.min(100, (health / maxHealth) * 100));
+
+  // Background (dark)
+  ctx.fillStyle = '#1a1a1a';
+  ctx.fillRect(pad, pad, barW, barH);
+
+  // Border
+  ctx.strokeStyle = '#333333';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(pad, pad, barW, barH);
+
+  // Health bar (green to red gradient)
+  const fillWidth = (barW * healthPercent) / 100;
+  const hue = (healthPercent / 100) * 120;  // 0-120 degrees (green to red)
+  ctx.fillStyle = `hsl(${hue}, 100%, 40%)`;
+  ctx.fillRect(pad, pad, fillWidth, barH);
+
+  // Health text
+  ctx.font = 'bold 16px "Space Mono", monospace, sans-serif';
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(`${Math.floor(health)}/${maxHealth}`, HP_BAR_CANVAS_W / 2, HP_BAR_CANVAS_H / 2);
+}
+
 /** Minimal canvas roundRect helper (works before the native API is universal). */
 function roundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
@@ -110,7 +150,7 @@ export class Nametags {
    */
   constructor(scene) {
     this._scene   = scene;
-    // sessionId → { info, sprite, canvas, ctx, texture }
+    // sessionId → { info, sprite, canvas, ctx, texture, hpCanvas, hpCtx, hpTexture, hpSprite, health, maxHealth }
     this._entries = new Map();
   }
 
@@ -140,7 +180,7 @@ export class Nametags {
       return;
     }
 
-    // Build canvas + texture
+    // Build canvas + texture for nametag
     const canvas  = document.createElement('canvas');
     canvas.width  = CANVAS_W;
     canvas.height = CANVAS_H;
@@ -148,25 +188,71 @@ export class Nametags {
     buildTexture(canvas, ctx, info);
 
     const texture  = new THREE.CanvasTexture(canvas);
-    texture.minFilter = THREE.LinearFilter; // avoids mipmap shimmer
+    texture.minFilter = THREE.LinearFilter;
     texture.magFilter = THREE.LinearFilter;
 
     const material = new THREE.SpriteMaterial({
       map:         texture,
       transparent: true,
-      depthWrite:  false,  // don't occlude geometry behind it
+      depthWrite:  false,
       depthTest:   true,
-      sizeAttenuation: true, // shrink with distance (perspective feel)
+      sizeAttenuation: true,
     });
 
     const sprite = new THREE.Sprite(material);
     sprite.scale.set(SPRITE_SCALE_X, SPRITE_SCALE_Y, 1);
-    sprite.visible = false; // hidden until the mesh position is known
-    sprite.renderOrder = 1; // draw after opaque geometry
-
+    sprite.visible = false;
+    sprite.renderOrder = 1;
     this._scene.add(sprite);
 
-    this._entries.set(info.sessionId, { info, sprite, canvas, ctx, texture });
+    // Build canvas + texture for HP bar
+    const hpCanvas = document.createElement('canvas');
+    hpCanvas.width = HP_BAR_CANVAS_W;
+    hpCanvas.height = HP_BAR_CANVAS_H;
+    const hpCtx = hpCanvas.getContext('2d');
+    buildHPBarTexture(hpCanvas, hpCtx, 100, 100);
+
+    const hpTexture = new THREE.CanvasTexture(hpCanvas);
+    hpTexture.minFilter = THREE.LinearFilter;
+    hpTexture.magFilter = THREE.LinearFilter;
+
+    const hpMaterial = new THREE.SpriteMaterial({
+      map:         hpTexture,
+      transparent: true,
+      depthWrite:  false,
+      depthTest:   true,
+      sizeAttenuation: true,
+    });
+
+    const hpSprite = new THREE.Sprite(hpMaterial);
+    hpSprite.scale.set(SPRITE_SCALE_X * 0.6, SPRITE_SCALE_Y * 0.4, 1);
+    hpSprite.visible = false;
+    hpSprite.renderOrder = 1;
+    this._scene.add(hpSprite);
+
+    this._entries.set(info.sessionId, { 
+      info, sprite, canvas, ctx, texture,
+      hpCanvas, hpCtx, hpTexture, hpSprite,
+      health: 100, maxHealth: 100
+    });
+  }
+
+  /**
+   * Update health for a player (FFA mode).
+   * @param {string} sessionId
+   * @param {number} currentHealth
+   * @param {number} maxHealth
+   */
+  setHealth(sessionId, currentHealth, maxHealth) {
+    const entry = this._entries.get(sessionId);
+    if (!entry) return;
+
+    if (entry.health !== currentHealth || entry.maxHealth !== maxHealth) {
+      entry.health = currentHealth;
+      entry.maxHealth = maxHealth;
+      buildHPBarTexture(entry.hpCanvas, entry.hpCtx, currentHealth, maxHealth);
+      entry.hpTexture.needsUpdate = true;
+    }
   }
 
   /**
@@ -183,10 +269,13 @@ export class Nametags {
       // Hide if: own player, or mesh not yet spawned
       if (sid === myId || !mesh) {
         entry.sprite.visible = false;
+        entry.hpSprite.visible = false;
         continue;
       }
 
       entry.sprite.visible = true;
+      // HP bars only show in FFA mode
+      entry.hpSprite.visible = (entry.health !== undefined) && (window.isFFA === true);
 
       // Position above the mesh
       entry.sprite.position.set(
@@ -195,8 +284,12 @@ export class Nametags {
         mesh.position.z,
       );
 
-      // THREE.Sprite auto-billboards in camera space — no manual quaternion needed.
-      // We just keep the position synced.
+      // Position HP bar below nametag
+      entry.hpSprite.position.set(
+        mesh.position.x,
+        mesh.position.y + VERTICAL_OFFSET - 0.7,
+        mesh.position.z,
+      );
     }
   }
 
@@ -208,8 +301,11 @@ export class Nametags {
     const entry = this._entries.get(sessionId);
     if (!entry) return;
     this._scene.remove(entry.sprite);
+    this._scene.remove(entry.hpSprite);
     entry.sprite.material.dispose();
     entry.texture.dispose();
+    entry.hpSprite.material.dispose();
+    entry.hpTexture.dispose();
     this._entries.delete(sessionId);
   }
 

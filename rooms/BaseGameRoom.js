@@ -468,7 +468,13 @@ class BaseGameRoom extends Room {
       equippedBombSkinId = playerState.bombSkinId;
     }
     
-    this.state.bombs.set(id, new BombState(id, equippedBombSkinId));
+    const bombState = new BombState(id, equippedBombSkinId);
+    // Initialize with spawn position to prevent rendering at origin before first tick
+    bombState.px = data.position.x;
+    bombState.py = data.position.y;
+    bombState.pz = data.position.z;
+    
+    this.state.bombs.set(id, bombState);
   }
 
   _handleParry(client) {
@@ -568,6 +574,7 @@ class BaseGameRoom extends Room {
       shooterId: effect.shooterId,
       position: effect.position,
       rotation: effect.rotation,
+      direction: effect.direction,
       duration: effect.duration,
     });
   }

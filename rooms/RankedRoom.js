@@ -66,10 +66,15 @@ class RankedRoom extends MatchmakingRoom {
       const body = this._bodies?.get(sessionId);
       const spawnPos = body ? { x: body.translation().x, y: body.translation().y, z: body.translation().z } : null;
       
+      // Get rating data for this player
+      const ratingData = this._playerRatings.get(sessionId);
+      
       result[sessionId] = {
         sessionId,
+        userId: client._userId,
         health: ps.health,
         spawnPos,
+        elo: ratingData?.elo || 100,
       };
     }
     

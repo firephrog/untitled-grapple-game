@@ -45,6 +45,26 @@ const MAPS = {
     // Add more maps here,
 }
 
+// ── FFA Arena Maps (larger, GLB-based) ──
+const FFA_MAPS = {
+    skylands: {
+        id:             'skylands',
+        name:           'Skylands',
+        description:    'Floating islands in the sky',
+        glb:            '/maps/ffa/Skylands.glb',
+        collision:      '/maps/ffa/skylands.collision.json',
+        skyColor:       0x87CEEB,  // Light sky blue
+        thumbnail:      '/maps/ffa/Skylands.glb',
+        spawnPoints: [
+          { x: -60, y: 10, z: -60 },
+          { x:  60, y: 10, z: -60 },
+          { x: -60, y: 10, z:  60 },
+          { x:  60, y: 10, z:  60 },
+          { x:   0, y: 28, z:   0 },
+        ],
+    },
+}
+
 function getMap(id)    { 
   const map = MAPS[id] || MAPS.default;
   return {
@@ -71,4 +91,23 @@ const MAP_LIST = Object.values(MAPS).map(({ id, name, description }) => ({
   id, name, description,
 }));
 
-module.exports = { MAPS, MAP_LIST, getMap, randomMapId, resolveVotes };
+// ── FFA Map Functions ────────────────────────────────────────
+
+function getFFAMap(id) {
+  const map = FFA_MAPS[id] || Object.values(FFA_MAPS)[0];
+  return {
+    ...map,
+    skyColor: map.skyColor || 0x87CEEB
+  };
+}
+
+function randomFFAMapId() {
+  const ids = Object.keys(FFA_MAPS);
+  return ids[Math.floor(Math.random() * ids.length)];
+}
+
+const FFA_MAP_LIST = Object.values(FFA_MAPS).map(({ id, name, description, thumbnail }) => ({
+  id, name, description, thumbnail,
+}));
+
+module.exports = { MAPS, MAP_LIST, getMap, randomMapId, resolveVotes, FFA_MAPS, FFA_MAP_LIST, getFFAMap, randomFFAMapId };

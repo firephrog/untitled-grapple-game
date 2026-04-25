@@ -12,6 +12,7 @@ const jwt                    = require('jsonwebtoken');
 const { PrivateRoom }     = require('./rooms/PrivateRoom');
 const { MatchmakingRoom } = require('./rooms/MatchmakingRoom');
 const { RankedRoom }      = require('./rooms/RankedRoom');
+const { FreeForAllRoom }  = require('./rooms/FreeForAllRoom');
 const { Lobby, getLobby } = require('./rooms/Lobby');
 const { skinRoutes, unlockSkin, unlockGrapple, unlockBombSkin } = require('./routes/skins');
 const gearRoutes          = require('./routes/gear');
@@ -71,7 +72,9 @@ const app        = express();
 const httpServer = createServer(app);
 
 const PUBLIC_DIR = path.resolve(process.cwd(), 'public');
-app.use(express.static(PUBLIC_DIR));
+
+// ── Setup middleware first ────────────────────────────────
+app.use(express.json());
 
 // Set no-cache headers for skin assets to ensure fresh content is always loaded
 app.use((req, res, next) => {
@@ -83,14 +86,86 @@ app.use((req, res, next) => {
   next();
 });
 
-// Serve skin models and assets from skins/models directory
-// Maps /skins/* to skins/models/*
-const SKINS_DIR = path.resolve(process.cwd(), 'skins/models');
-app.use('/skins', express.static(SKINS_DIR));
-
-app.use(express.json());
+// ── Define API routes BEFORE static file serving ─────────
 app.use('/api/skins', skinRoutes);
 app.use('/api/gear', gearRoutes);
+
+// ── FFA Maps endpoint ──────────────────────────────────────
+app.get('/api/maps/ffa/current', (req, res) => {
+  const { FFA_MAPS, randomFFAMapId, getFFAMap } = require('./maps');
+  const mapId = randomFFAMapId();
+  const map = getFFAMap(mapId);
+  if (map) {
+    res.json({
+      id: map.id,
+      name: map.name,
+      description: map.description,
+      glb: `/maps/ffa/${map.id}.glb`,
+      skyColor: map.skyColor,
+      spawnPoints: map.spawnPoints
+    });
+  } else {
+    res.status(404).json({ error: 'No FFA map available' });
+  }
+});
+
+// ── Test endpoint for debugging ────────────────────────────
+app.get('/api/test', (req, res) => {
+  res.json({ status: 'OK', message: 'Server is working' });
+});
+
+// ── FFA maps list endpoint ────────────────────────────────
+app.get('/api/ffa/maps', (req, res) => {
+  try {
+    console.log('[Server] GET /api/ffa/maps - endpoint called');
+    
+    let FFA_MAPS;
+    try {
+      const mapsModule = require('./maps');
+      FFA_MAPS = mapsModule.FFA_MAPS;
+      console.log('[Server] Loaded maps module, FFA_MAPS keys:', Object.keys(FFA_MAPS));
+    } catch (importErr) {
+      console.error('[Server] Failed to import maps module:', importErr);
+      return res.status(500).json({ error: 'Failed to load maps: ' + importErr.message });
+    }
+    
+    if (!FFA_MAPS || Object.keys(FFA_MAPS).length === 0) {
+      console.log('[Server] FFA_MAPS is empty, returning empty array');
+      return res.json([]);
+    }
+    
+    const mapsList = Object.values(FFA_MAPS).map(map => {
+      console.log('[Server] Processing map:', map.id);
+      return {
+        id: map.id,
+        name: map.name,
+        description: map.description,
+        glb: `/maps/ffa/${map.id}.glb`,
+        skyColor: map.skyColor,
+        spawnPoints: map.spawnPoints
+      };
+    });
+    
+    console.log('[Server] Returning', mapsList.length, 'FFA maps');
+    res.json(mapsList);
+  } catch (err) {
+    console.error('[Server] /api/ffa/maps Error:', err);
+    res.status(500).json({ error: 'Internal error: ' + err.message });
+  }
+});
+
+// ── FFA player count endpoint ────────────────────────────
+app.get('/api/ffa/playercount', (req, res) => {
+  try {
+    // For now, just return 0 since gameServer might not be accessible yet
+    // The real player count will be fetched from the Colyseus room state
+    // This endpoint serves as a placeholder
+    res.json({ count: 0 });
+  } catch (err) {
+    console.error('[FFA playercount] Error:', err.message);
+    res.json({ count: 0 });
+  }
+});
 
 // ── Auth routes ──────────────────────────────────────────── // ← ADD BLOCK
 app.post('/auth/signup', async (req, res) => {
@@ -571,6 +646,13 @@ app.get('/api/leaderboard/:category/user-rank', async (req, res) => {
   }
 });
 
+// ── Serve static files AFTER all API routes ──────────────
+// Serve skin models and assets from skins/models directory
+const SKINS_DIR = path.resolve(process.cwd(), 'skins/models');
+app.use('/skins', express.static(SKINS_DIR));
+
+// Serve public files last (index.html, etc)
+app.use(express.static(PUBLIC_DIR));
 
 const gameServer = new Server({
   transport: new WebSocketTransport({
@@ -581,6 +663,9 @@ const gameServer = new Server({
   }),
 });
 
+// Store gameServer in app for access in routes
+app.gameServer = gameServer;
+
 gameServer.define('private',     PrivateRoom);
 gameServer.define('matchmaking', MatchmakingRoom, {
   filterBy: ['ratingMin', 'ratingMax'],
@@ -588,9 +673,15 @@ gameServer.define('matchmaking', MatchmakingRoom, {
 gameServer.define('ranked',      RankedRoom, {
   filterBy: ['ratingMin', 'ratingMax'],
 });
+gameServer.define('ffa',         FreeForAllRoom);
 gameServer.define('lobby', Lobby);
 
 httpServer.listen(CFG.PORT, () => {
   console.log(`[STARTUP] Untitled Grapple Game V0.6`);
   console.log(`[STARTUP] Server running → http://localhost:${CFG.PORT}`);
+  console.log(`[STARTUP] API routes registered:`);
+  console.log(`  - /api/ffa/maps`);
+  console.log(`  - /api/ffa/playercount`);
+  console.log(`  - /api/skins/*`);
+  console.log(`  - /auth/*`);
 });

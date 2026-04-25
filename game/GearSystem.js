@@ -21,7 +21,7 @@ const GEAR_REGISTRY = {
     rarity: 'high-skill',
     damage: 50,
     cooldown: 2500,  // ms
-    image: '/static/skins/common/cheeseburger.png',  // placeholder
+    image: '/gear/sniper_thumb.png',  // placeholder
     glb: '/gear/sniper.glb',  // GLB model path
     previewDuration: 2000,  // 2 seconds before firing
     postFireDuration: 1000,  // 1 second visible after firing
@@ -33,6 +33,7 @@ const GEAR_REGISTRY = {
     rarity: 'ultra-high-skill',
     damage: 10,
     cooldown: 3000,  // ms
+    image: '/gear/mace_thumb.png',  // placeholder
     glb: '/gear/mace.glb',  // GLB model path
     previewDuration: 500,  // 0.5 seconds before impact
     postFireDuration: 1000,  // 1 second visible after impact
@@ -206,14 +207,32 @@ class GearSystem {
       // Ensure totalDuration is at least 3000ms
       const effectDuration = Math.max(totalDuration, 3000);
       
+      // Create quaternion from direction (rotation to point rifle along camera dir)
+      const up = { x: 0, y: 1, z: 0 };
+      const right = { 
+        x: dir.z, // cross product of up and dir
+        y: 0, 
+        z: -dir.x 
+      };
+      const lenRight = Math.sqrt(right.x * right.x + right.z * right.z);
+      if (lenRight > 0.01) {
+        right.x /= lenRight; right.z /= lenRight;
+      }
+      const newUp = {
+        x: right.z * dir.y - right.x * dir.z,
+        y: right.x * dir.x + right.z * dir.z,
+        z: right.z * 0 - 0 * dir.x
+      };
+      // Store direction as simple object for client to reconstruct
       const gearEffect = new ActiveGearEffect(
         'sniper',
         shooterId,
         { x: cameraPos.x, y: cameraPos.y, z: cameraPos.z },
-        { x: dir.x, y: dir.y, z: dir.z, w: 0 },
+        { x: dir.x, y: dir.y, z: dir.z, w: 1 },  // direction as x,y,z; w=1 for quaternion
         Date.now(),
         effectDuration
       );
+      gearEffect.direction = { x: dir.x, y: dir.y, z: dir.z };  // Store direction for client
       this._gearEffects.push(gearEffect);
       if (this._onGearPreview) {
         this._onGearPreview(gearEffect);
@@ -309,7 +328,11 @@ class GearSystem {
 
       const line = new ActiveLine(actualOrigin, hitPos, Date.now(), 3000, { x: dir.x, y: dir.y, z: dir.z });
       this._lines.push(line);
-      if (this._onLineSpawn) this._onLineSpawn(line);
+      if (this._onLineSpawn) {
+        this._onLineSpawn(line);
+      } else {
+        console.warn('[GearSystem.executePendingSnipe] No onLineSpawn callback!');
+      }
 
       // Deal damage if hit a player
       if (targetSid) {

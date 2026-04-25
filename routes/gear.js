@@ -39,6 +39,7 @@ router.get('/', verifyToken, async (req, res) => {
       rarity: data.rarity,
       damage: data.damage,
       cooldown: data.cooldown,
+      image: data.image,
       equipped: user.equippedGear === id,
     }));
 

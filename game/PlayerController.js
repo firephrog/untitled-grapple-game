@@ -56,7 +56,7 @@ function applyMovement(body, inputs, camDir, grounded, grappleStatus) {
 
     if (speed > STOP_THRESHOLD) {
       // Ground drag is high (stops you), Air drag is low (slingshot)
-      const dragCoefficient = grounded ? 12.0 : 4.5; 
+      const dragCoefficient = grounded ? 12.0 : 2.0;  // Reduced air drag from 4.5 to 2.0
       
       // Calculate how much speed to "drop" this tick
       // This is "Active Drag" - it fights the acceleration you feel

@@ -23,6 +23,9 @@ const API_BASE = location.protocol === 'https:'
 // Make API_BASE available globally for SkinManager and other modules
 window.API_BASE = API_BASE;
 
+// Initialize gamemode flags
+window.isFFA = false;
+
 // Helper to extract userId from JWT token
 function getUserIdFromToken(token) {
   try {
@@ -62,7 +65,9 @@ function showMenu()        {
     renderer.domElement.style.display = 'none'; 
     renderer.domElement.style.pointerEvents = 'none';
   }
-  initializeGearCards();  // Initialize gear cards when menu is shown
+  if (typeof initializeGearCards === 'function') {
+    initializeGearCards();  // Initialize gear cards when menu is shown
+  }
 }
 
 function hideMenu()        { 
@@ -395,6 +400,9 @@ async function joinRankedQueue() {
         showGame();
         gameStarted = true;
         
+        // Not in FFA mode
+        window.isFFA = false;
+        
         if (typeof keys !== 'undefined' && keys) {
           keys.w = false;
           keys.a = false;
@@ -449,13 +457,19 @@ async function joinRankedQueue() {
 
     // Sniper line visual (beam)
     room.onMessage('sniperLine', (data) => {
-      let start = new THREE.Vector3(data.start.x, data.start.y, data.start.z);
-      const end = new THREE.Vector3(data.end.x, data.end.y, data.end.z);
+      // Normalize property names (server sends startPos, endPos)
+      const startData = data?.start || data?.startPos;
+      const endData = data?.end || data?.endPos;
+      if (!startData || typeof startData.x !== 'number') return;
+      if (!endData || typeof endData.x !== 'number') return;
+      
+      let start = new THREE.Vector3(startData.x, startData.y, startData.z);
+      const end = new THREE.Vector3(endData.x, endData.y, endData.z);
       if (data.direction) {
         const dir = new THREE.Vector3(data.direction.x, data.direction.y, data.direction.z);
         const up = new THREE.Vector3(0, 1, 0);
         const right = new THREE.Vector3().crossVectors(dir, up).normalize();
-        start.addScaledVector(right, 0.5);
+        start.addScaledVector(right, 1.5);  // 1.5 units to the right for visibility
       }
       const SNIPER_RADIUS = 0.08;
       const SNIPER_SEGMENTS = 3;
@@ -473,6 +487,7 @@ async function joinRankedQueue() {
 
     // Gear effect (mace, shield, etc)
     room.onMessage('gearEffect', (data) => {
+      console.log('[FFA onMessage gearEffect] Received:', data);
       const { gearName, shooterId, position, direction, duration } = data;
       const effectDuration = duration || 2000;
       
@@ -498,7 +513,7 @@ async function joinRankedQueue() {
           const model = gltf.scene.clone();
           model.position.set(position.x, position.y, position.z);
           scene.add(model);
-          setupGearEffectAnimation(model, shooterId, position, effectDuration);
+          setupMaceAnimation(model, shooterId, position, effectDuration);
         }, undefined, (error) => {
           console.warn(`[gearEffect] Failed to load ${maceGlbPath}, using procedural model:`, error);
           const geometry = new THREE.SphereGeometry(0.5, 8, 8);
@@ -506,57 +521,116 @@ async function joinRankedQueue() {
           const model = new THREE.Mesh(geometry, material);
           model.position.set(position.x, position.y, position.z);
           scene.add(model);
-          setupGearEffectAnimation(model, shooterId, position, effectDuration);
+          setupMaceAnimation(model, shooterId, position, effectDuration);
         });
       } else {
+        // Sniper gear
         const gearGlbPath = `/gear/${gearName}.glb`;
+        
+        // Position the sniper 2 units ahead of the player in the direction they're aiming
+        const offset = 2.0;
+        if (!direction || typeof direction.x !== 'number') {
+          console.error('[FFA gearEffect] Invalid direction:', direction);
+          return;
+        }
+        const dirVec = new THREE.Vector3(direction.x, direction.y, direction.z).normalize();
+        const sniperPos = new THREE.Vector3(position.x, position.y, position.z).addScaledVector(dirVec, offset);
+        
         window.gltfLoader.load(gearGlbPath, (gltf) => {
           const model = gltf.scene.clone();
-          model.position.set(position.x, position.y, position.z);
+          model.position.copy(sniperPos);
+          
+          // Apply rotation based on direction
+          const dir = new THREE.Vector3(direction.x, direction.y, direction.z).normalize();
+          const up = new THREE.Vector3(0, 1, 0);
+          const right = new THREE.Vector3().crossVectors(up, dir).normalize();
+          const newUp = new THREE.Vector3().crossVectors(dir, right).normalize();
+          
+          const matrix = new THREE.Matrix4();
+          matrix.makeBasis(right, newUp, dir);
+          model.quaternion.setFromRotationMatrix(matrix);
+          
+          // Rotate sniper 180 degrees yaw
+          const yawRotation = new THREE.Quaternion();
+          yawRotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+          model.quaternion.multiplyQuaternions(model.quaternion, yawRotation);
+          
+          console.log('[FFA gearEffect] Sniper spawned - direction:', direction, 'position:', sniperPos, 'quaternion:', model.quaternion);
+          
           scene.add(model);
-          setupGearEffectAnimation(model, shooterId, position, effectDuration);
+          setupSniperAnimation(model, shooterId, effectDuration, direction);
         }, undefined, (error) => {
           console.warn(`[gearEffect] Failed to load ${gearGlbPath}, using procedural model:`, error);
           const geometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
           const material = new THREE.MeshPhongMaterial({ color: 0xffff00 });
           const model = new THREE.Mesh(geometry, material);
-          model.position.set(position.x, position.y, position.z);
+          model.position.copy(sniperPos);
+          
+          // Apply rotation
+          const dir = new THREE.Vector3(direction.x, direction.y, direction.z).normalize();
+          const up = new THREE.Vector3(0, 1, 0);
+          const right = new THREE.Vector3().crossVectors(up, dir).normalize();
+          const newUp = new THREE.Vector3().crossVectors(dir, right).normalize();
+          
+          const matrix = new THREE.Matrix4();
+          matrix.makeBasis(right, newUp, dir);
+          model.quaternion.setFromRotationMatrix(matrix);
+          
+          // Rotate sniper 180 degrees yaw
+          const yawRotation = new THREE.Quaternion();
+          yawRotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+          model.quaternion.multiplyQuaternions(model.quaternion, yawRotation);
+          
           scene.add(model);
-          setupGearEffectAnimation(model, shooterId, position, effectDuration);
+          setupSniperAnimation(model, shooterId, effectDuration, direction);
         });
       }
       
-      function setupGearEffectAnimation(model, shooterId, position, duration) {
-        // Ensure we have a valid duration
+      function setupMaceAnimation(model, shooterId, position, duration) {
         const finalDuration = Math.max(duration || 3000, 3000);
         const startTime = Date.now();
-        
-        // Calculate initial offset from shooter's position
-        let initialOffset = new THREE.Vector3();
-        const shooterStateAtStart = room.state.players.get(shooterId);
-        
-        if (shooterStateAtStart && shooterStateAtStart.position) {
-          initialOffset.set(
-            position.x - shooterStateAtStart.position.x,
-            position.y - shooterStateAtStart.position.y,
-            position.z - shooterStateAtStart.position.z
-          );
-        }
         
         // Initialize current position for smooth interpolation
         const currentPosition = new THREE.Vector3();
         currentPosition.copy(model.position);
         
-        // Store the initial rotation quaternion so we can preserve pitch
-        const initialRotation = new THREE.Quaternion();
-        initialRotation.copy(model.quaternion);
+        // Store effect with mace-specific animation data
+        const effect = { 
+          model, 
+          shooterId, 
+          startTime, 
+          duration: finalDuration,
+          animationType: 'mace',  // Mark as mace animation
+          currentPosition  // For smooth position interpolation
+        };
+        activeGearEffects.set(shooterId, effect);
         
-        // Determine animation type based on model
-        let animationType = 'gear';
-        if (position.z > 100) animationType = 'sniper'; // Rough check for sniper gear
+        // Handle cleanup after duration
+        const cleanupTimeout = setTimeout(() => {
+          activeGearEffects.delete(shooterId);
+          if (scene && model) {
+            scene.remove(model);
+          }
+        }, finalDuration);
+      }
+      
+      function setupSniperAnimation(model, shooterId, duration, direction) {
+        const finalDuration = Math.max(duration || 3000, 3000);
+        const startTime = Date.now();
         
-        // Register this effect for frame-by-frame updates (use the shared module-level map)
-        const effect = { model, shooterId, initialOffset, startTime, duration: finalDuration, animationType, currentPosition, initialRotation };
+        const currentPosition = new THREE.Vector3();
+        currentPosition.copy(model.position);
+        
+        // Store effect for sniper (follows player using stored direction)
+        const effect = { 
+          model, 
+          shooterId, 
+          startTime, 
+          duration: finalDuration,
+          animationType: 'sniper',
+          currentPosition,
+          direction: direction ? new THREE.Vector3(direction.x, direction.y, direction.z).normalize() : new THREE.Vector3(0, 0, 1)
+        };
         activeGearEffects.set(shooterId, effect);
         
         // Handle cleanup after duration
@@ -726,6 +800,647 @@ function resetRankedGame() {
   }
 }
 
+// ── FFA Mode Functions ─────────────────────────────────────
+
+let ffaMode = false;
+let ffaCurrentMap = null;
+let ffaPlayerCount = 0;
+let ffaMapPreviewRenderer = null;
+let ffaMapPreviewScene = null;
+let ffaMapPreviewCamera = null;
+let ffaMapPreviewAnimationId = null;
+
+function initFFAMapPreview() {
+  const canvas = document.getElementById('ffaMapPreviewCanvas');
+  if (!canvas) return;
+
+  if (!ffaMapPreviewRenderer) {
+    ffaMapPreviewRenderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+    ffaMapPreviewRenderer.setSize(canvas.clientWidth, canvas.clientHeight);
+    ffaMapPreviewRenderer.outputColorSpace = THREE.SRGBColorSpace;
+    
+    ffaMapPreviewScene = new THREE.Scene();
+    ffaMapPreviewScene.background = new THREE.Color(0x0a0a0a);
+    
+    ffaMapPreviewCamera = new THREE.PerspectiveCamera(50, canvas.clientWidth / canvas.clientHeight, 0.1, 1000);
+    ffaMapPreviewCamera.position.set(-10, 15, 30);
+    ffaMapPreviewCamera.lookAt(0, 0, 0);
+    
+    // Add basic lighting
+    const light = new THREE.PointLight(0xffffff, 1, 100);
+    light.position.set(10, 20, 10);
+    ffaMapPreviewScene.add(light);
+    
+    ffaMapPreviewScene.add(new THREE.AmbientLight(0x888888));
+  }
+
+  // Start animation loop
+  if (ffaMapPreviewAnimationId) {
+    cancelAnimationFrame(ffaMapPreviewAnimationId);
+  }
+  
+  function animatePreview() {
+    if (ffaMapPreviewCamera) {
+      ffaMapPreviewCamera.position.applyAxisAngle(new THREE.Vector3(0, 1, 0), 0.0005);
+      ffaMapPreviewCamera.lookAt(0, 0, 0);
+    }
+    if (ffaMapPreviewRenderer && ffaMapPreviewScene && ffaMapPreviewCamera) {
+      ffaMapPreviewRenderer.render(ffaMapPreviewScene, ffaMapPreviewCamera);
+    }
+    ffaMapPreviewAnimationId = requestAnimationFrame(animatePreview);
+  }
+  animatePreview();
+}
+
+function stopFFAMapPreview() {
+  if (ffaMapPreviewAnimationId) {
+    cancelAnimationFrame(ffaMapPreviewAnimationId);
+    ffaMapPreviewAnimationId = null;
+  }
+}
+
+async function loadFFAMapPreview(glbPath, skyColor) {
+  if (!ffaMapPreviewScene || !gltfLoader) return;
+
+  try {
+    // Set background color if provided
+    if (skyColor) {
+      const colorValue = typeof skyColor === 'number' ? skyColor : parseInt(skyColor, 16);
+      ffaMapPreviewScene.background = new THREE.Color(colorValue);
+    }
+
+    // Clear existing models (keep lights)
+    ffaMapPreviewScene.children = ffaMapPreviewScene.children.filter(child => 
+      child instanceof THREE.Light
+    );
+    
+    const gltf = await new Promise((resolve, reject) => {
+      gltfLoader.load(glbPath, resolve, undefined, reject);
+    });
+    
+    const model = gltf.scene;
+    // Don't scale down - show full map
+    ffaMapPreviewScene.add(model);
+  } catch (e) {
+    console.warn('[FFA loadFFAMapPreview] Failed to load map preview:', e);
+  }
+}
+
+async function ffaJoin() {
+  const authUser = getUser();
+  if (!authUser) return;
+
+  ffaMode = true;
+  ffaPlayerCount = 0;
+
+  try {
+    // Show FFA menu while loading preview
+    document.getElementById('menu').style.display = 'none';
+    document.getElementById('versusMenu').style.display = 'none';
+    document.getElementById('rankedMenu').style.display = 'none';
+    document.getElementById('ffaMenu').style.display = 'flex';
+
+    // Initialize preview canvas and scene
+    initFFAMapPreview();
+    
+    // Test basic endpoint first
+    const testResponse = await fetch('/api/test');
+    if (!testResponse.ok) {
+      throw new Error(`Server test failed: ${testResponse.status}`);
+    }
+    
+    const mapListResponse = await fetch('/api/ffa/maps');
+    
+    if (!mapListResponse.ok) {
+      throw new Error(`Failed to fetch maps: ${mapListResponse.status} ${mapListResponse.statusText}`);
+    }
+    
+    const mapList = await mapListResponse.json();
+    
+    if (mapList && mapList.length > 0) {
+      // For now, show first map (in future could show current map)
+      const mapInfo = mapList[0];
+      ffaCurrentMap = mapInfo;
+      
+      // Update UI with map info
+      document.getElementById('ffaMapName').textContent = mapInfo.name || '—';
+      document.getElementById('ffaMapDescription').textContent = mapInfo.description || '—';
+      
+      // Load and display the map preview
+      const glbPath = mapInfo.glb || `/maps/ffa/${mapInfo.id}.glb`;
+      await loadFFAMapPreview(glbPath, mapInfo.skyColor);
+    } else {
+      console.warn('[ffaJoin] No maps returned from server');
+      document.getElementById('ffaMapName').textContent = 'No maps available';
+    }
+
+    // Fetch current player count
+    try {
+      const countResponse = await fetch('/api/ffa/playercount');
+      if (countResponse.ok) {
+        const countData = await countResponse.json();
+        document.getElementById('ffaPlayerCountNum').textContent = countData.count || 0;
+      }
+    } catch (err) {
+      console.warn('[ffaJoin] Failed to fetch player count:', err);
+    }
+
+  } catch (err) {
+    console.error('[ffaJoin] Failed:', err);
+    document.getElementById('menu').style.display = 'flex';
+    document.getElementById('ffaMenu').style.display = 'none';
+    alert('Failed to load FFA preview: ' + err.message);
+  }
+}
+
+async function ffaDeployClicked() {
+  const authUser = getUser();
+  if (!authUser) return;
+
+  const deployBtn = document.getElementById('ffaDeployBtn');
+  if (deployBtn) deployBtn.disabled = true;
+
+  try {
+    // Now actually join the room
+    room = await colyseus.joinOrCreate('ffa', {
+      token: authUser.token,
+    });
+    myId = room.sessionId;
+
+    // Hide preview menu (will be hidden by gameStart message)
+    stopFFAMapPreview();
+
+    // ── FFA Message Handlers ──────────────────────────────────
+
+    room.onMessage('ping', (data) => {
+      room.send('pong', { t: data.t });
+    });
+
+    room.onMessage('pong', ({ t }) => {
+      const el = document.getElementById('ping');
+      if (el) el.textContent = (Date.now() - t) + ' ms';
+    });
+
+    room.onMessage('init', (data) => {
+      myId = data.myId;
+      ffaCurrentMap = data.currentMap;
+    });
+
+    room.onMessage('playerCountUpdate', (data) => {
+      ffaPlayerCount = data.count;
+    });
+
+    room.onMessage('mapChosen', ({ mapId, mapName, skyColor }) => {
+      if (skyColor && typeof scene !== 'undefined' && scene) {
+        scene.background = new THREE.Color(skyColor);
+      }
+      ffaCurrentMap = { id: mapId, name: mapName, skyColor, glb: `/maps/ffa/${mapId}.glb` };
+    });
+
+    room.onMessage('loadMap', async ({ glb, collision, spawnPoints }) => {
+      try {
+        if (!window.loadMapGLB) {
+          console.error('[FFA loadMap] loadMapGLB not available');
+          return;
+        }
+        await window.loadMapGLB(glb);
+        
+        // For FFA, player starts at a random spawn point
+        const randomSpawnIndex = Math.floor(Math.random() * spawnPoints.length);
+        const spawn = spawnPoints[randomSpawnIndex] || { x: 0, y: 5, z: 0 };
+        
+        if (!window.buildClientWorld) {
+          console.error('[FFA loadMap] buildClientWorld not available');
+          return;
+        }
+        await window.buildClientWorld(collision, spawn.x, spawn.y, spawn.z);
+      } catch (e) {
+        console.error('[FFA loadMap] Error:', e);
+      }
+    });
+
+    room.onMessage('skinInfo', (data) => {
+      console.log('[FFA skinInfo] Received for', Object.keys(data).length, 'players');
+      _pendingSkinInfo = data;
+    
+    // If game is already started, immediately load skins for mid-game joiners
+    if (gameStarted && window.skinMgr) {
+      console.log('[FFA skinInfo] Game already started, loading skins immediately');
+      (async () => {
+        for (const [oppId, oppSkinData] of Object.entries(data)) {
+          if (oppId !== myId) {
+            try {
+              await window.skinMgr.assignSkin(oppId, oppSkinData, false);
+              const oppMesh = window.skinMgr.getRoot(oppId);
+              if (oppMesh && window.playerMeshMap) {
+                window.playerMeshMap.set(oppId, oppMesh);
+              }
+              if (window.hookMgr && oppSkinData.grapple) {
+                window.hookMgr.assignHook(oppId, oppSkinData.grapple, false);
+              }
+            } catch (err) {
+              console.warn('[FFA skinInfo] Failed to assign skin for', oppId, err);
+            }
+          }
+        }
+      })();
+    }
+  });
+
+  room.onMessage('nametagInfoMulti', (data) => {
+    console.log('[FFA nametagInfoMulti] Received for', Object.keys(data).length, 'players');
+    // FFA sends nametag info for all players at once
+    if (window.nametags) {
+      for (const [sid, nametagInfo] of Object.entries(data)) {
+        window.nametags.register(nametagInfo);
+      }
+    }
+  });
+
+    room.onMessage('gameStart', async (data) => {
+      console.log('[FFA gameStart] Game starting!', data);
+      try {
+        // Load skins for all opponents
+        if (_pendingSkinInfo && window.skinMgr) {
+          console.log('[FFA gameStart] Loading skins for', Object.keys(_pendingSkinInfo).length, 'opponents');
+          for (const [oppId, oppSkinData] of Object.entries(_pendingSkinInfo)) {
+            await window.skinMgr.assignSkin(oppId, oppSkinData, false);
+            const oppMesh = window.skinMgr.getRoot(oppId);
+            if (oppMesh && window.playerMeshMap) {
+              window.playerMeshMap.set(oppId, oppMesh);
+            }
+            if (window.hookMgr) {
+              window.hookMgr.assignHook(oppId, oppSkinData.grapple, false);
+            }
+          }
+          _pendingSkinInfo = null;
+        }
+
+        // Load own skins
+        const authUserData = JSON.parse(localStorage.getItem('auth_user'));
+        if (authUserData && window.skinMgr && window.hookMgr && typeof camera !== 'undefined') {
+          fetch(`${API_BASE}/api/skins/player/${authUserData.username}`)
+            .then(r => r.json())
+            .then(d => {
+              console.log('[FFA gameStart] Own skins loaded');
+              if (window.hookMgr && typeof camera !== 'undefined' && camera) {
+                window.hookMgr.assignHook('local', d.grapple, true);
+                window.hookMgr.setCamera('local', camera);
+              }
+            })
+            .catch(err => console.warn('[FFA gameStart] Failed to load own skins:', err));
+          
+          // Also load bomb skins
+          fetch(`${API_BASE}/api/skins`, {
+            headers: { Authorization: `Bearer ${authUserData.token}` }
+          })
+            .then(r => r.json())
+            .then(d => {
+              console.log('[FFA gameStart] Loading bomb skins');
+              gBombSkins = {};
+              if (d.bombs) {
+                for (const bomb of d.bombs) {
+                  gBombSkins[bomb.id] = bomb;
+                }
+                console.log('[FFA gameStart] Loaded', Object.keys(gBombSkins).length, 'bomb skins');
+              }
+            })
+            .catch(err => console.warn('[FFA gameStart] Failed to load bomb skins:', err));
+        }
+
+        console.log('[FFA gameStart] Showing game, hiding menu');
+        showGame();
+        gameStarted = true;
+        
+        // Mark as FFA mode and hide opponent HP bar
+        window.isFFA = true;
+        const oppHpWrap = document.getElementById('oppHpWrap');
+        if (oppHpWrap) oppHpWrap.classList.add('ffa-active');
+        
+        if (typeof keys !== 'undefined' && keys) {
+          keys.w = false; keys.a = false; keys.s = false; keys.d = false; keys.space = false;
+        }
+        if (typeof prevSpaceState !== 'undefined') {
+          prevSpaceState = false;
+        }
+        
+        if (typeof controls !== 'undefined' && controls) {
+          setTimeout(() => {
+            try {
+              controls.lock();
+            } catch (err) {
+              console.warn('[FFA gameStart] Pointer lock failed:', err.message);
+            }
+          }, 100);
+        }
+
+        // Hide FFA menu
+        console.log('[FFA gameStart] Hiding FFA menu');
+        document.getElementById('ffaMenu').style.display = 'none';
+      } catch (e) {
+        console.error('[FFA gameStart]', e);
+      }
+    });
+
+    room.onMessage('playerHit', (data) => {
+      const isMe = data.playerId === myId;
+      const numId = isMe ? 'health' : 'opponentHP';
+      const barId = isMe ? 'myHpFill' : 'oppHpFill';
+      const el = document.getElementById(numId);
+      const fill = document.getElementById(barId);
+      
+      if (el) {
+        const newHP = Math.max(0, data.currentHealth);
+        el.textContent = newHP;
+        
+        // Update nametag HP for opponent
+        if (!isMe && window.nametags) {
+          window.nametags.setHealth(data.playerId, newHP, 100);
+        }
+      }
+      if (fill) fill.style.width = data.currentHealth + '%';
+      if (isMe) {
+        renderer.domElement.style.outline = '5px solid red';
+        setTimeout(() => { renderer.domElement.style.outline = ''; }, 200);
+      }
+    });
+
+    room.onMessage('bombExploded', (data) => {
+      if (typeof bombMgr !== 'undefined' && bombMgr && bombMgr._bombs?.has(data.id)) {
+        bombMgr.removeBomb(data.id);
+      }
+      if (typeof Explosion !== 'undefined') {
+        explosions.push(new Explosion(data.position));
+      }
+    });
+
+    room.onMessage('bombSpawned', (data) => {
+      console.log('[FFA bombSpawned] Bomb spawned:', data);
+      // Ensure bomb skins are loaded when bombs spawn
+      if (Object.keys(gBombSkins).length === 0) {
+        const authUserData = JSON.parse(localStorage.getItem('auth_user'));
+        if (authUserData) {
+          fetch(`${API_BASE}/api/skins`, {
+            headers: { Authorization: `Bearer ${authUserData.token}` }
+          })
+            .then(r => r.json())
+            .then(d => {
+              console.log('[FFA bombSpawned] Loaded bomb skins');
+              if (d.bombs) {
+                for (const bomb of d.bombs) {
+                  gBombSkins[bomb.id] = bomb;
+                }
+              }
+            })
+            .catch(err => console.warn('[FFA bombSpawned] Failed to load bomb skins:', err));
+        }
+      }
+    });
+
+    room.onMessage('playerDead', (data) => {
+      if (typeof controls !== 'undefined' && controls && controls.isLocked) {
+        controls.unlock();
+      }
+      gameStarted = false;
+      
+      // Exit FFA mode and show opponent HP bar
+      window.isFFA = false;
+      const oppHpWrap = document.getElementById('oppHpWrap');
+      if (oppHpWrap) oppHpWrap.classList.remove('ffa-active');
+      
+      // Clear game objects
+      if (typeof skinMgr !== 'undefined' && skinMgr) skinMgr.removeAll();
+      if (typeof hookMgr !== 'undefined' && hookMgr) hookMgr.removeAll();
+      if (typeof bombMgr !== 'undefined' && bombMgr) bombMgr.removeAll();
+      if (typeof nametags !== 'undefined' && nametags) nametags.dispose();
+      if (typeof playerMeshMap !== 'undefined' && playerMeshMap) playerMeshMap.clear();
+
+      // Show death menu
+      if (data.killerId && window.nametags) {
+        // Get killer name from nametags
+        const killerEntry = window.nametags._entries?.get(data.killerId);
+        if (killerEntry && killerEntry.info) {
+          document.getElementById('ffaKillerName').textContent = killerEntry.info.username;
+        }
+      }
+      
+      document.getElementById('ffaDeathMenu').style.display = 'flex';
+    });
+
+    room.onMessage('respawned', (data) => {
+      // Re-show game and restore controls
+      showGame();
+      gameStarted = true;
+      if (typeof controls !== 'undefined' && controls) {
+        setTimeout(() => { try { controls.lock(); } catch (err) {} }, 100);
+      }
+      document.getElementById('ffaDeathMenu').style.display = 'none';
+    });
+
+    room.onMessage('mapRotationWarning', (data) => {
+      addInGameNotification('[MAP ROTATION] Changing map in 10 seconds');
+    });
+
+    room.onMessage('mapRotated', (data) => {
+      addInGameNotification(`Map changed to: ${data.mapName}`);
+    });
+
+    room.onMessage('sniperLine', (data) => {
+      // Normalize property names (server sends startPos, endPos)
+      const startData = data?.start || data?.startPos;
+      const endData = data?.end || data?.endPos;
+      if (!startData || typeof startData.x !== 'number') return;
+      if (!endData || typeof endData.x !== 'number') return;
+      
+      let start = new THREE.Vector3(startData.x, startData.y, startData.z);
+      const end = new THREE.Vector3(endData.x, endData.y, endData.z);
+      const distance = start.distanceTo(end);
+      const geometry = new THREE.CylinderGeometry(0.08, 0.08, distance, 3);
+      geometry.rotateX(Math.PI / 2);
+      const material = new THREE.MeshBasicMaterial({ color: 0xff6600, depthWrite: true, transparent: true, opacity: 1.0 });
+      const cylinder = new THREE.Mesh(geometry, material);
+      cylinder.position.copy(start).add(end).divideScalar(2);
+      cylinder.lookAt(end);
+      scene.add(cylinder);
+      setTimeout(() => scene.remove(cylinder), 1000);
+    });
+
+    // Gear effect (mace, shield, etc)
+    room.onMessage('gearEffect', (data) => {
+      console.log('[FFA onMessage gearEffect] Received:', data);
+      const { gearName, shooterId, position, direction, duration } = data;
+      const effectDuration = duration || 2000;
+      
+      // Start scope effect if this is the local player using sniper
+      if (gearName === 'sniper' && shooterId === myId && camera) {
+        const previewDuration = 2000;
+        activeScopeEffect = {
+          startTime: Date.now(),
+          duration: previewDuration,
+          originalFov: camera.fov
+        };
+      }
+      
+      // Check if gltfLoader is available
+      if (!window.gltfLoader) {
+        console.error('[gearEffect] gltfLoader not available');
+        return;
+      }
+      
+      if (gearName === 'mace') {
+        const maceGlbPath = '/gear/mace.glb';
+        window.gltfLoader.load(maceGlbPath, (gltf) => {
+          const model = gltf.scene.clone();
+          model.position.set(position.x, position.y, position.z);
+          scene.add(model);
+          setupMaceAnimation(model, shooterId, position, effectDuration);
+        }, undefined, (error) => {
+          console.warn(`[gearEffect] Failed to load ${maceGlbPath}, using procedural:`, error);
+          const geometry = new THREE.SphereGeometry(0.5, 8, 8);
+          const material = new THREE.MeshPhongMaterial({ color: 0x8B4513 });
+          const model = new THREE.Mesh(geometry, material);
+          model.position.set(position.x, position.y, position.z);
+          scene.add(model);
+          setupMaceAnimation(model, shooterId, position, effectDuration);
+        });
+      } else {
+        // Sniper gear
+        const gearGlbPath = `/gear/${gearName}.glb`;
+        const offset = 2.0;
+        if (!direction || typeof direction.x !== 'number') {
+          console.error('[FFA gearEffect] Invalid direction:', direction);
+          return;
+        }
+        const dirVec = new THREE.Vector3(direction.x, direction.y, direction.z).normalize();
+        const sniperPos = new THREE.Vector3(position.x, position.y, position.z).addScaledVector(dirVec, offset);
+        
+        window.gltfLoader.load(gearGlbPath, (gltf) => {
+          const model = gltf.scene.clone();
+          model.position.copy(sniperPos);
+          
+          // Apply rotation based on direction
+          const dir = new THREE.Vector3(direction.x, direction.y, direction.z).normalize();
+          const up = new THREE.Vector3(0, 1, 0);
+          const right = new THREE.Vector3().crossVectors(up, dir).normalize();
+          const newUp = new THREE.Vector3().crossVectors(dir, right).normalize();
+          
+          const matrix = new THREE.Matrix4();
+          matrix.makeBasis(right, newUp, dir);
+          model.quaternion.setFromRotationMatrix(matrix);
+          
+          const yawRotation = new THREE.Quaternion();
+          yawRotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+          model.quaternion.multiplyQuaternions(model.quaternion, yawRotation);
+          
+          console.log('[FFA gearEffect] Sniper spawned - direction:', direction, 'position:', sniperPos, 'quaternion:', model.quaternion);
+          
+          scene.add(model);
+          setupSniperAnimation(model, shooterId, effectDuration, direction);
+        }, undefined, (error) => {
+          console.warn(`[gearEffect] Failed to load ${gearGlbPath}, using procedural:`, error);
+          const geometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+          const material = new THREE.MeshPhongMaterial({ color: 0xffff00 });
+          const model = new THREE.Mesh(geometry, material);
+          model.position.copy(sniperPos);
+          
+          const dir = new THREE.Vector3(direction.x, direction.y, direction.z).normalize();
+          const up = new THREE.Vector3(0, 1, 0);
+          const right = new THREE.Vector3().crossVectors(up, dir).normalize();
+          const newUp = new THREE.Vector3().crossVectors(dir, right).normalize();
+          
+          const matrix = new THREE.Matrix4();
+          matrix.makeBasis(right, newUp, dir);
+          model.quaternion.setFromRotationMatrix(matrix);
+          
+          const yawRotation = new THREE.Quaternion();
+          yawRotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+          model.quaternion.multiplyQuaternions(model.quaternion, yawRotation);
+          
+          console.log('[FFA gearEffect] Sniper spawned (procedural) - direction:', direction, 'position:', sniperPos);
+          
+          scene.add(model);
+          setupSniperAnimation(model, shooterId, effectDuration, direction);
+        });
+      }
+      
+      function setupMaceAnimation(model, shooterId, position, duration) {
+        const finalDuration = Math.max(duration || 3000, 3000);
+        const startTime = Date.now();
+        const currentPosition = new THREE.Vector3();
+        currentPosition.copy(model.position);
+        const effect = { 
+          model, shooterId, startTime, duration: finalDuration,
+          animationType: 'mace', currentPosition
+        };
+        activeGearEffects.set(shooterId, effect);
+        setTimeout(() => {
+          activeGearEffects.delete(shooterId);
+          if (scene && model) scene.remove(model);
+        }, finalDuration);
+      }
+      
+      function setupSniperAnimation(model, shooterId, duration, direction) {
+        const finalDuration = Math.max(duration || 3000, 3000);
+        const startTime = Date.now();
+        const currentPosition = new THREE.Vector3();
+        currentPosition.copy(model.position);
+        const effect = { 
+          model, shooterId, startTime, duration: finalDuration, 
+          animationType: 'sniper', 
+          currentPosition,
+          direction: direction ? new THREE.Vector3(direction.x, direction.y, direction.z).normalize() : new THREE.Vector3(0, 0, 1)
+        };
+        activeGearEffects.set(shooterId, effect);
+        setTimeout(() => {
+          activeGearEffects.delete(shooterId);
+          if (scene && model) scene.remove(model);
+        }, finalDuration);
+      }
+    });
+
+    room.onMessage('particles', (data) => {
+      if (window.spawnParticles) {
+        window.spawnParticles(data.position, data.type, data.count);
+      }
+    });
+
+    room.onMessage('notification', (data) => {
+      addInGameNotification(data.message, data.duration);
+    });
+
+    // Register input handlers
+    room.onMessage('input', () => {});  // Placeholder
+    room.onMessage('playerRespawned', () => {});
+    room.onMessage('playerDied', () => {});
+
+  } catch (err) {
+    console.error('[ffaDeployClicked] Failed:', err);
+    const deployBtn = document.getElementById('ffaDeployBtn');
+    if (deployBtn) deployBtn.disabled = false;
+    alert('Failed to join FFA game. Please try again.');
+  }
+}
+
+function ffaCancelPreview() {
+  console.log('[ffaCancelPreview] Canceling FFA preview');
+  stopFFAMapPreview();
+  document.getElementById('ffaMenu').style.display = 'none';
+  document.getElementById('menu').style.display = 'flex';
+}
+
+function ffaExitToMenu() {
+  stopFFAMapPreview();
+  
+  if (room) {
+    room.send('requestExit');
+    room.leave();
+    room = null;
+  }
+  
+  // Refresh page to clean up all state
+  location.reload();
+}
+
 
 function handleCountdown(data) {
   isInRankedQueue = false;
@@ -734,6 +1449,9 @@ function handleCountdown(data) {
     clearInterval(queueUpdateInterval);
     queueUpdateInterval = null;
   }
+  
+  // Store countdown data globally for use in fetchCountdownPlayerInfo
+  window._countdownData = data;
   
   // Hide ALL UI screens completely
   document.getElementById('rankedQueue').style.display = 'none';
@@ -779,30 +1497,25 @@ function handleCountdown(data) {
 
 async function fetchCountdownPlayerInfo(sessionId, playerNumber) {
   try {
-    const userIdMatch = sessionId.match(/^[a-f0-9]{24}$/i);
-    if (!userIdMatch) {
-      // Try to get from room state
-      const playerState = room.state.players.get(sessionId);
-      if (playerState) {
-        const rankInfo = getRankFromElo(playerState.elo || 100);
-        document.getElementById(`player${playerNumber}Elo`).textContent = `${rankInfo.elo} ELO`;
-        document.getElementById(`player${playerNumber}Rank`).textContent = rankInfo.name;
-        document.getElementById(`player${playerNumber}Rank`).style.color = rankInfo.color;
-      }
-      return;
+    // Try to find player data in the countdown message first
+    const playerData = Object.values(window._countdownData?.players || {}).find(p => p.sessionId === sessionId);
+    
+    if (playerData && playerData.elo) {
+      // Display rank and ELO from countdown data
+      const rankInfo = getRankFromElo(playerData.elo);
+      document.getElementById(`player${playerNumber}Rank`).textContent = rankInfo.name;
+      document.getElementById(`player${playerNumber}Rank`).style.color = rankInfo.color;
+      document.getElementById(`player${playerNumber}Elo`).textContent = `${rankInfo.elo} ELO`;
     }
-
-    // Fetch user info
-    const res = await fetch(`${API_BASE}/api/users-by-id/${sessionId}`);
-    if (!res.ok) return;
     
-    const user = await res.json();
-    document.getElementById(`player${playerNumber}Name`).textContent = user.username || 'Player ' + playerNumber;
-    
-    const rankInfo = getRankFromElo(user.elo || 100);
-    document.getElementById(`player${playerNumber}Rank`).textContent = rankInfo.name;
-    document.getElementById(`player${playerNumber}Rank`).style.color = rankInfo.color;
-    document.getElementById(`player${playerNumber}Elo`).textContent = `${rankInfo.elo} ELO`;
+    // Fetch username from server using userId if available
+    if (playerData?.userId) {
+      const res = await fetch(`${API_BASE}/api/users-by-id/${playerData.userId}`);
+      if (res.ok) {
+        const user = await res.json();
+        document.getElementById(`player${playerNumber}Name`).textContent = user.username || 'Player ' + playerNumber;
+      }
+    }
   } catch (err) {
     console.warn(`[fetchCountdownPlayerInfo] Failed for player ${playerNumber}:`, err);
   }
@@ -903,7 +1616,7 @@ function showAuthOverlay() {
             style="padding:10px 16px;font-size:14px;font-family:'Space Mono',monospace;background:rgba(30,30,40,0.8);color:#fff;border:1px solid rgba(255,255,255,0.12);border-radius:6px;width:100%;outline:none;letter-spacing:1px;" />
         </div>
         <div id="authEmailWrap" style="display:none;flex-direction:column;gap:6px;">
-          <label style="font-size:11px;color:#aaa;letter-spacing:1.5px;font-family:'Space Mono',monospace;">recovery email <span style="font-size:10px;color:#555;">(optional)</span></label>
+          <label style="font-size:11px;color:#aaa;letter-spacing:1.5px;font-family:'Space Mono',monospace;">recovery email <span style="font-size:10px;color:#aaa;">(optional)</span></label>
           <input id="authEmail" type="email" placeholder="you@example.com"
             style="padding:10px 16px;font-size:14px;font-family:'Space Mono',monospace;background:rgba(30,30,40,0.8);color:#fff;border:1px solid rgba(255,255,255,0.12);border-radius:6px;width:100%;outline:none;letter-spacing:1px;" />
         </div>
@@ -2247,6 +2960,7 @@ function createGearCard(gear) {
   const card = document.createElement('div');
   card.className = `gear-card${gear.equipped ? ' selected' : ''}`;
   card.innerHTML = `
+    ${gear.image ? `<img src="${gear.image}" alt="${gear.name}" class="gear-card-image">` : ''}
     <div class="gear-card-header">${gear.name}</div>
     <div class="gear-card-info">${gear.description}</div>
     <div class="gear-card-footer">
@@ -3305,131 +4019,6 @@ function spawnParticles(position, type, count) {
   }
 }
 
-function updateGearEffectPosition(effect) {
-  const LERP_FACTOR = 0.1;  // Easing factor (0-1, lower = smoother)
-  
-  // Handle mace animation (rises up over duration)
-  if (effect.animationType === 'mace') {
-    const elapsed = Date.now() - effect.startTime;
-    const progress = Math.min(1, elapsed / effect.duration);  // 0 to 1
-    
-    const shooterState = room.state.players.get(effect.shooterId);
-    if (shooterState && shooterState.position) {
-      // Calculate target position (mace rises up from player position)
-      const riseHeight = progress * 2.5;  // Rise up to 2.5 meters
-      const targetPos = new THREE.Vector3(
-        shooterState.position.x,
-        shooterState.position.y + 1.5 + riseHeight,
-        shooterState.position.z
-      );
-      
-      // Smoothly interpolate position
-      effect.currentPosition.lerp(targetPos, LERP_FACTOR);
-      effect.model.position.copy(effect.currentPosition);
-      
-      // Mace rotates with the player
-      if (effect.shooterId === myId) {
-        // Local player: use camera rotation
-        effect.model.quaternion.copy(camera.quaternion);
-      } else {
-        // Remote player: use their mesh rotation
-        const oppMesh = skinMgr.getRoot(effect.shooterId);
-        if (oppMesh) {
-          effect.model.quaternion.copy(oppMesh.quaternion);
-        }
-      }
-    }
-    return;
-  }
-  
-  // Default sniper animation (follows player)
-  if (effect.shooterId === myId) {
-    // Local player: use camera position
-    let velocityOffset = { x: 0, y: 0, z: 0 };
-    if (cBody) {
-      const vel = cBody.linvel();
-      // Get camera forward direction
-      const cameraDir = new THREE.Vector3();
-      camera.getWorldDirection(cameraDir);
-      // Offset model back based on forward velocity (negative direction means back)
-      const forwardVel = vel.x * cameraDir.x + vel.y * cameraDir.y + vel.z * cameraDir.z;
-      const velocityScale = -0.05; // Model moves back when going forward
-      velocityOffset.x = cameraDir.x * forwardVel * velocityScale;
-      velocityOffset.y = cameraDir.y * forwardVel * velocityScale;
-      velocityOffset.z = cameraDir.z * forwardVel * velocityScale;
-    }
-    
-    // Calculate target position
-    const targetPos = new THREE.Vector3(
-      camera.position.x + effect.initialOffset.x + velocityOffset.x,
-      camera.position.y + effect.initialOffset.y + velocityOffset.y,
-      camera.position.z + effect.initialOffset.z + velocityOffset.z
-    );
-    
-    // Smoothly interpolate position
-    effect.currentPosition.lerp(targetPos, LERP_FACTOR);
-    effect.model.position.copy(effect.currentPosition);
-    effect.model.quaternion.copy(camera.quaternion);
-  } else {
-    // Opponent (or any other player): use networked state
-    const shooterState = room.state.players.get(effect.shooterId);
-    if (shooterState && shooterState.position) {
-      let velocityOffset = { x: 0, y: 0, z: 0 };
-      if (shooterState.velocity) {
-        // Get player look direction from mesh
-        const oppMesh = skinMgr.getRoot(effect.shooterId);
-        if (oppMesh) {
-          const lookDir = new THREE.Vector3(0, 0, 1).applyQuaternion(oppMesh.quaternion).normalize();
-          // Offset model back based on forward velocity
-          const forwardVel = shooterState.velocity.x * lookDir.x + shooterState.velocity.y * lookDir.y + shooterState.velocity.z * lookDir.z;
-          const velocityScale = -0.05;
-          velocityOffset.x = lookDir.x * forwardVel * velocityScale;
-          velocityOffset.y = lookDir.y * forwardVel * velocityScale;
-          velocityOffset.z = lookDir.z * forwardVel * velocityScale;
-        }
-      }
-      
-      // Calculate target position
-      const targetPos = new THREE.Vector3(
-        shooterState.position.x + effect.initialOffset.x + velocityOffset.x,
-        shooterState.position.y + effect.initialOffset.y + velocityOffset.y,
-        shooterState.position.z + effect.initialOffset.z + velocityOffset.z
-      );
-      
-      // Smoothly interpolate position
-      effect.currentPosition.lerp(targetPos, LERP_FACTOR);
-      effect.model.position.copy(effect.currentPosition);
-      
-      // For sniper gear, preserve the initial rotation (which has correct pitch) but update yaw based on opponent direction
-      if (effect.initialRotation) {
-        // Start with the initial rotation (has correct pitch and initial direction)
-        effect.model.quaternion.copy(effect.initialRotation);
-        
-        // Extract only the yaw from the opponent's mesh and apply it
-        const oppMesh = skinMgr.getRoot(effect.shooterId);
-        if (oppMesh) {
-          // Get opponent's yaw rotation
-          const meshEuler = new THREE.Euler().setFromQuaternion(oppMesh.quaternion, 'YXZ');
-          const yawQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), meshEuler.y);
-          
-          // Apply the yaw update to preserve pitch from initialRotation
-          effect.model.quaternion.multiplyQuaternions(effect.model.quaternion, yawQuat);
-        }
-      } else {
-        // Fallback if initialRotation not set
-        const oppMesh = skinMgr.getRoot(effect.shooterId);
-        if (oppMesh) {
-          effect.model.quaternion.copy(oppMesh.quaternion);
-          // Re-apply 180 degree yaw rotation for sniper
-          const yawRotation = new THREE.Quaternion();
-          yawRotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
-          effect.model.quaternion.multiplyQuaternions(effect.model.quaternion, yawRotation);
-        }
-      }
-    }
-  }
-}
-
 // ── Input ─────────────────────────────────────────────────
 const controls    = new PointerLockControls(camera, renderer.domElement);
 const keys        = { w:false, a:false, s:false, d:false, space:false };
@@ -3448,15 +4037,20 @@ document.addEventListener('keydown', e => {
   if (e.code === keybinds.jump)  keys.space = true;
 
   if (e.code === window.keybinds.grapple && gameStarted && room) {
-    room.send('grapple');
+    console.log('[keydown] Grapple key pressed, sending to server');
+    const camDir = new THREE.Vector3();
+    camera.getWorldDirection(camDir);
+    room.send('grapple', { camDir: { x: camDir.x, y: camDir.y, z: camDir.z } });
   }
 
   if (e.code === window.keybinds.bomb && gameStarted && room) {
+    console.log('[keydown] Bomb key pressed, gameStarted:', gameStarted, 'room:', !!room);
     const now = performance.now();
     if (now - lastSpawn >= 3000) { shootBomb(); lastSpawn = now; }
   }
 
   if (e.code === window.keybinds.parry && gameStarted && room) {
+    console.log('[keydown] Parry key pressed');
     const now = performance.now();
     if (now - lastParry >= 2000) {
       room.send('parry');
@@ -3466,6 +4060,7 @@ document.addEventListener('keydown', e => {
   }
 
   if (e.code === window.keybinds.gear && gameStarted && room) {
+    console.log('[keydown] Gear key pressed');
     const now = performance.now();
     if (now - lastGear >= 2500) {
       useGear();
@@ -3748,15 +4343,33 @@ async function setupRoom(r) {
   });
 
   room.onMessage('sniperLine', (data) => {
-    let start = new THREE.Vector3(data.start.x, data.start.y, data.start.z);
-    const end = new THREE.Vector3(data.end.x, data.end.y, data.end.z);
+    console.log('[FFA sniperLine] Received data:', data);
+    console.log('[FFA sniperLine] data type:', typeof data, 'data keys:', Object.keys(data || {}));
+    
+    // Normalize property names (server sends startPos, endPos)
+    const startData = data?.start || data?.startPos;
+    const endData = data?.end || data?.endPos;
+    console.log('[FFA sniperLine] startData:', startData, 'endData:', endData);
+    
+    if (!startData || typeof startData.x !== 'number') {
+      console.error('[FFA sniperLine] Invalid startData:', startData);
+      return;
+    }
+    if (!endData || typeof endData.x !== 'number') {
+      console.error('[FFA sniperLine] Invalid endData:', endData);
+      return;
+    }
+    
+    let start = new THREE.Vector3(startData.x, startData.y, startData.z);
+    const end = new THREE.Vector3(endData.x, endData.y, endData.z);
+    console.log('[FFA sniperLine] Creating beam from', start, 'to', end);
     
     // Apply right offset to match server-side beam origin (like barrel offset)
     if (data.direction) {
       const dir = new THREE.Vector3(data.direction.x, data.direction.y, data.direction.z);
       const up = new THREE.Vector3(0, 1, 0);
       const right = new THREE.Vector3().crossVectors(dir, up).normalize();
-      start.addScaledVector(right, 0.5);  // 0.5 units to the right
+      start.addScaledVector(right, 1.5);  // 1.5 units to the right for visibility
     }
     
     // Cylinder parameters (similar to grapple rope)
@@ -3784,6 +4397,7 @@ async function setupRoom(r) {
     }
     mesh.quaternion.copy(quaternion);
     
+    console.log('[FFA sniperLine] Adding beam mesh to scene at', midpoint);
     scene.add(mesh);
     
     // Add end caps (spheres)
@@ -3792,6 +4406,7 @@ async function setupRoom(r) {
     
     const startCap = new THREE.Mesh(capGeo, capMat.clone());
     startCap.position.copy(start);
+    console.log('[FFA sniperLine] Adding start cap at', start);
     scene.add(startCap);
     
     const endCap = new THREE.Mesh(capGeo, capMat.clone());
@@ -3819,7 +4434,37 @@ async function setupRoom(r) {
   });
 
   room.onMessage('gearEffect', (data) => {
-    const { gearName, shooterId, position, rotation, duration } = data;
+    console.log('[FFA gearEffect] Received:', data);
+    
+    // Guard against undefined/null data
+    if (!data) {
+      console.error('[FFA gearEffect] Received null or undefined data');
+      return;
+    }
+    
+    const { gearName, shooterId, duration } = data;
+    
+    // Start scope effect if this is the local player using sniper
+    if (gearName === 'sniper' && shooterId === myId && camera) {
+      const previewDuration = 2000;  // 2 seconds - stays zoomed until bullet travels
+      activeScopeEffect = {
+        startTime: Date.now(),
+        duration: previewDuration,
+        originalFov: camera.fov
+      };
+    }
+    
+    // Safely extract position with fallback
+    const position = data.position || { x: 0, y: 0, z: 0 };
+    if (!position || typeof position.x !== 'number' || typeof position.y !== 'number' || typeof position.z !== 'number') {
+      console.error('[FFA gearEffect] Invalid position:', position);
+      return;
+    }
+    
+    // Use direction if available (for sniper), otherwise use rotation
+    const direction = data.direction || { x: data.rotation?.x || 0, y: data.rotation?.y || 0, z: data.rotation?.z || 0 };
+    console.log('[FFA gearEffect] Parsed - gearName:', gearName, 'shooterId:', shooterId, 'direction:', direction);
+    const rotation = data.rotation || { x: 0, y: 0, z: 0, w: 1 };
     // Create procedural sniper rifle model (fallback if GLB fails)
     function createSniperModel() {
       const group = new THREE.Group();
@@ -3898,16 +4543,20 @@ async function setupRoom(r) {
     // Ensure duration has a sensible default
     const effectDuration = duration || 3000;
     
+    // Initialize gltfLoader once for both mace and sniper branches
+    const gltfLoader = new GLTFLoader();
+    
     if (gearName === 'mace') {
       // Load mace GLB or create procedural model
       const maceGlbPath = '/gear/mace.glb';
-      const gltfLoader = new GLTFLoader();
       gltfLoader.load(
         maceGlbPath,
         (gltf) => {
           // GLB loaded successfully
           model = gltf.scene;
-          model.position.set(position.x, position.y, position.z);
+          if (position && typeof position.x === 'number') {
+            model.position.set(position.x, position.y, position.z);
+          }
           model.scale.set(0.5, 0.5, 0.5);
           scene.add(model);
           setupMaceAnimation(model, shooterId, position, effectDuration);
@@ -3917,7 +4566,9 @@ async function setupRoom(r) {
           // GLB failed, use procedural model
           console.warn(`[gearEffect] Failed to load ${maceGlbPath}, using procedural model:`, error);
           model = createMaceModel();
-          model.position.set(position.x, position.y, position.z);
+          if (position && typeof position.x === 'number') {
+            model.position.set(position.x, position.y, position.z);
+          }
           scene.add(model);
           setupMaceAnimation(model, shooterId, position, effectDuration);
         }
@@ -3928,10 +4579,19 @@ async function setupRoom(r) {
         'sniper': '/gear/sniper.glb',
       }[gearName] || '/gear/sniper.glb';
       
+      // Position the sniper 2 units ahead of the player in the direction they're aiming
+      const offset = 2.0;
+      if (!direction || typeof direction.x !== 'number') {
+        console.error('[FFA gearEffect] Invalid direction:', direction);
+        return;
+      }
+      const dirVec = new THREE.Vector3(direction.x, direction.y, direction.z).normalize();
+      const sniperPos = new THREE.Vector3(position.x, position.y, position.z).add(dirVec.multiplyScalar(offset));
+      
       if (!gltfLoader) {
         console.warn('[gearEffect] gltfLoader not available, using procedural model');
         const model = createSniperModel();
-        model.position.set(position.x, position.y, position.z);
+        model.position.set(sniperPos.x, sniperPos.y, sniperPos.z);
         scene.add(model);
         setupGearEffectAnimation(model, shooterId, position, effectDuration);
         return;
@@ -3941,10 +4601,10 @@ async function setupRoom(r) {
         (gltf) => {
           // GLB loaded successfully
           model = gltf.scene;
-          model.position.set(position.x, position.y, position.z);
+          model.position.set(sniperPos.x, sniperPos.y, sniperPos.z);
           
-          // Apply rotation
-          const dir = new THREE.Vector3(rotation.x, rotation.y, rotation.z).normalize();
+          // Apply rotation based on direction
+          const dir = new THREE.Vector3(direction.x, direction.y, direction.z).normalize();
           const up = new THREE.Vector3(0, 1, 0);
           const right = new THREE.Vector3().crossVectors(up, dir).normalize();
           const newUp = new THREE.Vector3().crossVectors(dir, right).normalize();
@@ -4041,8 +4701,20 @@ async function setupRoom(r) {
       const currentPosition = new THREE.Vector3();
       currentPosition.copy(model.position);
       
+      // Extract direction from initial offset if available
+      const dir = initialOffset.length() > 0 ? initialOffset.clone().normalize() : new THREE.Vector3(0, 0, 1);
+      
       // Register this effect for frame-by-frame updates
-      const effect = { model, shooterId, initialOffset, startTime, duration: finalDuration, animationType: 'sniper', currentPosition };
+      const effect = { 
+        model, 
+        shooterId, 
+        initialOffset, 
+        startTime, 
+        duration: finalDuration, 
+        animationType: 'sniper', 
+        currentPosition,
+        direction: dir  // Store direction for position tracking
+      };
       activeGearEffects.set(shooterId, effect);
       
       // Handle cleanup after duration
@@ -4451,7 +5123,10 @@ function animate() {
 
 
   // ── Client prediction ──────────────────────────────────────
-  if (gameStarted && controls.isLocked && cWorld && cBody) {
+  // In FFA mode, physics continues even without pointer lock
+  // In ranked mode, physics pauses when pointer lock is released
+  const physicsCondition = ffaMode || controls.isLocked;
+  if (gameStarted && physicsCondition && cWorld && cBody) {
     acc += dt;
 
     const camDir = new THREE.Vector3();
@@ -4494,8 +5169,6 @@ function animate() {
       const elapsed = Date.now() - effect.startTime;
       const progress = elapsed / effect.duration;
       const alpha = Math.max(0, 1 - progress);
-      
-      updateGearEffectPosition(effect);
       
       // Update opacity
       effect.model.traverse((child) => {
@@ -4557,6 +5230,116 @@ function animate() {
     updateBarrelPos();
   }
 
+  // ── Update active gear effects EVERY FRAME (opacity fade) ─────
+  if (activeGearEffects.size > 0) {
+    for (const effect of activeGearEffects.values()) {
+      const elapsed = Date.now() - effect.startTime;
+      const progress = elapsed / effect.duration;
+      const alpha = Math.max(0, 1 - progress);
+      
+      // Handle mace animation (rises up over duration)
+      if (effect.animationType === 'mace') {
+        const shooterState = room.state.players.get(effect.shooterId);
+        if (shooterState && shooterState.position) {
+          // Calculate target position (mace rises up from player position)
+          const riseHeight = progress * 2.5;  // Rise up to 2.5 meters
+          const targetPos = new THREE.Vector3(
+            shooterState.position.x,
+            shooterState.position.y + 1.5 + riseHeight,
+            shooterState.position.z
+          );
+          
+          // Smoothly interpolate position
+          effect.currentPosition.lerp(targetPos, 0.1);
+          effect.model.position.copy(effect.currentPosition);
+          
+          // Mace rotates with the player
+          if (effect.shooterId === myId && skinMgr) {
+            // Local player: use camera rotation
+            effect.model.quaternion.copy(camera.quaternion);
+          } else if (skinMgr) {
+            // Remote player: use their mesh rotation
+            const oppMesh = skinMgr.getRoot(effect.shooterId);
+            if (oppMesh) {
+              effect.model.quaternion.copy(oppMesh.quaternion);
+            }
+          }
+        }
+      }
+      
+      // Handle sniper animation (follows player)
+      if (effect.animationType === 'sniper') {
+        const shooterState = room.state.players.get(effect.shooterId);
+        if (shooterState && shooterState.position && effect.direction) {
+          // Calculate target position: 2 units ahead in the direction they're aiming
+          const offset = 2.0;
+          const targetPos = new THREE.Vector3(
+            shooterState.position.x,
+            shooterState.position.y,
+            shooterState.position.z
+          ).addScaledVector(effect.direction, offset);
+          
+          // Smoothly interpolate position
+          effect.currentPosition.lerp(targetPos, 0.1);
+          effect.model.position.copy(effect.currentPosition);
+          
+          // Update rotation to match player's current facing direction
+          if (effect.shooterId === myId && camera) {
+            // Local player: use camera rotation
+            effect.model.quaternion.copy(camera.quaternion);
+          } else if (skinMgr) {
+            // Remote player: use their mesh rotation
+            const oppMesh = skinMgr.getRoot(effect.shooterId);
+            if (oppMesh) {
+              effect.model.quaternion.copy(oppMesh.quaternion);
+            }
+          }
+        }
+      }
+      
+      // Update opacity for all gear effects
+      effect.model.traverse((child) => {
+        if (child.material) {
+          child.material.transparent = true;
+          child.material.opacity = alpha;
+        }
+      });
+    }
+  }
+
+  // ── FFA: Update all opponent positions and visuals ─────────
+  if (gameStarted && room && typeof room.state.players !== 'undefined') {
+    for (const [oppId, os] of room.state.players.entries()) {
+      if (oppId === myId || !os) continue;  // Skip self and null states
+      
+      // Check if player is dead and remove them
+      if (os.health <= 0) {
+        if (skinMgr) skinMgr.removePlayer(oppId);
+        if (hookMgr) hookMgr.removeHook(oppId);
+        if (nametags) nametags.remove(oppId);
+        if (playerMeshMap) playerMeshMap.delete(oppId);
+        continue;  // Skip further updates for dead players
+      }
+      
+      // Update position
+      if (skinMgr) {
+        skinMgr.setPosition(oppId, os.position.x, os.position.y, os.position.z);
+      }
+      
+      // Update rotation and grapple visuals
+      if (skinMgr && hookMgr) {
+        const oppRoot = skinMgr.getRoot(oppId);
+        if (oppRoot) {
+          const oppYaw = SkinManager.yawFromVelocity(os.velocity.x, os.velocity.z, 0);
+          skinMgr.setRotationY(oppId, oppYaw);
+          hookMgr.update(oppId, oppRoot.position,
+            { x: os.grapple.hx, y: os.grapple.hy, z: os.grapple.hz },
+            os.grapple.active);
+        }
+      }
+    }
+  }
+
   // ── Opponent interpolation ─────────────────────────────────
   if (gameStarted && room && oppId) {
     const os = room.state.players.get(oppId);
@@ -4567,6 +5350,10 @@ function animate() {
     if (skinMgr && hookMgr) {
       const oppRoot = skinMgr.getRoot(oppId);
       if (os && oppRoot) {
+        // Update position
+        skinMgr.setPosition(oppId, os.position.x, os.position.y, os.position.z);
+        
+        // Update rotation
         oppYaw = SkinManager.yawFromVelocity(os.velocity.x, os.velocity.z, oppYaw);
         skinMgr.setRotationY(oppId, oppYaw);
         hookMgr.update(oppId, oppRoot.position,
@@ -4608,8 +5395,8 @@ function animate() {
           scale: bombSkinDef.scale || 1.0,
         };
         
-        // Assign bomb (async, but _bombs map is populated immediately)
-        bombMgr.assignBomb(id, bombSkinData);
+        // Assign bomb with initial position to prevent rendering at origin during async load
+        bombMgr.assignBomb(id, bombSkinData, bs.px, bs.py, bs.pz);
       }
       
       // Update position/rotation (safe to do even if async load is pending)
@@ -4685,6 +5472,13 @@ window.nametags = nametags;
 window.gBombSkins = gBombSkins;
 window.activeGearEffects = activeGearEffects;
 window.spawnParticles = spawnParticles;
+
+// ── Expose FFA functions globally ────────────────────────────────
+window.ffaJoin = ffaJoin;
+window.ffaDeployClicked = ffaDeployClicked;
+window.ffaCancelPreview = ffaCancelPreview;
+window.ffaRespawnRequest = ffaRespawnRequest;
+window.ffaExitToMenu = ffaExitToMenu;
 
 } // end init()
 init().catch(console.error);
