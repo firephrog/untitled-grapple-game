@@ -8,7 +8,8 @@
     "dev": "nodemon server.js",
     "build": "cd client && npm run build",
     "dev:client": "cd client && npm run dev",
-    "test": "npm run build && node server.js"
+    "test": "npm run build && node server.js",
+    "cloudflareBuild": "cd client && npm install && cd .. && npm run build"
   },
   "dependencies": {
     "@colyseus/schema": "^2.0.0",
