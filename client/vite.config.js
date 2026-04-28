@@ -13,13 +13,11 @@ export default defineConfig({
   },
 
   // Everything in static/ is copied into the build output as-is.
-  // Put maps/ here — it won't be processed or overwritten by Vite.
-  // Access it in the browser at /maps/default.glb etc.
   publicDir: 'static',
 
   build: {
     outDir:      '../public',
-    emptyOutDir: true,   // safe to wipe — maps live in static/, not public/
+    emptyOutDir: true,
     target:      'esnext',
   },
 

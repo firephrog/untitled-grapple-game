@@ -676,6 +676,24 @@ gameServer.define('ranked',      RankedRoom, {
 gameServer.define('ffa',         FreeForAllRoom);
 gameServer.define('lobby', Lobby);
 
+// ── Event loop stall detector ─────────────────────────────────────────────
+// Fires whenever the Node.js event loop is blocked for > 20ms.
+// This catches GC pauses, synchronous CPU work, WASM stalls, etc. — anything
+// that prevents callbacks (including the ping handler) from running on time.
+{
+  const PROBE_INTERVAL = 50;   // fire every 50ms
+  const WARN_THRESHOLD = 20;   // warn if actual delay exceeds expected by >20ms
+  let _lastProbe = Date.now();
+  setInterval(() => {
+    const now   = Date.now();
+    const stall = now - _lastProbe - PROBE_INTERVAL;
+    if (stall > WARN_THRESHOLD) {
+      console.warn(`[EventLoop stall] ${stall}ms — event loop was blocked`);
+    }
+    _lastProbe = now;
+  }, PROBE_INTERVAL).unref(); // unref so it doesn't keep process alive
+}
+
 httpServer.listen(CFG.PORT, () => {
   console.log(`[STARTUP] Untitled Grapple Game V0.6`);
   console.log(`[STARTUP] Server running → http://localhost:${CFG.PORT}`);

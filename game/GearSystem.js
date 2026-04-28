@@ -163,6 +163,11 @@ class GearSystem {
     this._gearEffects = [];  // Array of ActiveGearEffect
     this._pendingSnipes = [];  // Array of PendingSnipe waiting to execute
     this._pendingMaces = [];  // Array of PendingMace waiting to execute
+
+    // Pre-allocated tick result — avoids creating new objects every tick
+    this._tickReadySnipes = [];
+    this._tickReadyMaces  = [];
+    this._tickResult      = { readySnipes: this._tickReadySnipes, readyMaces: this._tickReadyMaces };
   }
 
   /**
@@ -452,24 +457,37 @@ class GearSystem {
 
   /**
    * Update active lines, gear effects, and pending snipes (called each tick).
-   * @returns {object} { readySnipes, readyMaces }
+   * Returns pre-allocated arrays (cleared each tick) — do not retain references.
+   * @returns {{ readySnipes: PendingSnipe[], readyMaces: PendingMace[] }}
    */
   tick() {
     const now = Date.now();
-    
-    // Clean up expired lines and effects
-    this._lines = this._lines.filter(line => !line.isExpired(now));
-    this._gearEffects = this._gearEffects.filter(effect => !effect.isExpired(now));
-    
-    // Find snipes that are ready to execute
-    const readySnipes = this._pendingSnipes.filter(p => p.isReady(now));
-    this._pendingSnipes = this._pendingSnipes.filter(p => !p.isReady(now));
-    
-    // Find maces that are ready to execute
-    const readyMaces = this._pendingMaces.filter(p => p.isReady(now));
-    this._pendingMaces = this._pendingMaces.filter(p => !p.isReady(now));
-    
-    return { readySnipes, readyMaces };
+
+    // In-place cleanup of expired lines (backwards splice avoids index shifting)
+    for (let i = this._lines.length - 1; i >= 0; i--) {
+      if (this._lines[i].isExpired(now)) this._lines.splice(i, 1);
+    }
+    for (let i = this._gearEffects.length - 1; i >= 0; i--) {
+      if (this._gearEffects[i].isExpired(now)) this._gearEffects.splice(i, 1);
+    }
+
+    // Collect ready snipes/maces into pre-allocated result arrays, remove from pending
+    this._tickReadySnipes.length = 0;
+    this._tickReadyMaces.length  = 0;
+    for (let i = this._pendingSnipes.length - 1; i >= 0; i--) {
+      if (this._pendingSnipes[i].isReady(now)) {
+        this._tickReadySnipes.push(this._pendingSnipes[i]);
+        this._pendingSnipes.splice(i, 1);
+      }
+    }
+    for (let i = this._pendingMaces.length - 1; i >= 0; i--) {
+      if (this._pendingMaces[i].isReady(now)) {
+        this._tickReadyMaces.push(this._pendingMaces[i]);
+        this._pendingMaces.splice(i, 1);
+      }
+    }
+
+    return this._tickResult;
   }
 
   /**

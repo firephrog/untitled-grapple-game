@@ -8,6 +8,10 @@
 
 const CFG = require('../config');
 
+// Module-level scratch vectors — reused every call to avoid per-tick allocation.
+const _vel  = { x: 0, y: 0, z: 0 };
+const _force = { x: 0, y: 0, z: 0 };
+
 /**
  * Apply one frame of player input to a Rapier rigid body.
  *
@@ -30,48 +34,39 @@ function applyMovement(body, inputs, camDir, grounded, grappleStatus) {
   if (inputs.d) { vx += sx; vz += sz; }
   if (inputs.a) { vx -= sx; vz -= sz; }
 
+  // Read velocity once — reuse throughout this call.
   const curVel = body.linvel();
+  const curVx = curVel.x, curVy = curVel.y, curVz = curVel.z;
+
   if (inputs.space && grounded) {
-    body.setLinvel({ x: curVel.x, y: CFG.JUMP_VEL, z: curVel.z }, true);
+    _vel.x = curVx; _vel.y = CFG.JUMP_VEL; _vel.z = curVz;
+    body.setLinvel(_vel, true);
   }
 
-  const newVel = body.linvel();
   const grappling = grappleStatus === 'STUCK' || grappleStatus === 'REELING';
   const moving = inputs.w || inputs.s || inputs.a || inputs.d;
 
   if (moving) {
     if (grappling) {
-      // While grappling, we add force to "swing"
-      body.addForce({ x: vx * 0.3, y: 0, z: vz * 0.3 }, true);
+      _force.x = vx * 0.3; _force.y = 0; _force.z = vz * 0.3;
+      body.addForce(_force, true);
     } else {
-      // Normal walking should use setLinvel to OVERRIDE old forces/velocities
-      body.setLinvel({ x: vx * CFG.WALK_SPEED, y: body.linvel().y, z: vz * CFG.WALK_SPEED }, true);
+      _vel.x = vx * CFG.WALK_SPEED; _vel.y = curVy; _vel.z = vz * CFG.WALK_SPEED;
+      body.setLinvel(_vel, true);
     }
-  // PlayerController.js -> inside applyMovement
   } else {
-    // --- THIS SECTION REPLACES YOUR OLD FRICTION LOGIC ---
-    const vel = body.linvel();
-    const speed = Math.sqrt(vel.x**2 + vel.z**2);
+    const speed = Math.sqrt(curVx * curVx + curVz * curVz);
     const STOP_THRESHOLD = 0.1;
 
     if (speed > STOP_THRESHOLD) {
-      // Ground drag is high (stops you), Air drag is low (slingshot)
-      const dragCoefficient = grounded ? 12.0 : 2.0;  // Reduced air drag from 4.5 to 2.0
-      
-      // Calculate how much speed to "drop" this tick
-      // This is "Active Drag" - it fights the acceleration you feel
-      const drop = speed * dragCoefficient * (1 / 60); 
-      const newSpeed = Math.max(0, speed - drop);
-      const factor = newSpeed / speed;
-
-      body.setLinvel({
-        x: vel.x * factor,
-        y: vel.y,
-        z: vel.z * factor,
-      }, true);
+      const dragCoefficient = grounded ? 12.0 : 2.0;
+      const drop = speed * dragCoefficient * (1 / 60);
+      const factor = Math.max(0, speed - drop) / speed;
+      _vel.x = curVx * factor; _vel.y = curVy; _vel.z = curVz * factor;
+      body.setLinvel(_vel, true);
     } else {
-      // Snap to zero if below threshold to kill the "slow creep"
-      body.setLinvel({ x: 0, y: vel.y, z: 0 }, true);
+      _vel.x = 0; _vel.y = curVy; _vel.z = 0;
+      body.setLinvel(_vel, true);
     }
   }
 }

@@ -30,6 +30,10 @@ class GrappleSystem {
     this.direction  = null;
     this.travelDist = 0;
     this.ropeLength = 0;
+    // Pre-allocated scratch objects to avoid per-tick GC pressure
+    this._prevHook  = { x: 0, y: 0, z: 0 };
+    this._sample    = { x: 0, y: 0, z: 0 };
+    this._linvelScratch = { x: 0, y: 0, z: 0 };
   }
 
   // ── Public API ───────────────────────────────────────────────
@@ -86,7 +90,10 @@ class GrappleSystem {
   // ── Shooting ─────────────────────────────────────────────────
 
   _tickShooting(playerBody, physicsWorld, DT) {
-    const prev = { ...this.hookPos };
+    const prev = this._prevHook;
+    prev.x = this.hookPos.x;
+    prev.y = this.hookPos.y;
+    prev.z = this.hookPos.z;
 
     this.hookPos.x  += this.direction.x * CFG.GRAPPLE_SPEED * DT;
     this.hookPos.y  += this.direction.y * CFG.GRAPPLE_SPEED * DT;
@@ -94,19 +101,15 @@ class GrappleSystem {
     this.travelDist += CFG.GRAPPLE_SPEED * DT;
 
     // Don't check geometry until hook has cleared the player's body.
-    // Player radius = 1.0, so wait until travelDist > 2.5 to be safe.
-    // This is simpler and more reliable than trying to filter by body in Rapier 0.12.
     const MIN_TRAVEL = 2.5;
     let hitPos = null;
-    // Optimize: reduce sample rate from 6 to 4 samples (33% fewer raycasts)
     if (this.travelDist > MIN_TRAVEL) {
-      for (let i = 0; i <= 3; i++) {  // Reduced from 5 to 3 (4 samples instead of 6)
+      const sample = this._sample;
+      for (let i = 0; i <= 3; i++) {
         const t = i / 3;
-        const sample = {
-          x: prev.x + (this.hookPos.x - prev.x) * t,
-          y: prev.y + (this.hookPos.y - prev.y) * t,
-          z: prev.z + (this.hookPos.z - prev.z) * t,
-        };
+        sample.x = prev.x + (this.hookPos.x - prev.x) * t;
+        sample.y = prev.y + (this.hookPos.y - prev.y) * t;
+        sample.z = prev.z + (this.hookPos.z - prev.z) * t;
         if (physicsWorld.hookHitsGeometry(sample, playerBody)) { hitPos = sample; break; }
       }
     }
@@ -169,12 +172,10 @@ class GrappleSystem {
       // Only correct if not already closing fast enough
       if (closing < targetSpeed) {
         const correction = (targetSpeed - closing) * CFG.GRAPPLE_PULL_SNAP;
-        // setLinvel — NOT addForce, so zero accumulation across ticks
-        playerBody.setLinvel({
-          x: vel.x + nx * correction,
-          y: vel.y + ny * correction,
-          z: vel.z + nz * correction,
-        }, true);
+        this._linvelScratch.x = vel.x + nx * correction;
+        this._linvelScratch.y = vel.y + ny * correction;
+        this._linvelScratch.z = vel.z + nz * correction;
+        playerBody.setLinvel(this._linvelScratch, true);
       }
     }
 

@@ -558,10 +558,15 @@ class FreeForAllRoom extends Room {
 
   // ── Game loop ────────────────────────────────────────────────
 
+  // Pre-allocated scratch objects to avoid per-tick GC pressure
+  _scratchPos = { x: 0, y: 0, z: 0 };
+  _scratchVel = { x: 0, y: 0, z: 0 };
+
   _tick() {
     this._tickCount++;
+    const _t0 = Date.now();
 
-    // Handle input from all players
+    // ── Input + movement ──────────────────────────────────────
     for (const [sid, input] of this._input.entries()) {
       const body = this._bodies.get(sid);
       if (!body || !this._alive.get(sid)) continue;
@@ -569,21 +574,21 @@ class FreeForAllRoom extends Room {
       const gameInput = input.inputs;
       const camDir = input.camDir;
 
-      // Determine if grounded and grapple status
       const grounded = this._physics.isGrounded(body);
       const grapple = this._grapples.get(sid);
       const grappleStatus = grapple?.status || 'IDLE';
 
-      // Apply movement
       applyMovement(body, gameInput, camDir, grounded, grappleStatus);
     }
+    const _t1 = Date.now();
 
-    // Step physics
+    // ── Physics step ──────────────────────────────────────────
     if (this._physics) {
       this._physics.step();
     }
+    const _t2 = Date.now();
 
-    // Update player states from physics bodies
+    // ── Player state sync ─────────────────────────────────────
     for (const [sid, body] of this._bodies.entries()) {
       if (!this._alive.get(sid)) continue;
 
@@ -600,31 +605,35 @@ class FreeForAllRoom extends Room {
       ps.velocity.y = vel.y;
       ps.velocity.z = vel.z;
 
-      // Check void death (fell below y = -20)
+      // Acknowledge the last processed input seq so the client can prune pending[]
+      const input = this._input.get(sid);
+      if (input) ps.lastSeq = input.lastSeq;
+
+      // Check void death (fell below y = -100)
       if (pos.y < -100) {
         this._alive.set(sid, false);
         ps.health = 0;
-        
-        // Remove dead player from room
-        const deadClient = this.clients.find(c => c.sessionId === sid);
+
+        let deadClient = null;
+        for (let i = 0; i < this.clients.length; i++) {
+          if (this.clients[i].sessionId === sid) { deadClient = this.clients[i]; break; }
+        }
         if (deadClient) {
           deadClient.send('playerDead', { canRespawn: true, killerId: null, killerName: 'The Void' });
-          // Schedule client removal after brief delay
-          setTimeout(() => deadClient.leave(), 500);
         }
-        
+
         this.broadcast('playerDied', { playerId: sid, killerId: null, killerName: 'The Void' });
       }
     }
+    const _t3 = Date.now();
 
-    // Update grapples
+    // ── Grapples ──────────────────────────────────────────────
     for (const [sid, grapple] of this._grapples.entries()) {
       if (!this._alive.get(sid)) continue;
       const body = this._bodies.get(sid);
       if (!body) continue;
       grapple.tick(body, this._physics);
-      
-      // Update grapple state for clients to render
+
       const ps = this.state.players.get(sid);
       if (ps && ps.grapple) {
         ps.grapple.active = grapple.isActive;
@@ -635,51 +644,39 @@ class FreeForAllRoom extends Room {
         }
       }
     }
+    const _t4 = Date.now();
 
-    // Update bombs
+    // ── Bombs ─────────────────────────────────────────────────
     if (this._bombs) {
       const detonated = this._bombs.tick();
-      
+
       this._bombs.forEachLive((id, pos, rot) => {
         if (!this.state.bombs.has(id)) {
-          // Get the owner's bomb skin ID
           const bomb = this._bombs._bombs.get(id);
           const ownerSessionId = bomb ? bomb.owner : null;
           const ownerSkin = ownerSessionId ? this._skins.get(ownerSessionId) : null;
           const bombSkinId = ownerSkin?.bombSkinId || 'default';
           const bs = new BombState(id, bombSkinId);
-          // Initialize with physics position to prevent rendering at origin before first broadcast
-          bs.px = pos.x;
-          bs.py = pos.y;
-          bs.pz = pos.z;
-          bs.rx = rot.x;
-          bs.ry = rot.y;
-          bs.rz = rot.z;
-          bs.rw = rot.w;
+          bs.px = pos.x; bs.py = pos.y; bs.pz = pos.z;
+          bs.rx = rot.x; bs.ry = rot.y; bs.rz = rot.z; bs.rw = rot.w;
           this.state.bombs.set(id, bs);
         } else {
           const bs = this.state.bombs.get(id);
-          bs.px = pos.x;
-          bs.py = pos.y;
-          bs.pz = pos.z;
-          bs.rx = rot.x;
-          bs.ry = rot.y;
-          bs.rz = rot.z;
-          bs.rw = rot.w;
+          bs.px = pos.x; bs.py = pos.y; bs.pz = pos.z;
+          bs.rx = rot.x; bs.ry = rot.y; bs.rz = rot.z; bs.rw = rot.w;
         }
       });
 
-      // Remove destroyed bombs from state
       for (const bombId of detonated) {
         this.state.bombs.delete(bombId);
       }
     }
+    const _t5 = Date.now();
 
-    // Update gear system (process pending snipes/maces)
+    // ── Gear ──────────────────────────────────────────────────
     if (this._gear) {
       const { readySnipes, readyMaces } = this._gear.tick();
-      
-      // Execute ready snipes
+
       for (const pending of readySnipes) {
         const shooterBody = this._bodies.get(pending.shooterId);
         const shooterInput = this._input.get(pending.shooterId);
@@ -687,11 +684,31 @@ class FreeForAllRoom extends Room {
           this._gear.executePendingSnipe(pending, shooterBody, shooterInput);
         }
       }
-      
-      // Execute ready maces
+
       for (const pending of readyMaces) {
         this._gear.executePendingMace(pending);
       }
+    }
+    const _t6 = Date.now();
+
+    // ── Tick timing ───────────────────────────────────────────
+    const total = _t6 - _t0;
+    if (total > 5) {
+      console.warn(
+        `[FFA tick spike] total=${total}ms` +
+        ` | input=${_t1-_t0}` +
+        ` | physics=${_t2-_t1}` +
+        ` | stateSync=${_t3-_t2}` +
+        ` | grapples=${_t4-_t3}` +
+        ` | bombs=${_t5-_t4}` +
+        ` | gear=${_t6-_t5}`
+      );
+    }
+
+    // Nudge GC every 3600 ticks (~60 seconds) during a quiet point between ticks.
+    // Uses global.gc() which requires --expose-gc on the Node start command.
+    if (this._tickCount % 3600 === 0 && typeof global.gc === 'function') {
+      global.gc();
     }
   }
 
@@ -709,7 +726,6 @@ class FreeForAllRoom extends Room {
   }
 
   _handleGrapple(client, data) {
-    console.log('[FFA _handleGrapple] Received grapple from', client.sessionId, 'data:', data, 'phase:', this.state.phase, 'alive:', this._alive.get(client.sessionId));
     if (this.state.phase !== 'playing' || !this._alive.get(client.sessionId)) {
       return;
     }
@@ -862,9 +878,6 @@ class FreeForAllRoom extends Room {
       if (targetClient) {
         targetClient.send('playerDead', { canRespawn: true, killerId: shooterId });
         this.broadcast('playerDied', { playerId: targetId, killerId: shooterId });
-        
-        // Schedule client removal after brief delay to allow death message to send
-        setTimeout(() => targetClient.leave(), 500);
       }
 
       // Update stats

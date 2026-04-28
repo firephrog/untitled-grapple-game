@@ -972,6 +972,11 @@ async function ffaDeployClicked() {
 
     // ── FFA Message Handlers ──────────────────────────────────
 
+    // Ping/pong for latency (send ping periodically)
+    setInterval(() => {
+      if (room) room.send('ping', { t: Date.now() });
+    }, 1000);
+
     room.onMessage('ping', (data) => {
       room.send('pong', { t: data.t });
     });
@@ -1202,33 +1207,28 @@ async function ffaDeployClicked() {
         controls.unlock();
       }
       gameStarted = false;
-      
-      // Exit FFA mode and show opponent HP bar
-      window.isFFA = false;
-      const oppHpWrap = document.getElementById('oppHpWrap');
-      if (oppHpWrap) oppHpWrap.classList.remove('ffa-active');
-      
-      // Clear game objects
-      if (typeof skinMgr !== 'undefined' && skinMgr) skinMgr.removeAll();
-      if (typeof hookMgr !== 'undefined' && hookMgr) hookMgr.removeAll();
-      if (typeof bombMgr !== 'undefined' && bombMgr) bombMgr.removeAll();
-      if (typeof nametags !== 'undefined' && nametags) nametags.dispose();
-      if (typeof playerMeshMap !== 'undefined' && playerMeshMap) playerMeshMap.clear();
 
-      // Show death menu
-      if (data.killerId && window.nametags) {
-        // Get killer name from nametags
-        const killerEntry = window.nametags._entries?.get(data.killerId);
-        if (killerEntry && killerEntry.info) {
-          document.getElementById('ffaKillerName').textContent = killerEntry.info.username;
+      // Show killer name in death menu
+      const killerNameEl = document.getElementById('ffaKillerName');
+      if (killerNameEl) {
+        if (data.killerName) {
+          killerNameEl.textContent = data.killerName;
+        } else if (data.killerId && nametags) {
+          const killerEntry = nametags._entries?.get(data.killerId);
+          killerNameEl.textContent = killerEntry?.info?.username ?? 'Unknown';
+        } else {
+          killerNameEl.textContent = '';
         }
       }
-      
+
       document.getElementById('ffaDeathMenu').style.display = 'flex';
     });
 
     room.onMessage('respawned', (data) => {
-      // Re-show game and restore controls
+      // Restore FFA state and re-lock controls
+      window.isFFA = true;
+      const oppHpWrap = document.getElementById('oppHpWrap');
+      if (oppHpWrap) oppHpWrap.classList.add('ffa-active');
       showGame();
       gameStarted = true;
       if (typeof controls !== 'undefined' && controls) {
@@ -1426,6 +1426,20 @@ function ffaCancelPreview() {
   stopFFAMapPreview();
   document.getElementById('ffaMenu').style.display = 'none';
   document.getElementById('menu').style.display = 'flex';
+}
+
+function ffaRespawnRequest() {
+  if (room) { room.leave(); room = null; }
+  document.getElementById('ffaDeathMenu').style.display = 'none';
+  gameStarted = false;
+  myId = null;
+  // Clean up game objects from the previous session before re-deploying
+  if (window.skinMgr) window.skinMgr.removeAll();
+  if (window.hookMgr) window.hookMgr.removeAll();
+  if (window.bombMgr) window.bombMgr.removeAll();
+  if (window.nametags) window.nametags.dispose();
+  if (window.playerMeshMap) window.playerMeshMap.clear();
+  ffaDeployClicked();
 }
 
 function ffaExitToMenu() {
@@ -1792,15 +1806,13 @@ camera   = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 1000);
 
 // High resolution rendering: use device pixel ratio for crisp visuals
 const dpr = window.devicePixelRatio || 1;
-const targetDpr = Math.min(dpr, 2.0);  // Full device resolution, capped at 2.0 for performance
-renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+const targetDpr = Math.min(dpr, 1.5);  // Cap at 1.5 — 2.0 doubles pixel count with little visual gain
+renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
 renderer.setPixelRatio(targetDpr);
 renderer.setSize(innerWidth, innerHeight);
 
-// Optimize shadow rendering
-renderer.shadowMap.enabled  = true;
-renderer.shadowMap.type = THREE.PCFShadowMap;  // Faster than PCFSoftShadowMap
-renderer.shadowMap.resolution = 512;  // Reduced from default 2048
+// Disable shadows — the performance cost outweighs the visual benefit at this scale
+renderer.shadowMap.enabled = false;
 
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping      = THREE.ACESFilmicToneMapping;
@@ -3570,30 +3582,23 @@ async function buildClientWorld(collisionPath, spawnX, spawnY, spawnZ) {
 }
 
 // ground checker
-// ground checker
+// Pre-allocated scratch to avoid per-call allocation in the prediction loop
+const _clientRayOrigin = { x: 0, y: 0, z: 0 };
+const _clientRayDir    = { x: 0, y: -1, z: 0 };
+const _clientRay       = new RAPIER.Ray(_clientRayOrigin, _clientRayDir);
+const _clientVel       = { x: 0, y: 0, z: 0 };
+
 function clientGrounded() {
   if (!cBody || !cWorld) return false;
-  
+
   const vel = cBody.linvel();
-  
-  // 1. STRICTURE VELOCITY CHECK
-  // If the player is falling or rising faster than a tiny threshold, 
-  // they are NOT grounded. This prevents jumping while falling.
   if (Math.abs(vel.y) > 0.01) return false;
 
   const pos = cBody.translation();
-  
-  // 2. TIGHTER RAYCAST
-  // Your capsule has a radius of 0.5. 
-  // We start the ray 0.5 units below center (at the bottom curve).
-  // A distance of 0.6 is too "floaty." Reduce it to 0.52.
-  const ray = new RAPIER.Ray(
-    { x: pos.x, y: pos.y - 0.5, z: pos.z },
-    { x: 0,     y: -1,          z: 0     }
-  );
-  
-  // 0.52 distance means we only trigger if we are within 0.02 units of the floor
-  const hit = cWorld.castRay(ray, 0.52, false); 
+  _clientRayOrigin.x = pos.x;
+  _clientRayOrigin.y = pos.y - 0.5;
+  _clientRayOrigin.z = pos.z;
+  const hit = cWorld.castRay(_clientRay, 0.52, false);
   return hit !== null;
 }
 
@@ -3612,17 +3617,20 @@ function applyInput(inputs, camDir) {
 
   const grounded = clientGrounded();
   const vel = cBody.linvel();
-  
+  const curVx = vel.x, curVy = vel.y, curVz = vel.z;
+
   if (inputs.space && grounded) {
-    cBody.setLinvel({ x:vel.x, y:15, z:vel.z }, true);
+    _clientVel.x = curVx; _clientVel.y = 15; _clientVel.z = curVz;
+    cBody.setLinvel(_clientVel, true);
   }
 
-  const vel2   = cBody.linvel();
   const moving = inputs.w || inputs.s || inputs.a || inputs.d;
   if (moving) {
-    cBody.setLinvel({ x:vx*12, y:vel2.y, z:vz*12 }, true);
+    _clientVel.x = vx * 12; _clientVel.y = curVy; _clientVel.z = vz * 12;
+    cBody.setLinvel(_clientVel, true);
   } else {
-    cBody.setLinvel({ x:vel2.x*0.8, y:vel2.y, z:vel2.z*0.8 }, true);
+    _clientVel.x = curVx * 0.8; _clientVel.y = curVy; _clientVel.z = curVz * 0.8;
+    cBody.setLinvel(_clientVel, true);
   }
 }
 
@@ -4188,11 +4196,10 @@ async function setupRoom(r) {
   room = r;
   myId = room.sessionId;
 
-  // start pinging once we have a room
+  // Ping/pong — works for all modes that use BaseGameRoom (versus, private)
   setInterval(() => {
-    room.send('ping', { t: Date.now() });
+    if (room) room.send('ping', { t: Date.now() });
   }, 1000);
-
   room.onMessage('pong', ({ t }) => {
     const el = document.getElementById('ping');
     if (el) el.textContent = (Date.now() - t) + ' ms';
@@ -5113,6 +5120,10 @@ function updateFPS() {
   }
 }
 
+// ── Frame timing (logs sections that spike above threshold) ──────────────────
+const FRAME_WARN_MS = 20;  // log breakdown if any frame exceeds this
+let _ft = {};
+
 function animate() {
   requestAnimationFrame(animate);
   updateFPS();
@@ -5120,12 +5131,14 @@ function animate() {
   const now = performance.now();
   const dt  = Math.min((now - last) / 1000, 0.1);
   last = now;
+  const _frameStart = now;
 
 
   // ── Client prediction ──────────────────────────────────────
   // In FFA mode, physics continues even without pointer lock
   // In ranked mode, physics pauses when pointer lock is released
   const physicsCondition = ffaMode || controls.isLocked;
+  const _t0 = performance.now();
   if (gameStarted && physicsCondition && cWorld && cBody) {
     acc += dt;
 
@@ -5222,6 +5235,8 @@ function animate() {
     if (vel) vel.textContent = spd.toFixed(2);
   }
 
+  _ft.physics = performance.now() - _t0;
+
   // ── Camera positioning (always update when game is started and player body exists)
   if (gameStarted && cBody) {
     const p      = cBody.translation();
@@ -5229,6 +5244,8 @@ function animate() {
     camera.position.set(p.x, p.y + eyeOff, p.z);
     updateBarrelPos();
   }
+
+  const _t1 = performance.now();
 
   // ── Update active gear effects EVERY FRAME (opacity fade) ─────
   if (activeGearEffects.size > 0) {
@@ -5307,6 +5324,9 @@ function animate() {
     }
   }
 
+  _ft.gear = performance.now() - _t1;
+  const _t2 = performance.now();
+
   // ── FFA: Update all opponent positions and visuals ─────────
   if (gameStarted && room && typeof room.state.players !== 'undefined') {
     for (const [oppId, os] of room.state.players.entries()) {
@@ -5378,14 +5398,17 @@ function animate() {
       ms.grapple.active);
   }
 
+  _ft.opponents = performance.now() - _t2;
+  const _t3 = performance.now();
+
   // ── Bombs ────────────────────────────
   if (gameStarted && room) {
     const liveIds = new Set();
-    room.state.bombs.forEach((bs, id) => {
+    room.state.bombs?.forEach((bs, id) => {
       liveIds.add(id);
       
-      // Check if bomb needs to be created
-      if (!bombMgr._bombs.has(id)) {
+      // Check if bomb needs to be created (and not already pending/loaded)
+      if (!bombMgr._bombs.has(id) && !bombMgr._pendingBombs.has(id)) {
         const bombSkinId = bs.bombSkinId || 'default';
         // Get the bomb skin definition from our global cache
         const bombSkinDef = gBombSkins[bombSkinId] || { id: 'default', glb: null, scale: 1.0 };
@@ -5395,8 +5418,18 @@ function animate() {
           scale: bombSkinDef.scale || 1.0,
         };
         
-        // Assign bomb with initial position to prevent rendering at origin during async load
-        bombMgr.assignBomb(id, bombSkinData, bs.px, bs.py, bs.pz);
+        // Mark as pending to prevent duplicate loads on high ping
+        bombMgr._pendingBombs.add(id);
+
+        (async () => {
+          try {
+            await bombMgr.assignBomb(id, bombSkinData, bs.px, bs.py, bs.pz);
+          } catch (e) {
+            console.error('[Bomb] Failed to assign bomb', id, e);
+          } finally {
+            bombMgr._pendingBombs.delete(id);
+          }
+        })();
       }
       
       // Update position/rotation (safe to do even if async load is pending)
@@ -5407,13 +5440,23 @@ function animate() {
       }
     });
     
-    // Clean up bombs that no longer exist
+    // Clean up bombs that no longer exist in state
     for (const id of bombMgr._bombs.keys()) {
       if (!liveIds.has(id)) {
         bombMgr.removeBomb(id);
       }
     }
+    // Cancel any in-flight loads for bombs that have left state
+    for (const id of bombMgr._pendingBombs) {
+      if (!liveIds.has(id)) {
+        bombMgr._cancelledBombs.add(id);
+        bombMgr._pendingBombs.delete(id);
+      }
+    }
   }
+
+  _ft.bombs = performance.now() - _t3;
+  const _t4 = performance.now();
 
   // ── Explosions ─────────────────────────────────────────────
   for (let i = explosions.length - 1; i >= 0; i--) {
@@ -5421,8 +5464,25 @@ function animate() {
     if (!explosions[i].alive) explosions.splice(i, 1);
   }
 
+  _ft.explosions = performance.now() - _t4;
+  const _t5 = performance.now();
+
   perfMonitor.update();
   renderer.render(scene, camera);
+
+  _ft.render = performance.now() - _t5;
+  _ft.total  = performance.now() - _frameStart;
+  if (_ft.total > FRAME_WARN_MS) {
+    console.warn(
+      `[Frame spike] total=${_ft.total.toFixed(1)}ms` +
+      ` | physics=${(_ft.physics||0).toFixed(1)}` +
+      ` | gear=${(_ft.gear||0).toFixed(1)}` +
+      ` | opponents=${(_ft.opponents||0).toFixed(1)}` +
+      ` | bombs=${(_ft.bombs||0).toFixed(1)}` +
+      ` | explosions=${(_ft.explosions||0).toFixed(1)}` +
+      ` | render=${(_ft.render||0).toFixed(1)}`
+    );
+  }
 }
 animate();
 

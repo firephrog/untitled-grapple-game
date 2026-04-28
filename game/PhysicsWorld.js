@@ -15,6 +15,18 @@ const path = require('path');
 const fs   = require('fs');
 const CFG  = require('../config');
 
+// Pre-allocated direction constants — shared across all PhysicsWorld instances
+// to avoid per-call allocation in isGrounded / hookHitsGeometry.
+const GROUND_RAY_DIR = Object.freeze({ x: 0, y: -1, z: 0 });
+const HOOK_RAY_DIRS  = Object.freeze([
+  Object.freeze({ x:  0, y: -1, z:  0 }),
+  Object.freeze({ x:  0, y:  1, z:  0 }),
+  Object.freeze({ x:  1, y:  0, z:  0 }),
+  Object.freeze({ x: -1, y:  0, z:  0 }),
+  Object.freeze({ x:  0, y:  0, z:  1 }),
+  Object.freeze({ x:  0, y:  0, z: -1 }),
+]);
+
 let RAPIER = null;
 const RAPIER_READY = (async () => {
   const r = require('@dimforge/rapier3d-compat');
@@ -31,6 +43,15 @@ class PhysicsWorld {
     this.map = map;
     this.world = new RAPIER.World({ x: 0, y: CFG.GRAVITY, z: 0 });
     this._buildFromCollisionMesh();
+
+    // Pre-allocated scratch objects to eliminate per-tick GC pressure.
+    // Rapier's Ray stores a reference to origin/dir objects and reads
+    // their x/y/z values at castRay time, so mutating these works correctly.
+    this._groundRayOrigin = { x: 0, y: 0, z: 0 };
+    this._groundRay       = new RAPIER.Ray(this._groundRayOrigin, GROUND_RAY_DIR);
+
+    this._hookRayOrigin   = { x: 0, y: 0, z: 0 };
+    this._hookRays        = HOOK_RAY_DIRS.map(dir => new RAPIER.Ray(this._hookRayOrigin, dir));
   }
 
   // ── Build static geometry from collision JSON ─────────────────
@@ -93,27 +114,17 @@ class PhysicsWorld {
   getSpawnPoint(index) {
     return this.map.spawnPoints[index] || { x: index === 0 ? -20 : 20, y: 5, z: 0 };
   }
-  // ── Ground detection ───────────────────────────────────
-  /**
-   * Check if a player body is touching ground (for jump logic).
-   * Casts a small ray downward from the player's center.
-   */
+  // ── Grounded check ───────────────────────────────────────────
   isGrounded(body) {
     if (!body) return false;
     const pos = body.translation();
-    const rayOrigin = { x: pos.x, y: pos.y - 0.5, z: pos.z };
-    const rayDir = { x: 0, y: -1, z: 0 };
-    const hit = this.world.castRay(
-      new RAPIER.Ray(rayOrigin, rayDir),
-      0.6,  // Check 0.6 units down
-      false,  // Don't hit sensor colliders
-      -1,  // Query filter
-      null,  // No user data
-      body  // Exclude the player body itself
-    );
+    // Mutate the pre-allocated origin — Ray reads its values at castRay time.
+    this._groundRayOrigin.x = pos.x;
+    this._groundRayOrigin.y = pos.y - 0.5;
+    this._groundRayOrigin.z = pos.z;
+    const hit = this.world.castRay(this._groundRay, 0.6, false, null, null, null, body);
     return hit !== null;
   }
-  // ── Player body factory ──────────────────────────────────────
   createPlayerBody(spawnIndex) {
     const sp   = this.getSpawnPoint(spawnIndex);
     const body = this.world.createRigidBody(
@@ -143,38 +154,15 @@ class PhysicsWorld {
     return body;
   }
 
-  // ── Grounded check ───────────────────────────────────────────
-  isGrounded(body) {
-    const pos = body.translation();
-    // In Rapier 0.12, cast from INSIDE the sphere (0.5 units below centre).
-    // solid:false means the ray ignores the surface it starts inside,
-    // so it passes through the player's own ball collider harmlessly.
-    // Max distance: 0.6 (radius 1.0 - 0.5 origin offset + 0.1 tolerance).
-    const ray = new RAPIER.Ray(
-      { x: pos.x, y: pos.y - 0.5, z: pos.z },
-      { x: 0, y: -1, z: 0 }
-    );
-    const hit = this.world.castRay(ray, 0.6, false, null, null, null, body);
-    return hit !== null;
-  }
-
   // ── Grapple hook collision ───────────────────────────────────
-  // Now uses Rapier ray cast against the trimesh — works for any shape.
-  // Cast a short ray at the hook position in multiple directions;
-  // if any hits within threshold the hook has struck geometry.
+  // Casts a short ray from the hook position in 6 axis directions.
+  // Uses pre-allocated Ray objects (shared origin mutated before each cast).
   hookHitsGeometry(pos, playerBody) {
-    const THRESHOLD = 0.3;
-    const dirs = [
-      { x:  0, y: -1, z:  0 },
-      { x:  0, y:  1, z:  0 },
-      { x:  1, y:  0, z:  0 },
-      { x: -1, y:  0, z:  0 },
-      { x:  0, y:  0, z:  1 },
-      { x:  0, y:  0, z: -1 },
-    ];
-    for (const dir of dirs) {
-      const ray = new RAPIER.Ray(pos, dir);
-      if (this.world.castRay(ray, THRESHOLD, false, null, null, null, playerBody) !== null) return true;
+    this._hookRayOrigin.x = pos.x;
+    this._hookRayOrigin.y = pos.y;
+    this._hookRayOrigin.z = pos.z;
+    for (let i = 0; i < 6; i++) {
+      if (this.world.castRay(this._hookRays[i], 0.3, false, null, null, null, playerBody) !== null) return true;
     }
     return false;
   }

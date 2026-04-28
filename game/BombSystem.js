@@ -18,6 +18,7 @@ class BombSystem {
     this._physics   = physicsWorld;
     this._onExplode = onExplode;
     this._bombs     = new Map();  // id → { body, owner, spawnTime }
+    this._detonated = [];         // pre-allocated, cleared each tick
   }
 
   // ── Spawn ────────────────────────────────────────────────────
@@ -42,7 +43,8 @@ class BombSystem {
    * @returns {string[]} ids of bombs that detonated this tick
    */
   tick() {
-    const detonated = [];
+    const detonated = this._detonated;
+    detonated.length = 0;
     const now = Date.now();
 
     for (const [id, bomb] of this._bombs) {
@@ -64,9 +66,17 @@ class BombSystem {
    * Iterate live bombs for updating Colyseus schema each tick.
    * @param {Function} cb  (id, position, rotation) → void
    */
+  // Pre-allocated scratch for forEachLive to avoid per-call object construction
+  _scratchPos = { x: 0, y: 0, z: 0 };
+  _scratchRot = { x: 0, y: 0, z: 0, w: 1 };
+
   forEachLive(cb) {
     for (const [id, bomb] of this._bombs) {
-      cb(id, bomb.body.translation(), bomb.body.rotation());
+      const p = bomb.body.translation();
+      const r = bomb.body.rotation();
+      this._scratchPos.x = p.x; this._scratchPos.y = p.y; this._scratchPos.z = p.z;
+      this._scratchRot.x = r.x; this._scratchRot.y = r.y; this._scratchRot.z = r.z; this._scratchRot.w = r.w;
+      cb(id, this._scratchPos, this._scratchRot);
     }
   }
 

@@ -305,6 +305,8 @@ export class BombManager {
     this._loader  = gltfLoader;
     this._bombs   = new Map();  // bombId → { root, bombSkinData }
     this._cache   = new Map();  // glbPath → Promise<Group> (template)
+    this._pendingBombs = new Set();  // Track bombs currently loading async to prevent duplicates
+    this._cancelledBombs = new Set(); // Bombs removed from state while their mesh was still loading
   }
 
   // ── Public ───────────────────────────────────────────────────
@@ -313,6 +315,18 @@ export class BombManager {
     this._removeBomb(bombId);
     const root = await this._loadBombMesh(bombSkinData);
     if (!root) return;
+    
+    // If the bomb was removed from state while we were loading, discard the mesh
+    if (this._cancelledBombs.has(bombId)) {
+      this._cancelledBombs.delete(bombId);
+      root.traverse(o => {
+        if (o.isMesh) {
+          o.geometry?.dispose();
+          (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m?.dispose());
+        }
+      });
+      return null;
+    }
     
     // Ensure root is completely detached from any parent
     if (root.parent) {
