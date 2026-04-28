@@ -20,7 +20,7 @@ const GEAR_REGISTRY = {
     description: 'High-damage hitscan weapon with 2-second preview',
     rarity: 'high-skill',
     damage: 50,
-    cooldown: 2500,  // ms
+    cooldown: 15000,  // ms
     image: '/gear/sniper_thumb.png',  // placeholder
     glb: '/gear/sniper.glb',  // GLB model path
     previewDuration: 2000,  // 2 seconds before firing
@@ -32,7 +32,7 @@ const GEAR_REGISTRY = {
     description: 'Heavy melee weapon, dealing AOE damage proportional to the user\'s current speed. Three second charge-up',
     rarity: 'ultra-high-skill',
     damage: 10,
-    cooldown: 3000,  // ms
+    cooldown: 10000,  // ms
     image: '/gear/mace_thumb.png',  // placeholder
     glb: '/gear/mace.glb',  // GLB model path
     previewDuration: 500,  // 0.5 seconds before impact

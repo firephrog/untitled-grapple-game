@@ -36,10 +36,12 @@ function applyMovement(body, inputs, camDir, grounded, grappleStatus) {
 
   // Read velocity once — reuse throughout this call.
   const curVel = body.linvel();
-  const curVx = curVel.x, curVy = curVel.y, curVz = curVel.z;
+  const curVx = curVel.x, curVz = curVel.z;
+  let curVy = curVel.y;
 
   if (inputs.space && grounded) {
-    _vel.x = curVx; _vel.y = CFG.JUMP_VEL; _vel.z = curVz;
+    curVy = CFG.JUMP_VEL;
+    _vel.x = curVx; _vel.y = curVy; _vel.z = curVz;
     body.setLinvel(_vel, true);
   }
 

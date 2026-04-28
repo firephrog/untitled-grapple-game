@@ -399,6 +399,7 @@ async function joinRankedQueue() {
 
         showGame();
         gameStarted = true;
+        lastGear = 0;
         
         // Not in FFA mode
         window.isFFA = false;
@@ -1116,6 +1117,7 @@ async function ffaDeployClicked() {
         console.log('[FFA gameStart] Showing game, hiding menu');
         showGame();
         gameStarted = true;
+        lastGear = 0;
         
         // Mark as FFA mode and hide opponent HP bar
         window.isFFA = true;
@@ -1231,6 +1233,7 @@ async function ffaDeployClicked() {
       if (oppHpWrap) oppHpWrap.classList.add('ffa-active');
       showGame();
       gameStarted = true;
+      lastGear = 0;
       if (typeof controls !== 'undefined' && controls) {
         setTimeout(() => { try { controls.lock(); } catch (err) {} }, 100);
       }
@@ -3591,9 +3594,6 @@ const _clientVel       = { x: 0, y: 0, z: 0 };
 function clientGrounded() {
   if (!cBody || !cWorld) return false;
 
-  const vel = cBody.linvel();
-  if (Math.abs(vel.y) > 0.01) return false;
-
   const pos = cBody.translation();
   _clientRayOrigin.x = pos.x;
   _clientRayOrigin.y = pos.y - 0.5;
@@ -3617,10 +3617,12 @@ function applyInput(inputs, camDir) {
 
   const grounded = clientGrounded();
   const vel = cBody.linvel();
-  const curVx = vel.x, curVy = vel.y, curVz = vel.z;
+  const curVx = vel.x, curVz = vel.z;
+  let curVy = vel.y;
 
   if (inputs.space && grounded) {
-    _clientVel.x = curVx; _clientVel.y = 15; _clientVel.z = curVz;
+    curVy = 15;
+    _clientVel.x = curVx; _clientVel.y = curVy; _clientVel.z = curVz;
     cBody.setLinvel(_clientVel, true);
   }
 
@@ -4070,7 +4072,9 @@ document.addEventListener('keydown', e => {
   if (e.code === window.keybinds.gear && gameStarted && room) {
     console.log('[keydown] Gear key pressed');
     const now = performance.now();
-    if (now - lastGear >= 2500) {
+    const equippedGear = gearItems.find(g => g.equipped) || gearItems[0];
+    const gearCooldown = equippedGear?.cooldown ?? 2500;
+    if (now - lastGear >= gearCooldown) {
       useGear();
       lastGear = now;
     }
@@ -4175,9 +4179,11 @@ function startGearCooldown() {
   // Cooldown indicator
   const readyEl = document.getElementById('gearReady');
   if (readyEl) {
+    const equippedGear = gearItems.find(g => g.equipped) || gearItems[0];
+    const gearCooldownMs = equippedGear?.cooldown ?? 2500;
     readyEl.textContent = 'cooldown';
     readyEl.style.color = '#555';
-    let remaining = 2;
+    let remaining = Math.ceil(gearCooldownMs / 1000);
     const countdown = setInterval(() => {
       remaining--;
       if (remaining <= 0) {
@@ -4923,6 +4929,7 @@ async function setupRoom(r) {
     document.getElementById('page-results').style.display = 'none';
     showGame();
     gameStarted = true;
+    lastGear = 0;
     
     // Reset all key presses and forces
     keys.w = false;
