@@ -968,8 +968,9 @@ async function ffaDeployClicked() {
     });
     myId = room.sessionId;
 
-    // Hide preview menu (will be hidden by gameStart message)
+    // Hide preview menu immediately after joining
     stopFFAMapPreview();
+    document.getElementById('ffaMenu').style.display = 'none';
 
     // ── FFA Message Handlers ──────────────────────────────────
 
