@@ -141,9 +141,9 @@ class PhysicsWorld {
         .setLinearDamping(CFG.LINEAR_DAMPING)
         .setCcdEnabled(true)
     );
-    // Capsule: half-height 0.5, radius 0.5 → total height 2, same as ball radius 1
+    // Sphere: radius 1 (matches original ball hitbox)
     this.world.createCollider(
-      RAPIER.ColliderDesc.capsule(0.5, 0.5).setFriction(0.0),
+      RAPIER.ColliderDesc.ball(1.0).setFriction(0.0),
       body
     );
     return body;

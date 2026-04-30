@@ -776,6 +776,7 @@ function resetRankedGame() {
   // Clear scope effect
   if (typeof activeScopeEffect !== 'undefined') {
     activeScopeEffect = null;
+    if (controls) controls.pointerSpeed = gameSettings.mouse.sensitivity || 0.5;
     const vignetteCanvas = document.getElementById('scopeVignette');
     if (vignetteCanvas) {
       vignetteCanvas.classList.remove('active');
@@ -3588,10 +3589,8 @@ async function buildClientWorld(collisionPath, spawnX, spawnY, spawnZ) {
       .setLinearDamping(0.1)
   );
   cWorld.createCollider(
-  RAPIER.ColliderDesc.capsule(0.5, 0.5).setFriction(0.0),
+  RAPIER.ColliderDesc.ball(1.0).setFriction(0.0),
   cBody
-
-  //REVERT THIS PART BACK IF BROKEN
 );
 }
 
@@ -4918,6 +4917,7 @@ async function setupRoom(r) {
     // Clear scope effect from previous round
     if (activeScopeEffect) {
       activeScopeEffect = null;
+      controls.pointerSpeed = gameSettings.mouse.sensitivity || 0.5;
       const vignetteCanvas = document.getElementById('scopeVignette');
       if (vignetteCanvas) {
         vignetteCanvas.classList.remove('active');
@@ -5246,9 +5246,10 @@ function animate() {
       const progress = elapsed / activeScopeEffect.duration;
       
       if (progress >= 1) {
-        // Scope effect expired, restore original FOV and hide vignette
+        // Scope effect expired, restore original FOV, sensitivity, and hide vignette
         camera.fov = activeScopeEffect.originalFov;
         camera.updateProjectionMatrix();
+        controls.pointerSpeed = gameSettings.mouse.sensitivity || 0.5;
         activeScopeEffect = null;
         
         const vignetteCanvas = document.getElementById('scopeVignette');
@@ -5265,6 +5266,9 @@ function animate() {
         const currentFov = activeScopeEffect.originalFov + (targetFov - activeScopeEffect.originalFov) * zoomProgress;
         camera.fov = currentFov;
         camera.updateProjectionMatrix();
+
+        // Scale sensitivity proportionally with FOV reduction
+        controls.pointerSpeed = (gameSettings.mouse.sensitivity || 0.5) * (currentFov / activeScopeEffect.originalFov);
         
         // Update vignette - stay visible for entire duration, don't fade
         const vignetteCanvas = document.getElementById('scopeVignette');
