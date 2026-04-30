@@ -398,6 +398,8 @@ async function joinRankedQueue() {
         }
 
         showGame();
+        const _oppHpWrap = document.getElementById('oppHpWrap');
+        if (_oppHpWrap) _oppHpWrap.style.display = 'flex';
         gameStarted = true;
         lastGear = 0;
         
@@ -1117,13 +1119,10 @@ async function ffaDeployClicked() {
 
         console.log('[FFA gameStart] Showing game, hiding menu');
         showGame();
+        // Set FFA mode BEFORE gameStarted so the animate loop sees it correctly
+        window.isFFA = true;
         gameStarted = true;
         lastGear = 0;
-        
-        // Mark as FFA mode and hide opponent HP bar
-        window.isFFA = true;
-        const oppHpWrap = document.getElementById('oppHpWrap');
-        if (oppHpWrap) oppHpWrap.classList.add('ffa-active');
         
         if (typeof keys !== 'undefined' && keys) {
           keys.w = false; keys.a = false; keys.s = false; keys.d = false; keys.space = false;
@@ -1230,8 +1229,6 @@ async function ffaDeployClicked() {
     room.onMessage('respawned', (data) => {
       // Restore FFA state and re-lock controls
       window.isFFA = true;
-      const oppHpWrap = document.getElementById('oppHpWrap');
-      if (oppHpWrap) oppHpWrap.classList.add('ffa-active');
       showGame();
       gameStarted = true;
       lastGear = 0;
@@ -1432,8 +1429,11 @@ function ffaCancelPreview() {
   document.getElementById('menu').style.display = 'flex';
 }
 
-function ffaRespawnRequest() {
-  if (room) { room.leave(); room = null; }
+async function ffaRespawnRequest() {
+  if (room) {
+    try { await room.leave(); } catch (_) {}
+    room = null;
+  }
   document.getElementById('ffaDeathMenu').style.display = 'none';
   gameStarted = false;
   myId = null;
@@ -1443,7 +1443,17 @@ function ffaRespawnRequest() {
   if (window.bombMgr) window.bombMgr.removeAll();
   if (window.nametags) window.nametags.dispose();
   if (window.playerMeshMap) window.playerMeshMap.clear();
-  ffaDeployClicked();
+  // Small delay to let the server fully process the leave before re-joining
+  setTimeout(ffaDeployClicked, 400);
+}
+
+async function ffaRelogRequest() {
+  if (room) {
+    try { await room.leave(); } catch (_) {}
+    room = null;
+  }
+  sessionStorage.setItem('ffa_auto_rejoin', '1');
+  location.reload();
 }
 
 function ffaExitToMenu() {
@@ -3703,6 +3713,32 @@ function interpolateOpp() {
   );
 }
 
+// Per-player interpolation buffers for FFA (keyed by session ID)
+const ffaBuffers = new Map(); // playerId → [{ time, position }]
+
+function pushFFASnap(playerId, pos) {
+  let buf = ffaBuffers.get(playerId);
+  if (!buf) { buf = []; ffaBuffers.set(playerId, buf); }
+  buf.push({ time: performance.now(), position: { x: pos.x, y: pos.y, z: pos.z } });
+  if (buf.length > 30) buf.shift();
+}
+
+function interpolateFFA(playerId) {
+  const buf = ffaBuffers.get(playerId);
+  if (!buf || buf.length < 2) return null;
+  const rt = performance.now() - INTERP_DELAY;
+  while (buf.length >= 2 && buf[1].time <= rt) buf.shift();
+  if (buf.length < 2) return null;
+  const a = buf[0], b = buf[1];
+  let t = (rt - a.time) / (b.time - a.time);
+  t = Math.max(0, Math.min(1, t));
+  return {
+    x: a.position.x + (b.position.x - a.position.x) * t,
+    y: a.position.y + (b.position.y - a.position.y) * t,
+    z: a.position.z + (b.position.z - a.position.z) * t,
+  };
+}
+
 // Scene objets
 try {
   gltfLoader = new GLTFLoader();
@@ -4317,6 +4353,8 @@ async function setupRoom(r) {
 
     showGame();
     gameStarted = true;
+    const _oppHpWrap3 = document.getElementById('oppHpWrap');
+    if (_oppHpWrap3) _oppHpWrap3.style.display = 'flex';
     
     // Reset all key states to start with clean slate
     keys.w = false;
@@ -4929,6 +4967,8 @@ async function setupRoom(r) {
     // Hide results screen and reset game state
     document.getElementById('page-results').style.display = 'none';
     showGame();
+    const _oppHpWrap2 = document.getElementById('oppHpWrap');
+    if (_oppHpWrap2) _oppHpWrap2.style.display = 'flex';
     gameStarted = true;
     lastGear = 0;
     
@@ -5336,30 +5376,59 @@ function animate() {
   const _t2 = performance.now();
 
   // ── FFA: Update all opponent positions and visuals ─────────
-  if (gameStarted && room && typeof room.state.players !== 'undefined') {
+  // Runs when game is started and we are NOT in a 1v1/ranked match (oppId is null in FFA).
+  if (gameStarted && room && !oppId && typeof room.state.players !== 'undefined') {
+    // Remove meshes for players no longer in state (disconnected)
+    if (playerMeshMap) {
+      for (const [sid] of playerMeshMap) {
+        if (sid !== myId && !room.state.players.has(sid)) {
+          if (skinMgr) skinMgr.removePlayer(sid);
+          if (hookMgr) hookMgr.removeHook(sid);
+          if (nametags) nametags.remove(sid);
+          playerMeshMap.delete(sid);
+          ffaBuffers.delete(sid);
+        }
+      }
+    }
+
     for (const [oppId, os] of room.state.players.entries()) {
       if (oppId === myId || !os) continue;  // Skip self and null states
-      
+
       // Check if player is dead and remove them
       if (os.health <= 0) {
         if (skinMgr) skinMgr.removePlayer(oppId);
         if (hookMgr) hookMgr.removeHook(oppId);
         if (nametags) nametags.remove(oppId);
         if (playerMeshMap) playerMeshMap.delete(oppId);
+        ffaBuffers.delete(oppId);
         continue;  // Skip further updates for dead players
       }
-      
-      // Update position
+
+      // Push snapshot into per-player buffer for interpolation
+      pushFFASnap(oppId, os.position);
+
+      // Interpolate position from buffer (smooth, no snapping)
+      const interpPos = interpolateFFA(oppId);
       if (skinMgr) {
-        skinMgr.setPosition(oppId, os.position.x, os.position.y, os.position.z);
+        if (interpPos) {
+          skinMgr.setPosition(oppId, interpPos.x, interpPos.y, interpPos.z);
+        } else {
+          // Buffer not yet warmed up — use raw position as fallback
+          skinMgr.setPosition(oppId, os.position.x, os.position.y, os.position.z);
+        }
       }
-      
+
+      // Sync health to nametag HP bar every frame (not just on playerHit)
+      if (nametags) {
+        nametags.setHealth(oppId, os.health, 100);
+      }
+
       // Update rotation and grapple visuals
       if (skinMgr && hookMgr) {
         const oppRoot = skinMgr.getRoot(oppId);
         if (oppRoot) {
-          const oppYaw = SkinManager.yawFromVelocity(os.velocity.x, os.velocity.z, 0);
-          skinMgr.setRotationY(oppId, oppYaw);
+          const oppYawFFA = SkinManager.yawFromVelocity(os.velocity.x, os.velocity.z, 0);
+          skinMgr.setRotationY(oppId, oppYawFFA);
           hookMgr.update(oppId, oppRoot.position,
             { x: os.grapple.hx, y: os.grapple.hy, z: os.grapple.hz },
             os.grapple.active);
@@ -5369,18 +5438,15 @@ function animate() {
   }
 
   // ── Opponent interpolation ─────────────────────────────────
-  if (gameStarted && room && oppId) {
+  if (!window.isFFA && gameStarted && room && oppId) {
     const os = room.state.players.get(oppId);
     if (os) pushOppSnap(os.position);
     interpolateOpp();
 
-    // Opponent grapple visuals
+    // Opponent grapple visuals (use interpolated mesh position, not raw server position)
     if (skinMgr && hookMgr) {
       const oppRoot = skinMgr.getRoot(oppId);
       if (os && oppRoot) {
-        // Update position
-        skinMgr.setPosition(oppId, os.position.x, os.position.y, os.position.z);
-        
         // Update rotation
         oppYaw = SkinManager.yawFromVelocity(os.velocity.x, os.velocity.z, oppYaw);
         skinMgr.setRotationY(oppId, oppYaw);
@@ -5546,7 +5612,14 @@ window.ffaJoin = ffaJoin;
 window.ffaDeployClicked = ffaDeployClicked;
 window.ffaCancelPreview = ffaCancelPreview;
 window.ffaRespawnRequest = ffaRespawnRequest;
+window.ffaRelogRequest = ffaRelogRequest;
 window.ffaExitToMenu = ffaExitToMenu;
 
 } // end init()
-init().catch(console.error);
+init().then(() => {
+  if (sessionStorage.getItem('ffa_auto_rejoin')) {
+    sessionStorage.removeItem('ffa_auto_rejoin');
+    // Small delay to ensure all UI and state is ready
+    setTimeout(() => ffaDeployClicked(), 300);
+  }
+}).catch(console.error);

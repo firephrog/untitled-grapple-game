@@ -14,6 +14,7 @@ const { MatchmakingRoom } = require('./rooms/MatchmakingRoom');
 const { RankedRoom }      = require('./rooms/RankedRoom');
 const { FreeForAllRoom }  = require('./rooms/FreeForAllRoom');
 const { Lobby, getLobby } = require('./rooms/Lobby');
+const { PhysicsWorld }    = require('./game/PhysicsWorld');
 const { skinRoutes, unlockSkin, unlockGrapple, unlockBombSkin } = require('./routes/skins');
 const gearRoutes          = require('./routes/gear');
 const CFG                 = require('./config');
@@ -100,7 +101,7 @@ app.get('/api/maps/ffa/current', (req, res) => {
       id: map.id,
       name: map.name,
       description: map.description,
-      glb: `/maps/ffa/${map.id}.glb`,
+      glb: map.glb,
       skyColor: map.skyColor,
       spawnPoints: map.spawnPoints
     });
@@ -140,7 +141,7 @@ app.get('/api/ffa/maps', (req, res) => {
         id: map.id,
         name: map.name,
         description: map.description,
-        glb: `/maps/ffa/${map.id}.glb`,
+        glb: map.glb,
         skyColor: map.skyColor,
         spawnPoints: map.spawnPoints
       };
@@ -696,10 +697,18 @@ gameServer.define('lobby', Lobby);
 
 httpServer.listen(CFG.PORT, () => {
   console.log(`[STARTUP] Untitled Grapple Game V0.6`);
-  console.log(`[STARTUP] Server running → http://localhost:${CFG.PORT}`);
+  console.log(`[STARTUP] Server running \u2192 http://localhost:${CFG.PORT}`);
   console.log(`[STARTUP] API routes registered:`);
   console.log(`  - /api/ffa/maps`);
   console.log(`  - /api/ffa/playercount`);
   console.log(`  - /api/skins/*`);
   console.log(`  - /auth/*`);
+
+  // Pre-parse all collision JSON files into typed arrays so that
+  // new PhysicsWorld(map) never blocks the event loop with sync I/O.
+  const { MAPS, FFA_MAPS } = require('./maps');
+  const allMaps = [...Object.values(MAPS), ...Object.values(FFA_MAPS)];
+  PhysicsWorld.preload(allMaps)
+    .then(() => console.log('[STARTUP] Collision meshes preloaded'))
+    .catch(e  => console.error('[STARTUP] Mesh preload error:', e));
 });

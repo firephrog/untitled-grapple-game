@@ -445,7 +445,7 @@
       box-shadow: 0 0 10px rgba(0,0,0,0.3);
       transition: transform 0.3s ease;
     }
-    .statsDisplay { font-size: 15px; }
+    .statsDisplay { font-size: clamp(9px, 1.6vh, 15px); }
     #stat-user    { font-weight: bolder; }
 
     /*Notifications menu */
@@ -609,8 +609,7 @@
     }
 
     #myHpWrap   { left:  40px; }
-    #oppHpWrap  { right: 40px; align-items: flex-end; }
-    #oppHpWrap.ffa-active { display: none; }
+    #oppHpWrap  { right: 40px; align-items: flex-end; display: none; }
 
     .hp-label {
       font-size: 11px;
@@ -1000,7 +999,7 @@
     #friendsMenu {
       display: none;
       position: fixed;
-      top: 40%;
+      top: 20%;
       left: 50%;
       transform: translate(-50%, -50%);
       width: 300px;
@@ -1580,8 +1579,8 @@
       display: flex;
       flex-direction: column;
       padding: 0;
-      width: 480px;
-      height: 680px;
+      width: min(480px, 92vw);
+      height: min(680px, 88vh);
     }
 
     /* ── filter/sort tabs ── */
@@ -1601,7 +1600,7 @@
 
     .filter-btn {
       padding: 6px 12px;
-      font-size: 11px;
+      font-size: clamp(9px, 0.9vw, 11px);
       font-family: 'Space Grotesk', monospace;
       background: rgba(60, 60, 80, 0.6);
       color: #aaa;
@@ -1640,7 +1639,7 @@
     }
 
     .my-rank-number {
-      font-size: 18px;
+      font-size: clamp(13px, 1.5vw, 18px);
       font-weight: 700;
       font-family: 'Space Mono', monospace;
       color: #00ff88;
@@ -1656,21 +1655,21 @@
     }
 
     .my-rank-name {
-      font-size: 12px;
+      font-size: clamp(10px, 1vw, 12px);
       font-weight: 600;
       color: #fff;
       font-family: 'Space Grotesk', monospace;
     }
 
     .my-rank-elo {
-      font-size: 10px;
+      font-size: clamp(8px, 0.85vw, 10px);
       color: #aaa;
       font-family: 'Space Mono', monospace;
       letter-spacing: 0.5px;
     }
 
     .my-rank-badge {
-      font-size: 11px;
+      font-size: clamp(9px, 0.95vw, 11px);
       font-family: 'Space Mono', monospace;
       color: #00ff88;
       font-weight: 600;
@@ -1730,7 +1729,7 @@
     }
 
     .rank-number {
-      font-size: 14px;
+      font-size: clamp(11px, 1.1vw, 14px);
       font-weight: 700;
       font-family: 'Space Mono', monospace;
       color: #fff;
@@ -1739,15 +1738,15 @@
     }
 
     .player-avatar {
-      width: 32px;
-      height: 32px;
+      width: clamp(24px, 2.4vw, 32px);
+      height: clamp(24px, 2.4vw, 32px);
       border-radius: 6px;
       background: rgba(60, 80, 120, 0.7);
       border: 1px solid rgba(255,255,255,0.1);
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 12px;
+      font-size: clamp(9px, 0.9vw, 12px);
       font-weight: 700;
       color: #aaa;
       flex-shrink: 0;
@@ -1762,7 +1761,7 @@
     }
 
     .player-name-lb {
-      font-size: 12px;
+      font-size: clamp(10px, 1vw, 12px);
       font-weight: 600;
       color: #fff;
       font-family: 'Space Grotesk', monospace;
@@ -1772,7 +1771,7 @@
     }
 
     .player-elo-lb {
-      font-size: 13px;
+      font-size: clamp(10px, 1.1vw, 13px);
       font-weight: 700;
       color: #00ff88;
       font-family: 'Space Mono', monospace;
@@ -1786,7 +1785,7 @@
       padding: 10px 14px;
       border-top: 1px solid rgba(255,255,255,0.07);
       background: rgba(0,0,0,0.1);
-      font-size: 10px;
+      font-size: clamp(8px, 0.8vw, 10px);
       color: #888;
       font-family: 'Space Mono', monospace;
       text-align: center;
@@ -1846,7 +1845,7 @@
     }
 
   </style>
-  <script type="module" crossorigin src="/assets/index-CNr8bH_0.js"></script>
+  <script type="module" crossorigin src="/assets/index-BFisUYWK.js"></script>
 </head>
 <body>
 
@@ -1976,10 +1975,10 @@
         </div>
         <div class="statsDisplay">
           <div id="stat-user">Your User: </div>
-          <div style="height: 10px;"></div>
+          <div style="height: 1vh;"></div>
           <div id="stat-wins">Games won: </div>
           <div id="stat-deaths">Times died: </div>
-          <div style="height: 10px;"></div>
+          <div style="height: 1vh;"></div>
           <div id="stat-rank">Ranked rank: </div>
           <div id="stat-elo">Ranked ELO: </div>
         </div>
@@ -2192,7 +2191,7 @@
       </div>
 
       <!-- Respawn / Exit buttons -->
-      <button class="btn" style="margin-top:20px; width:100%;" onclick="ffaRespawnRequest()">respawn</button>
+      <button class="btn" style="margin-top:20px; width:100%;" onclick="ffaRelogRequest()">relog</button>
       <button class="btn btn-outline" style="margin-top:8px; width:100%;" onclick="ffaExitToMenu()">exit to menu</button>
     </div>
   </div>

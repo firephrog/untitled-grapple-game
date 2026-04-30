@@ -27,6 +27,11 @@ const HOOK_RAY_DIRS  = Object.freeze([
   Object.freeze({ x:  0, y:  0, z: -1 }),
 ]);
 
+// Pre-parsed collision mesh cache — keyed by absolute collision file path.
+// Populated by PhysicsWorld.preload() at startup so no game tick ever calls
+// fs.readFileSync or JSON.parse synchronously (which would stall the event loop).
+const _meshCache = new Map();
+
 let RAPIER = null;
 const RAPIER_READY = (async () => {
   const r = require('@dimforge/rapier3d-compat');
@@ -74,18 +79,20 @@ class PhysicsWorld {
 
     let vertices, indices;
 
-    if (fs.existsSync(collisionPath)) {
+    const cached = _meshCache.get(collisionPath);
+    if (cached) {
+      // Fast path: use the pre-parsed typed arrays from startup preload.
+      // No file I/O, no JSON.parse — zero event loop blocking.
+      vertices = cached.vertices;
+      indices  = cached.indices;
+    } else if (fs.existsSync(collisionPath)) {
+      // Fallback for maps that weren't preloaded (e.g. dynamically added maps).
       const raw  = fs.readFileSync(collisionPath, 'utf8');
       const data = JSON.parse(raw);
       vertices = new Float32Array(data.vertices);
       indices  = new Uint32Array(data.indices);
-
-      // Log Y range so you can see if axis conversion is correct
-      let minY = Infinity, maxY = -Infinity;
-      for (let i = 1; i < data.vertices.length; i += 3) {
-        minY = Math.min(minY, data.vertices[i]);
-        maxY = Math.max(maxY, data.vertices[i]);
-      }
+      // Cache so subsequent rooms on the same map don't re-parse from disk.
+      _meshCache.set(collisionPath, { vertices, indices });
     } else {
       console.warn(`[PhysicsWorld] *** COLLISION FILE NOT FOUND: ${collisionPath} ***`);
       console.warn(`[PhysicsWorld] Using flat ground fallback — update your map path`);
@@ -169,6 +176,29 @@ class PhysicsWorld {
 
   step()           { this.world.step(); }
   removeBody(body) { this.world.removeRigidBody(body); }
+
+  // ── Static startup preload ───────────────────────────────────
+  // Call this once at server startup with every map definition.
+  // Reads and parses each collision JSON asynchronously (non-blocking)
+  // so that later calls to new PhysicsWorld(map) never touch the disk.
+  static async preload(maps) {
+    const fsPromises = require('fs').promises;
+    await Promise.all(maps.map(async map => {
+      const collisionPath = path.join(process.cwd(), 'public', map.collision);
+      if (_meshCache.has(collisionPath)) return;
+      try {
+        const raw  = await fsPromises.readFile(collisionPath, 'utf8');
+        const data = JSON.parse(raw);
+        _meshCache.set(collisionPath, {
+          vertices: new Float32Array(data.vertices),
+          indices:  new Uint32Array(data.indices),
+        });
+        console.log(`[PhysicsWorld] Preloaded ${map.collision}`);
+      } catch (e) {
+        console.warn(`[PhysicsWorld] Could not preload ${map.collision}: ${e.message}`);
+      }
+    }));
+  }
 }
 
 module.exports = { PhysicsWorld, RAPIER_READY, getRapier: () => RAPIER };
