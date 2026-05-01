@@ -1845,7 +1845,7 @@
     }
 
   </style>
-  <script type="module" crossorigin src="/assets/index-DMGVohYB.js"></script>
+  <script type="module" crossorigin src="/assets/index-lZMTkYnC.js"></script>
 </head>
 <body>
 
@@ -2191,7 +2191,7 @@
       </div>
 
       <!-- Respawn / Exit buttons -->
-      <button class="btn" style="margin-top:20px; width:100%;" onclick="ffaRelogRequest()">relog</button>
+      <button class="btn" style="margin-top:20px; width:100%;" onclick="ffaRespawnRequest()">respawn</button>
       <button class="btn btn-outline" style="margin-top:8px; width:100%;" onclick="ffaExitToMenu()">exit to menu</button>
     </div>
   </div>
@@ -2646,100 +2646,7 @@
       </div>
 
       <!-- leaderboard list -->
-      <div class="leaderboard-list" id="leaderboardList">
-        <!-- leaderboard rows injected here -->
-        <div class="leaderboard-row rank-1">
-          <div class="rank-number">1</div>
-          <div class="player-avatar">A</div>
-          <div class="player-info">
-            <div class="player-name-lb">AlphaStrike</div>
-          </div>
-          <div class="player-elo-lb">4850</div>
-        </div>
-
-        <div class="leaderboard-row rank-2">
-          <div class="rank-number">2</div>
-          <div class="player-avatar">B</div>
-          <div class="player-info">
-            <div class="player-name-lb">BlueNeon</div>
-          </div>
-          <div class="player-elo-lb">4720</div>
-        </div>
-
-        <div class="leaderboard-row rank-3">
-          <div class="rank-number">3</div>
-          <div class="player-avatar">C</div>
-          <div class="player-info">
-            <div class="player-name-lb">CrimsonForce</div>
-          </div>
-          <div class="player-elo-lb">4680</div>
-        </div>
-
-        <div class="leaderboard-row">
-          <div class="rank-number">4</div>
-          <div class="player-avatar">D</div>
-          <div class="player-info">
-            <div class="player-name-lb">DarkEnergy</div>
-          </div>
-          <div class="player-elo-lb">4610</div>
-        </div>
-
-        <div class="leaderboard-row">
-          <div class="rank-number">5</div>
-          <div class="player-avatar">E</div>
-          <div class="player-info">
-            <div class="player-name-lb">ElitePlayer</div>
-          </div>
-          <div class="player-elo-lb">4520</div>
-        </div>
-
-        <div class="leaderboard-row">
-          <div class="rank-number">6</div>
-          <div class="player-avatar">F</div>
-          <div class="player-info">
-            <div class="player-name-lb">FrostStrike</div>
-          </div>
-          <div class="player-elo-lb">4450</div>
-        </div>
-
-        <div class="leaderboard-row">
-          <div class="rank-number">7</div>
-          <div class="player-avatar">G</div>
-          <div class="player-info">
-            <div class="player-name-lb">GhostRider</div>
-          </div>
-          <div class="player-elo-lb">4380</div>
-        </div>
-
-        <div class="leaderboard-row">
-          <div class="rank-number">8</div>
-          <div class="player-avatar">H</div>
-          <div class="player-info">
-            <div class="player-name-lb">HeroicPulse</div>
-          </div>
-          <div class="player-elo-lb">4310</div>
-        </div>
-
-        <div class="leaderboard-row">
-          <div class="rank-number">9</div>
-          <div class="player-avatar">I</div>
-          <div class="player-info">
-            <div class="player-name-lb">IcePhantom</div>
-          </div>
-          <div class="player-elo-lb">4240</div>
-        </div>
-
-        <div class="leaderboard-row">
-          <div class="rank-number">10</div>
-          <div class="player-avatar">J</div>
-          <div class="player-info">
-            <div class="player-name-lb">JetRunner</div>
-          </div>
-          <div class="player-elo-lb">4150</div>
-        </div>
-      </div>
-
-      <!-- footer -->
+      <div class="leaderboard-list" id="leaderboardList">  
       <div class="leaderboard-footer">
       </div>
 
@@ -2821,11 +2728,13 @@
           displayValue = `${Math.floor(player.elo)} elo`;
         }
 
+        const playerFullUsername = `<span style="color: ${player.prefixColor}">[${player.userPrefix}] </span><span style="color: ${player.usernameColor}">${player.username}</span>`;
+
         row.innerHTML = `
           <div class="rank-number">${player.rank}</div>
           <div class="player-avatar">${player.username.charAt(0).toUpperCase()}</div>
           <div class="player-info">
-            <div class="player-name-lb">${player.username}</div>
+            <div class="player-name-lb">${playerFullUsername}</div>
           </div>
           <div class="player-elo-lb">${displayValue}</div>
         `;

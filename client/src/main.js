@@ -1438,6 +1438,11 @@ async function ffaRespawnRequest() {
   document.getElementById('ffaDeathMenu').style.display = 'none';
   gameStarted = false;
   myId = null;
+  // Reset HP display
+  const _hpEl = document.getElementById('health');
+  const _hpFill = document.getElementById('myHpFill');
+  if (_hpEl) _hpEl.textContent = '100';
+  if (_hpFill) _hpFill.style.width = '100%';
   // Clean up game objects from the previous session before re-deploying
   if (window.skinMgr) window.skinMgr.removeAll();
   if (window.hookMgr) window.hookMgr.removeAll();
