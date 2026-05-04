@@ -748,7 +748,7 @@ function cancelRankedQueue() {
   }
   
   document.getElementById('rankedQueue').style.display = 'none';
-  document.getElementById('rankedMenu').style.display = 'flex';
+  document.getElementById('rankedMenu').style.display = 'none';
   document.getElementById('menu').style.display = 'flex';
 }
 
