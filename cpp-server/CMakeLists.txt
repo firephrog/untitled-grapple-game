@@ -32,9 +32,36 @@ set(CXX_BRIDGE_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge")
 
 # ── find gRPC / Protobuf ──────────────────────────────────────────────────────
 
-# vcpkg installs protobuf in config mode (lowercase package name)
-find_package(protobuf CONFIG REQUIRED)
-find_package(gRPC     CONFIG REQUIRED)
+# protobuf: vcpkg uses config mode (lowercase); Debian/Ubuntu apt only provides
+# CMake module mode (FindProtobuf, uppercase).  Try config first, fall back.
+find_package(protobuf CONFIG QUIET)
+if(NOT protobuf_FOUND)
+    find_package(Protobuf REQUIRED)
+endif()
+
+# gRPC: vcpkg uses config mode; Debian puts cmake files in a multiarch path
+# (/usr/lib/<arch>/cmake/grpc/) that needs an explicit gRPC_DIR hint or
+# pkg-config fallback.  Try config first, then synthesise targets via
+# pkg-config so the same target names (gRPC::grpc++ etc.) are always present.
+find_package(gRPC CONFIG QUIET)
+if(NOT gRPC_FOUND)
+    message(STATUS "gRPC CMake config not found — trying pkg-config fallback")
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(GRPCPP REQUIRED IMPORTED_TARGET grpc++)
+    if(NOT TARGET gRPC::grpc++)
+        add_library(gRPC::grpc++ ALIAS PkgConfig::GRPCPP)
+    endif()
+    if(NOT TARGET gRPC::grpc++_reflection)
+        add_library(gRPC::grpc++_reflection INTERFACE IMPORTED)
+        target_link_libraries(gRPC::grpc++_reflection INTERFACE PkgConfig::GRPCPP)
+    endif()
+    if(NOT TARGET gRPC::grpc_cpp_plugin)
+        find_program(_GRPC_CPP_PLUGIN grpc_cpp_plugin REQUIRED)
+        add_executable(gRPC::grpc_cpp_plugin IMPORTED)
+        set_target_properties(gRPC::grpc_cpp_plugin PROPERTIES
+            IMPORTED_LOCATION "${_GRPC_CPP_PLUGIN}")
+    endif()
+endif()
 
 # Locate protoc executable (vcpkg puts tools under installed/<triplet>/tools/)
 find_program(PROTOC_EXE
@@ -44,11 +71,12 @@ find_program(PROTOC_EXE
     NO_DEFAULT_PATH
 )
 if(NOT PROTOC_EXE)
-    # Fallback: use protobuf::protoc target if available
     if(TARGET protobuf::protoc)
         set(PROTOC_EXE "$<TARGET_FILE:protobuf::protoc>")
+    elseif(DEFINED Protobuf_PROTOC_EXECUTABLE)
+        set(PROTOC_EXE "${Protobuf_PROTOC_EXECUTABLE}")
     else()
-        message(FATAL_ERROR "protoc not found. Install grpc:x64-windows via vcpkg.")
+        message(FATAL_ERROR "protoc not found. Install grpc:x64-windows via vcpkg (Windows) or protobuf-compiler (Linux).")
     endif()
 endif()
 
