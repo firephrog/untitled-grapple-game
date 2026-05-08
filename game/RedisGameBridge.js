@@ -17,11 +17,15 @@ class RedisGameBridge {
   constructor(options) {
     const host = process.env.REDIS_HOST || '127.0.0.1';
     const port = parseInt(process.env.REDIS_PORT || '6379', 10);
+    const retryBaseMs = parseInt(process.env.REDIS_RETRY_BASE_MS || '500', 10);
+    const retryCapMs = parseInt(process.env.REDIS_RETRY_CAP_MS || '10000', 10);
     this._sub = new Redis({
       host,
       port,
       lazyConnect: true,
-      retryStrategy: (times) => Math.min(times * 500, 10000), // cap at 10s
+      // Pub/sub clients should not fail queued commands with a max retry cap.
+      maxRetriesPerRequest: null,
+      retryStrategy: (times) => Math.min(times * retryBaseMs, retryCapMs),
       ...options,
     });
     this._callbacks = new Map(); // roomId → [callbacks]

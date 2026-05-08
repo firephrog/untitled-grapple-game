@@ -21,6 +21,7 @@ const ROOM_PATCH_HZ = Math.max(1, Number(process.env.ROOM_PATCH_HZ || 60));
 const ROOM_PATCH_MIN_INTERVAL_MS = 1000 / ROOM_PATCH_HZ;
 const PING_GAP_SPIKE_MS = Math.max(250, Number(process.env.PING_GAP_SPIKE_MS || 2500));
 const SNAPSHOT_PROC_SPIKE_MS = Math.max(1, Number(process.env.SNAPSHOT_PROC_SPIKE_MS || 12));
+const STATE_GAP_SPIKE_MS = Math.max(80, Number(process.env.STATE_GAP_SPIKE_MS || 220));
 const VERBOSE_PING_LOG = process.env.ROOM_VERBOSE_PING_LOG === '1';
 
 class BaseGameRoom extends Room {
@@ -45,6 +46,7 @@ class BaseGameRoom extends Room {
     this._snapCount   = 0;     // gRPC snapshots processed, reset every 10 pings
     this._lastPingAt  = new Map();
     this._lastPatchAtMs = 0;
+    this._lastStateMsgAtMs = 0;
 
     // Disable the timer-based patch loop — we call broadcastPatch() manually
     // immediately after each gRPC state update, so clients get it with zero
@@ -284,10 +286,23 @@ class BaseGameRoom extends Room {
 
   _onServerMessage(msg) {
     if (msg.payload === 'state') {
+      const now = Date.now();
+      if (this._lastStateMsgAtMs > 0) {
+        const gapMs = now - this._lastStateMsgAtMs;
+        if (gapMs > STATE_GAP_SPIKE_MS) {
+          writeDiagnostic('state_gap_spike', {
+            roomId: this.roomId,
+            gapMs,
+            clients: this.clients.length,
+            mode: this._mode,
+          });
+        }
+      }
+      this._lastStateMsgAtMs = now;
+
       const snap = msg.state;
       this._applyStateSnapshot(snap);
       // Prevent over-patching at high authoritative tick rates.
-      const now = Date.now();
       if (now - this._lastPatchAtMs >= ROOM_PATCH_MIN_INTERVAL_MS) {
         this.broadcastPatch();
         this._lastPatchAtMs = now;

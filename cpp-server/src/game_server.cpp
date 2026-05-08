@@ -4,6 +4,8 @@
 #include <atomic>
 #include <mutex>
 #include <thread>
+#include <condition_variable>
+#include <deque>
 
 namespace game {
 
@@ -98,15 +100,73 @@ grpc::Status GameServiceImpl::RoomStream(
                             "room_id missing in first message");
     }
 
-    // Register stream writer as send callback on the room.
-    // Access must be serialized; use a mutex per-stream.
-    std::mutex writeMu;
+    // Register a non-blocking enqueue callback; a dedicated writer thread
+    // performs stream->Write() so room simulation never stalls on socket I/O.
+    std::mutex queueMu;
+    std::condition_variable queueCv;
+    std::deque<::game::RoomServerMessage> outQueue;
+    bool stopWriter = false;
+
+    std::thread writer([&]() {
+        while (true) {
+            ::game::RoomServerMessage out;
+            {
+                std::unique_lock<std::mutex> lock(queueMu);
+                queueCv.wait(lock, [&]() {
+                    return stopWriter || !outQueue.empty() || ctx->IsCancelled();
+                });
+
+                if ((stopWriter || ctx->IsCancelled()) && outQueue.empty()) {
+                    break;
+                }
+                if (outQueue.empty()) continue;
+
+                out = std::move(outQueue.front());
+                outQueue.pop_front();
+            }
+
+            if (!stream->Write(out)) {
+                break;
+            }
+        }
+    });
+
+    constexpr size_t kMaxQueuedMsgs = 128;
     const uint64_t subscriberId = s_nextSubscriberId.fetch_add(1);
     bool streamOk = _rm.addSendCallback(roomId, subscriberId,
-        [stream, &writeMu, ctx](const ::game::RoomServerMessage& out) {
+        [&queueMu, &queueCv, &outQueue, ctx, kMaxQueuedMsgs](const ::game::RoomServerMessage& out) {
             if (ctx->IsCancelled()) return;
-            std::lock_guard<std::mutex> lock(writeMu);
-            stream->Write(out);
+
+            std::lock_guard<std::mutex> lock(queueMu);
+
+            if (out.has_state()) {
+                // Keep only the newest state snapshot in queue.
+                for (auto it = outQueue.begin(); it != outQueue.end();) {
+                    if (it->has_state()) it = outQueue.erase(it);
+                    else ++it;
+                }
+            }
+
+            if (outQueue.size() >= kMaxQueuedMsgs) {
+                // Drop oldest state first; if none exists, drop this state.
+                bool droppedOne = false;
+                for (auto it = outQueue.begin(); it != outQueue.end(); ++it) {
+                    if (it->has_state()) {
+                        outQueue.erase(it);
+                        droppedOne = true;
+                        break;
+                    }
+                }
+                if (!droppedOne && out.has_state()) {
+                    return;
+                }
+                if (!droppedOne && !outQueue.empty()) {
+                    outQueue.pop_front();
+                }
+            }
+
+            outQueue.push_back(out);
+            queueCv.notify_one();
         });
 
     if (!streamOk) {
@@ -123,8 +183,15 @@ grpc::Status GameServiceImpl::RoomStream(
         _rm.enqueueMessage(msg);
     }
 
-    // Deregister callback so the dead stream isn't written to.
+    // Deregister callback so dead stream is no longer queued to.
     _rm.removeSendCallback(roomId, subscriberId);
+
+    {
+        std::lock_guard<std::mutex> lock(queueMu);
+        stopWriter = true;
+    }
+    queueCv.notify_all();
+    if (writer.joinable()) writer.join();
 
     return grpc::Status::OK;
 }
