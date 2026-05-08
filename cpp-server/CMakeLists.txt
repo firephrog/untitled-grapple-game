@@ -108,11 +108,43 @@ add_custom_command(
 
 # ── find nlohmann/json (header-only) ─────────────────────────────────────────
 
-find_package(nlohmann_json 3.11 REQUIRED)
+# vcpkg: nlohmann_json CONFIG; Debian apt: nlohmann-json3-dev (header-only,
+# no cmake config file — fall back to finding the header directly).
+find_package(nlohmann_json 3.11 QUIET)
+if(NOT nlohmann_json_FOUND)
+    find_path(NLOHMANN_JSON_INCLUDE_DIR nlohmann/json.hpp
+        PATHS /usr/include /usr/local/include
+        REQUIRED
+    )
+    add_library(nlohmann_json::nlohmann_json INTERFACE IMPORTED)
+    target_include_directories(nlohmann_json::nlohmann_json
+        INTERFACE "${NLOHMANN_JSON_INCLUDE_DIR}")
+    message(STATUS "nlohmann/json found via header at ${NLOHMANN_JSON_INCLUDE_DIR}")
+endif()
 
 # ── find hiredis ─────────────────────────────────────────────────────────────
 
-find_package(hiredis REQUIRED)
+# vcpkg: hiredis CONFIG; Debian apt: libhiredis-dev (pkg-config only, no
+# cmake config file).
+find_package(hiredis QUIET)
+if(NOT hiredis_FOUND)
+    message(STATUS "hiredis CMake config not found — trying pkg-config fallback")
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(HIREDIS REQUIRED IMPORTED_TARGET hiredis)
+        if(NOT TARGET hiredis::hiredis)
+            add_library(hiredis::hiredis ALIAS PkgConfig::HIREDIS)
+        endif()
+    else()
+        # Last resort: find header + library directly
+        find_path(HIREDIS_INCLUDE_DIR hiredis/hiredis.h REQUIRED)
+        find_library(HIREDIS_LIB NAMES hiredis REQUIRED)
+        add_library(hiredis::hiredis UNKNOWN IMPORTED)
+        set_target_properties(hiredis::hiredis PROPERTIES
+            IMPORTED_LOCATION "${HIREDIS_LIB}"
+            INTERFACE_INCLUDE_DIRECTORIES "${HIREDIS_INCLUDE_DIR}")
+    endif()
+endif()
 
 # ── collect sources ───────────────────────────────────────────────────────────
 
