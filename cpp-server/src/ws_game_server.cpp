@@ -575,6 +575,27 @@ nlohmann::json WsGameServer::_serializeServerMessage(const ::game::RoomServerMes
     return out;
 }
 
+#else
+
+WsGameServer::WsGameServer(RoomManager& rm)
+    : _rm(rm)
+{}
+
+WsGameServer::~WsGameServer() {
+    stop();
+}
+
+bool WsGameServer::start(uint16_t port) {
+    (void)port;
+    std::fprintf(stderr, "[WsGameServer] direct WS server is only implemented on Windows; skipping on this platform\n");
+    _running = false;
+    return false;
+}
+
+void WsGameServer::stop() {
+    _running = false;
+}
+
 #endif // _WIN32
 
 } // namespace game
