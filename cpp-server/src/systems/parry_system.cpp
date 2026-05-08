@@ -1,5 +1,6 @@
 #include "parry_system.hpp"
 #include "../config.hpp"
+#include <algorithm>
 
 namespace systems {
 
