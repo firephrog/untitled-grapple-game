@@ -1,187 +1,78 @@
-'use strict';
+﻿'use strict';
+/**
+ * RankedRoom  – extends MatchmakingRoom.
+ *
+ * Skips map voting; picks a random map, broadcasts countdown, then starts.
+ * C++ handles all simulation. ELO + DB writes happen in Node.js after game-end.
+ */
+const MatchmakingRoom = require('./MatchmakingRoom');
+const { randomMapId, mapFilePath, getMap } = require('../maps');
 
-// ── rooms/RankedRoom.js ────────────────────────────────────────────────────
-// Ranked game room - inherits from BaseGameRoom but skips map voting.
-// Automatically selects a random map and starts the countdown immediately
-// after both players join.
-// ──────────────────────────────────────────────────────────────────────────
-
-const { MatchmakingRoom } = require('./MatchmakingRoom');
-const { getMap, randomMapId } = require('../maps');
-const CFG = require('../config');
+const RANKED_COUNTDOWN_MS = 3000;
 
 class RankedRoom extends MatchmakingRoom {
-
-  // Override to skip voting phase and go straight to countdown
-  async onJoin(client, opts = {}) {
-    // Call parent onJoin (handles skin loading, player state, same-account check, and voting phase)
-    await super.onJoin(client, opts);
+  onCreate(options) {
+    super.onCreate({ ...options, mode: 'ranked' });
   }
 
-  // Override voting phase to use random map instead
+  // Override: skip vote phase, go straight to countdown.
   _startVotePhase() {
-    // For ranked mode, we don't vote - just pick a random map
     const mapId = randomMapId();
-    const map = getMap(mapId);
-    
-    // Store the chosen map for _beginGameFromCountdown to use
-    this._chosenMapId = mapId;
-    
-
-    
-    this.broadcast('mapChosen', { mapId: map.id, mapName: map.name, skyColor: map.skyColor });
-    
-    // Wait 500ms then start countdown
-    this.clock.setTimeout(() => this._startRankedCountdown(), 500);
+    const map   = getMap(mapId);
+    console.log(`[RankedRoom ${this.roomId}] _startVotePhase: mapId=${mapId} map.id=${map.id} clients=${this.clients.length}`);
+    this.broadcast('mapChosen', { mapId, mapName: map.name, skyColor: map.skyColor });
+    setTimeout(() => this._startCountdown(map), 500);
   }
 
-  // Start 3-second countdown before game begins
-  _startRankedCountdown() {
-    if (this.state.phase !== 'waiting') return;
-    
-    this.state.phase = 'countdown';
-    const countdownMs = CFG.RANKED_COUNTDOWN_MS;
-    
+  _startCountdown(map) {
+    if (this.clients.length < this.maxClients) {
+      console.log(`[RankedRoom ${this.roomId}] _startCountdown aborted: clients=${this.clients.length}/${this.maxClients}`);
+      return;
+    }
 
-    
-    // Send countdown message with spawn data for both players
-    this.broadcast('countdownStart', { 
-      durationMs: countdownMs,
-      players: this._getCountdownPlayerData(),
-    });
-    
-    // After countdown, start the game
-    this.clock.setTimeout(() => this._beginGameFromCountdown(), countdownMs);
-  }
-
-  // Get player data for countdown screen
-  _getCountdownPlayerData() {
-    const result = {};
-    
-    for (const [sessionId, ps] of this.state.players.entries()) {
-      const client = this.clients.find(c => c.sessionId === sessionId);
-      if (!client || !client._userId) continue;
-      
-      // Find player spawn location (should be set in physics)
-      const body = this._bodies?.get(sessionId);
-      const spawnPos = body ? { x: body.translation().x, y: body.translation().y, z: body.translation().z } : null;
-      
-      // Get rating data for this player
-      const ratingData = this._playerRatings.get(sessionId);
-      
-      result[sessionId] = {
-        sessionId,
-        userId: client._userId,
-        health: ps.health,
-        spawnPos,
-        elo: ratingData?.elo || 100,
+    const players = {};
+    for (const c of this.clients) {
+      players[c.sessionId] = {
+        sessionId: c.sessionId,
+        userId: this._dbIds.get(c.sessionId) || null,
+        username: this._playerNames.get(c.sessionId)?.username,
+        elo: this._playerRatings?.get(c.sessionId) ?? 1000,
       };
     }
-    
-    return result;
+    console.log(`[RankedRoom ${this.roomId}] _startCountdown: map.id=${map.id} players=${JSON.stringify(Object.keys(players))}`);
+
+    this.broadcast('countdownStart', { durationMs: RANKED_COUNTDOWN_MS, players });
+
+    setTimeout(() => this._beginGame(map), RANKED_COUNTDOWN_MS);
   }
 
-  // Begin game after countdown (same as normal _beginGame but used here)
-  async _beginGameFromCountdown() {
-    if (this.state.phase !== 'countdown') return;
-
-    // Get the map that was chosen earlier
-    const mapId = this._chosenMapId || 'default';
-    const map = getMap(mapId);
-
-    await this._beginGame(map);
-  }
-
-  // Override to store chosen map for later
   async _beginGame(map) {
-    this._chosenMapId = map.id;
+    if (this.clients.length < this.maxClients) {
+      console.log(`[RankedRoom ${this.roomId}] _beginGame aborted: clients=${this.clients.length}/${this.maxClients}`);
+      return;
+    }
     return super._beginGame(map);
   }
 
-  // Override _endGame to send ELO data
-  async _endGame(winnerId, loserId) {
+  /**
+   * ELO update emits an enriched gameEnd event with eloChange.
+   * Extends MatchmakingRoom's onGameEnd which writes to DB.
+   */
+  async onGameEnd(winnerId, loserId) {
+    const winnerElo = this._playerRatings?.get(winnerId) ?? 1000;
+    const loserElo  = this._playerRatings?.get(loserId)  ?? 1000;
+
+    await super.onGameEnd(winnerId, loserId);
+
     const { calculateNewElo } = require('../lib/RankingUtils');
-    const User = require('../models/User');
+    const { RANKED_K_FACTOR_HIGH, RANKED_K_FACTOR_LOW, RANKED_ELO_THRESHOLD } = require('../config');
+    const kW = winnerElo >= RANKED_ELO_THRESHOLD ? RANKED_K_FACTOR_HIGH : RANKED_K_FACTOR_LOW;
+    const kL = loserElo  >= RANKED_ELO_THRESHOLD ? RANKED_K_FACTOR_HIGH : RANKED_K_FACTOR_LOW;
+    const { newWinnerElo } = calculateNewElo(winnerElo, loserElo, kW, kL);
+    const eloChange = newWinnerElo - winnerElo;
 
-    this.state.phase = 'ended';
-    
-    // Convert session IDs to database user IDs
-    const winnerClient = this.clients.find(c => c.sessionId === winnerId);
-    const loserClient = this.clients.find(c => c.sessionId === loserId);
-    const winnerDbId = winnerClient?._userId;
-    const loserDbId = loserClient?._userId;
-
-    // Get current ELOs before update
-    const winnerData = this._playerRatings.get(winnerId);
-    const loserData = this._playerRatings.get(loserId);
-    
-    let newWinnerElo = winnerData?.elo || 100;
-    let newLoserElo = loserData?.elo || 100;
-    let winnerEloChange = 0;
-    let loserEloChange = 0;
-
-    if (winnerData && loserData) {
-      // Calculate new ELOs
-      newWinnerElo = calculateNewElo(winnerData.elo, loserData.elo, true, {
-        high: CFG.RANKED_K_FACTOR_HIGH,
-        low: CFG.RANKED_K_FACTOR_LOW,
-        threshold: CFG.RANKED_ELO_THRESHOLD,
-      });
-      newLoserElo = calculateNewElo(loserData.elo, winnerData.elo, false, {
-        high: CFG.RANKED_K_FACTOR_HIGH,
-        low: CFG.RANKED_K_FACTOR_LOW,
-        threshold: CFG.RANKED_ELO_THRESHOLD,
-      });
-
-      winnerEloChange = newWinnerElo - winnerData.elo;
-      loserEloChange = newLoserElo - loserData.elo;
-    }
-    
-    // Update stats and ELO asynchronously
-    if (winnerDbId && loserDbId) {
-      (async () => {
-        try {
-          await User.findByIdAndUpdate(winnerDbId, { $inc: { wins: 1 }, $set: { elo: newWinnerElo } });
-          
-          await User.findByIdAndUpdate(loserDbId, { $inc: { deaths: 1 }, $set: { elo: newLoserElo } });
-          
-          // Check and unlock any earned rewards for both players
-          const { checkAndUnlockRewards } = require('../routes/skins');
-          const winnerUnlocks = await checkAndUnlockRewards(winnerDbId);
-          const loserUnlocks = await checkAndUnlockRewards(loserDbId);
-          
-          // Send updated unlock info to clients
-          if (winnerUnlocks.length > 0 || loserUnlocks.length > 0) {
-            this.broadcast('unlocksNotification', {
-              winnerUnlocks,
-              loserUnlocks,
-            });
-          }
-        } catch (e) {
-          console.error('Error updating player stats/unlocks:', e);
-        }
-      })();
-    }
-
-    // Send gameEnd with ELO data for ranked mode
-    this.broadcast('gameEnd', { 
-      winner: winnerDbId, 
-      loser: loserDbId,
-      eloChange: winnerDbId === winnerClient?._userId ? winnerEloChange : loserEloChange,
-      newElo: winnerDbId === winnerClient?._userId ? newWinnerElo : newLoserElo,
-    });
-    
-    // NOTE: Do NOT call this.onGameEnd() here - RankedRoom handles ELO updates
-    // directly, and calling onGameEnd would trigger MatchmakingRoom's ELO update
-    // with stale data, causing race conditions.
-    
-    // Clear rematch votes and start timeout
-    this._rematches.clear();
-    if (this._rematchTimer) this._rematchTimer.clear();
-    this._rematchTimer = this.clock.setTimeout(() => {
-      this.disconnect();
-    }, 30000); // 30 second timeout for rematch decision
+    this.broadcast('rankedEloUpdate', { winnerId, eloChange, newElo: newWinnerElo });
   }
 }
 
-module.exports = { RankedRoom };
+module.exports = RankedRoom;

@@ -60,6 +60,10 @@ function showMenu()        {
   menuEl.style.visibility = 'visible';
   menuEl.style.opacity = '1';
   menuEl.style.pointerEvents = 'auto';
+  const hudEl = document.getElementById('hud');
+  if (hudEl) hudEl.style.display = 'none';
+  const lockOverlay = document.getElementById('lockOverlay');
+  if (lockOverlay) lockOverlay.style.display = 'none';
   showBackground();  // Show background behind menu
   if (typeof renderer !== 'undefined' && renderer.domElement) {
     renderer.domElement.style.display = 'none'; 
@@ -83,6 +87,13 @@ function showWaiting()     {
 function showGame()        { 
   hideMenu();
   hideBackground();  // Hide background canvas so game is visible
+  const bgCanvas = document.getElementById('bgCanvas');
+  if (bgCanvas) {
+    bgCanvas.style.display = 'none';
+    bgCanvas.style.visibility = 'hidden';
+    bgCanvas.style.opacity = '0';
+    bgCanvas.style.zIndex = '-10';
+  }
   // Hide all UI overlays
   const screenIds = ['versusMenu', 'waitingRoom', 'mapVote', 'rankedMenu', 'rankedQueue', 'rankedCountdown'];
   screenIds.forEach(id => {
@@ -94,9 +105,10 @@ function showGame()        {
     renderer.domElement.style.visibility = 'visible';
     renderer.domElement.style.opacity = '1';
     renderer.domElement.style.pointerEvents = 'auto';
-    renderer.domElement.style.zIndex = '50';  // Ensure it's above everything
+    renderer.domElement.style.zIndex = '50';  // Keep game under HUD/overlays
   }
-  document.getElementById('hud').style.display = 'block'; 
+  const hudEl = document.getElementById('hud');
+  if (hudEl) hudEl.style.display = 'block';
 }
 
 function showMapVote()     { document.getElementById('mapVote').style.display = 'flex'; }
@@ -108,6 +120,53 @@ function showResults(won)  {
   document.getElementById('resultSub').textContent   = won ? 'opponent eliminated' : 'you were eliminated';
   document.getElementById('page-results').style.display = 'flex';
 }
+
+function pushInGameNotification(message, duration = 3000, options = {}) {
+  const container = document.querySelector('.inGameNotifications .notificationContent');
+  if (!container) {
+    console.warn('[pushInGameNotification] Container not found');
+    return;
+  }
+
+  const variant = options.variant || 'default';
+  const palette = {
+    default: { bg: 'rgba(0,255,136,0.2)', border: '#ffe600', text: '#00ff88' },
+    parry:   { bg: 'rgba(0,255,136,0.2)', border: '#00ff88', text: '#7dffb8' },
+    join:    { bg: 'rgba(255,230,0,0.2)', border: '#ffe600', text: '#ffe600' },
+    kill:    { bg: 'rgba(255,68,68,0.2)', border: '#ff4444', text: '#ff6b6b' },
+  };
+  const style = palette[variant] || palette.default;
+
+  const notifId = `ingame-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const notifEl = document.createElement('div');
+  notifEl.id = notifId;
+  notifEl.style.cssText = `padding:8px 10px; margin:4px 0; background:${style.bg}; border-left:3px solid ${style.border}; color:${style.text}; word-break:break-word; font-size: 12px; animation: slideIn 0.3s ease-out;`;
+  notifEl.textContent = message;
+
+  container.insertAdjacentElement('afterbegin', notifEl);
+
+  const notificationsDiv = document.querySelector('.inGameNotifications');
+  if (notificationsDiv) {
+    notificationsDiv.style.opacity = '1';
+    notificationsDiv.style.pointerEvents = 'auto';
+  }
+
+  setTimeout(() => {
+    const el = document.getElementById(notifId);
+    if (el) el.remove();
+
+    if (container.children.length === 0 || container.querySelectorAll('[id^="ingame-"]').length === 0) {
+      setTimeout(() => {
+        if (container.querySelectorAll('[id^="ingame-"]').length === 0 && notificationsDiv) {
+          notificationsDiv.style.opacity = '0';
+          notificationsDiv.style.pointerEvents = 'none';
+        }
+      }, 1000);
+    }
+  }, duration);
+}
+
+window.addInGameNotification = pushInGameNotification;
 
 // ── Scope vignette drawing function ────────────────────────────────────────────
 function drawScopeVignette(canvas, ctx, progress) {
@@ -190,16 +249,48 @@ let presenceRoom = null;
 let currentRoomCode = null;
 let notifications = new Set(); // Track notification IDs to avoid duplicates
 let gameStarted = false;
+let pingMs = 0;
+let cWorld = null;   // RAPIER.World
+let cBody  = null;   // RAPIER.RigidBody (our player)
 
 // Ranked mode state
 let rankedMode = false;
 let isInRankedQueue = false;
 let playerElo = 100;
 let queueUpdateInterval = null;
+let rankedPingInterval = null;
+let rankedJoinInFlight = false;
 
 // Game message state
 let _pendingSkinInfo = null;
 let _pendingNametagInfo = null;
+
+// Ranked diagnostics
+function rankedDebug(...args) {
+  if (rankedMode || isInRankedQueue) {
+    console.log('[RANKED DEBUG]', ...args);
+  }
+}
+
+function openDirectGameSocketBridge(activeRoom) {
+  const fn = typeof window !== 'undefined' ? window.__openDirectGameSocketImpl : null;
+  if (typeof fn === 'function') {
+    fn(activeRoom);
+    return true;
+  }
+  console.warn('[DirectSocket] open requested before direct socket init is ready');
+  return false;
+}
+
+function closeDirectGameSocketBridge() {
+  const fn = typeof window !== 'undefined' ? window.__closeDirectGameSocketImpl : null;
+  if (typeof fn === 'function') {
+    fn();
+    return true;
+  }
+  console.warn('[DirectSocket] close requested before direct socket init is ready');
+  return false;
+}
 
 // Loaders (initialized in init())
 let gltfLoader = null;
@@ -248,19 +339,45 @@ async function updateRankedStats() {
 }
 
 async function joinRankedQueue() {
-  const authUser = getUser();
-  if (!authUser) return;
+  if (rankedJoinInFlight) {
+    rankedDebug('joinRankedQueue:skippedAlreadyInFlight');
+    return;
+  }
 
-  rankedMode = true;
-  isInRankedQueue = true;
-  
-  // Hide all UI screens that shouldn't be visible during queue
-  document.getElementById('page-results').style.display = 'none';
-  document.getElementById('rankedMenu').style.display = 'none';
-  document.getElementById('versusMenu').style.display = 'none';
-  document.getElementById('rankedQueue').style.display = 'flex';
+  rankedJoinInFlight = true;
+  const authUser = getUser();
+  if (!authUser) {
+    rankedJoinInFlight = false;
+    return;
+  }
 
   try {
+    rankedMode = true;
+    isInRankedQueue = true;
+    rankedDebug('joinRankedQueue:start', {
+      hasAuthUser: !!authUser,
+      existingRoom: !!room,
+      existingMyId: myId,
+    });
+
+    if (rankedPingInterval) {
+      clearInterval(rankedPingInterval);
+      rankedPingInterval = null;
+    }
+
+    if (room) {
+      try {
+        await room.leave();
+      } catch (_) {}
+      room = null;
+    }
+  
+    // Hide all UI screens that shouldn't be visible during queue
+    document.getElementById('page-results').style.display = 'none';
+    document.getElementById('rankedMenu').style.display = 'none';
+    document.getElementById('versusMenu').style.display = 'none';
+    document.getElementById('rankedQueue').style.display = 'flex';
+
     // Fetch user ELO
     await updateRankedStats();
     
@@ -271,6 +388,12 @@ async function joinRankedQueue() {
       ratingMax: playerElo + 500,
     });
     myId = room.sessionId;
+    rankedDebug('joinRankedQueue:joinedRoom', {
+      roomId: room.id,
+      roomName: room.name,
+      myId,
+    });
+    openDirectGameSocketBridge(room);
 
     // ── Register all game message handlers for ranked mode ──────
 
@@ -283,23 +406,29 @@ async function joinRankedQueue() {
     });
 
     // Ping/pong for latency
-    setInterval(() => {
-      room.send('ping', { t: Date.now() });
+    rankedPingInterval = setInterval(() => {
+      if (room) {
+        room.send('ping', { t: Date.now() });
+      }
     }, 1000);
 
     room.onMessage('pong', ({ t }) => {
+      pingMs = Math.max(0, Date.now() - t);
       const el = document.getElementById('ping');
-      if (el) el.textContent = (Date.now() - t) + ' ms';
+      if (el) el.textContent = pingMs + ' ms';
     });
 
     // Init message (sent before match starts)
     room.onMessage('init', (data) => {
       myId   = data.myId;
       isHost = data.isHost;
+      rankedDebug('onMessage:init', data);
+      openDirectGameSocketBridge(room);
     });
 
     // Map chosen (for non-ranked mode, but also sent in ranked for consistency)
     room.onMessage('mapChosen', ({ mapId, mapName, skyColor }) => {
+      rankedDebug('onMessage:mapChosen', { mapId, mapName, skyColor });
       // Hide ALL UI screens (don't show waitingRoom for ranked)
       document.getElementById('rankedQueue').style.display = 'none';
       document.getElementById('rankedMenu').style.display = 'none';
@@ -311,48 +440,108 @@ async function joinRankedQueue() {
     });
 
     // Load map (visual + physics)
-    room.onMessage('loadMap', async ({ glb, collision, spawnPoints }) => {
+    room.onMessage('loadMap', async ({ glb, collision, spawnPoints, skyColor }) => {
       try {
-        // Check if loadMapGLB is defined (may be inside init())
-        if (!window.loadMapGLB) {
+        rankedDebug('onMessage:loadMap:start', {
+          glb,
+          collision,
+          spawnCount: Array.isArray(spawnPoints) ? spawnPoints.length : -1,
+          skyColor,
+          isHost,
+        });
+        if (skyColor && typeof scene !== 'undefined' && scene) {
+          scene.background = new THREE.Color(skyColor);
+        }
+        // Prefer globals but fall back to local bindings if globals are not
+        // published yet at this exact message timing.
+        const mapLoader = window.loadMapGLB || loadMapGLB;
+        const worldBuilder = window.buildClientWorld || buildClientWorld;
+
+        if (!mapLoader) {
           console.error('[Ranked loadMap] loadMapGLB not available');
+          rankedDebug('onMessage:loadMap:missingLoader');
           return;
         }
-        await window.loadMapGLB(glb);
+        await mapLoader(glb);
         const spawnIndex = isHost ? 0 : 1;
         const spawn      = spawnPoints[spawnIndex] || { x: 0, y: 5, z: 0 };
-        if (!window.buildClientWorld) {
+        if (!worldBuilder) {
           console.error('[Ranked loadMap] buildClientWorld not available');
+          rankedDebug('onMessage:loadMap:missingWorldBuilder');
           return;
         }
-        await window.buildClientWorld(collision, spawn.x, spawn.y, spawn.z);
+        await worldBuilder(collision, spawn.x, spawn.y, spawn.z);
+        rankedDebug('onMessage:loadMap:done', {
+          spawn,
+          hasCWorld: !!cWorld,
+          hasCBody: !!cBody,
+        });
       } catch (e) {
         console.error('[Ranked loadMap] Error:', e, 'glb:', glb);
+        rankedDebug('onMessage:loadMap:error', { message: e?.message, stack: e?.stack });
       }
     });
 
     // Skin info (opponent skins)
     room.onMessage('skinInfo', (data) => {
       _pendingSkinInfo = data;
+      rankedDebug('onMessage:skinInfo', {
+        count: data ? Object.keys(data).length : 0,
+        oppId,
+        gameStarted,
+      });
+
+      // In ranked/1v1, gameStart can arrive before or after skinInfo depending
+      // on network ordering. If the match is already active, apply immediately.
+      if (gameStarted && oppId && window.skinMgr) {
+        const oppSkinData = _pendingSkinInfo[oppId];
+        if (oppSkinData) {
+          window.skinMgr.assignSkin(oppId, oppSkinData, false)
+            .then(() => {
+              const oppMesh = window.skinMgr.getRoot(oppId);
+              if (oppMesh && window.playerMeshMap) {
+                window.playerMeshMap.set(oppId, oppMesh);
+              }
+              if (window.hookMgr) {
+                window.hookMgr.assignHook(oppId, oppSkinData.grapple, false);
+              }
+            })
+            .catch(err => console.warn('[Ranked skinInfo] Late skin apply failed:', err));
+        }
+      }
     });
 
     // Nametag info
     room.onMessage('nametagInfo', (data) => {
       _pendingNametagInfo = data;
+      rankedDebug('onMessage:nametagInfo', data);
       if (window.nametags) {
         window.nametags.register(data);
       }
     });
 
     // Ranked-specific: countdown before match
-    room.onMessage('countdownStart', handleCountdown);
+    room.onMessage('countdownStart', (data) => {
+      rankedDebug('onMessage:countdownStart', data);
+      handleCountdown(data);
+    });
 
     // Game start (load skins, enable input, lock pointer)
     room.onMessage('gameStart', async (data) => {
       try {
+        rankedDebug('onMessage:gameStart:start', {
+          data,
+          myId,
+          beforeOppId: oppId,
+          pendingSkins: _pendingSkinInfo ? Object.keys(_pendingSkinInfo).length : 0,
+        });
+        // Make canvas visible immediately; keep match visible even if a
+        // later async cosmetic step throws.
+        showGame();
         disableInputDuringCountdown(false);
         
         oppId = myId === data.hostId ? data.guestId : data.hostId;
+        rankedDebug('onMessage:gameStart:resolvedOpp', { oppId });
 
         if (_pendingSkinInfo && window.skinMgr) {
           const oppSkinData = _pendingSkinInfo[oppId];
@@ -383,7 +572,9 @@ async function joinRankedQueue() {
             .catch(err => console.warn('[Ranked gameStart] Failed to load own skins:', err));
 
           // Load opponent's skins
-          fetch(`${API_BASE}/api/users-by-id/${oppId}`)
+          const oppDbId = myId === data.hostId ? data.guestDbId : data.hostDbId;
+          if (oppDbId) {
+            fetch(`${API_BASE}/api/users-by-id/${oppDbId}`)
             .then(r => r.json())
             .then(oppData => {
               if (!oppData?.username) return;
@@ -395,11 +586,21 @@ async function joinRankedQueue() {
             })
             .then(r => r?.json())
             .catch(err => console.warn('[Ranked gameStart] Failed to load opponent skins:', err));
-        }
-
-        showGame();
+          }  // end if (oppDbId)
+        }  // end if (authUserData)
         const _oppHpWrap = document.getElementById('oppHpWrap');
         if (_oppHpWrap) _oppHpWrap.style.display = 'flex';
+
+        // Ensure HUD health is reset at the start of each ranked round.
+        const _myHpText = document.getElementById('health');
+        const _oppHpText = document.getElementById('opponentHP');
+        const _myHpFill = document.getElementById('myHpFill');
+        const _oppHpFill = document.getElementById('oppHpFill');
+        if (_myHpText) _myHpText.textContent = '100';
+        if (_oppHpText) _oppHpText.textContent = '100';
+        if (_myHpFill) _myHpFill.style.width = '100%';
+        if (_oppHpFill) _oppHpFill.style.width = '100%';
+
         gameStarted = true;
         lastGear = 0;
         
@@ -426,8 +627,24 @@ async function joinRankedQueue() {
             }
           }, 100);  // Slight delay to ensure game is ready
         }
+
+        const bgCanvas = document.getElementById('bgCanvas');
+        rankedDebug('onMessage:gameStart:done', {
+          gameStarted,
+          rankedMode,
+          isInRankedQueue,
+          rendererDisplay: renderer?.domElement?.style?.display,
+          rendererVisibility: renderer?.domElement?.style?.visibility,
+          rendererZ: renderer?.domElement?.style?.zIndex,
+          bgDisplay: bgCanvas?.style?.display,
+          bgVisibility: bgCanvas?.style?.visibility,
+          bgZ: bgCanvas?.style?.zIndex,
+          hasCWorld: !!cWorld,
+          hasCBody: !!cBody,
+        });
       } catch (e) {
         console.error('[Ranked gameStart]', e);
+        rankedDebug('onMessage:gameStart:error', { message: e?.message, stack: e?.stack });
       }
     });
 
@@ -437,7 +654,8 @@ async function joinRankedQueue() {
         bombMgr.removeBomb(data.id);
       }
       if (typeof Explosion !== 'undefined') {
-        explosions.push(new Explosion(data.position));
+        const explosionPos = normalizeVec3(data?.position ?? data?.pos);
+        explosions.push(new Explosion(explosionPos));
       }
     });
 
@@ -477,13 +695,12 @@ async function joinRankedQueue() {
       const SNIPER_RADIUS = 0.08;
       const SNIPER_SEGMENTS = 3;
       const distance = start.distanceTo(end);
-      // Create cylinder geometry with proper distance
       const geometry = new THREE.CylinderGeometry(SNIPER_RADIUS, SNIPER_RADIUS, distance, SNIPER_SEGMENTS);
-      geometry.rotateX(Math.PI / 2);  // Rotate 90 degrees so cylinder points along Z-axis
       const material = new THREE.MeshBasicMaterial({ color: 0xff6600, depthWrite: true, transparent: true, opacity: 1.0 });
       const cylinder = new THREE.Mesh(geometry, material);
       cylinder.position.copy(start).add(end).divideScalar(2);
-      cylinder.lookAt(end);
+      const sniperDir1 = new THREE.Vector3().subVectors(end, start).normalize();
+      cylinder.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), sniperDir1);
       scene.add(cylinder);
       setTimeout(() => scene.remove(cylinder), 1000);
     });
@@ -648,7 +865,7 @@ async function joinRankedQueue() {
 
     // Parry success
     room.onMessage('parrySuccess', (data) => {
-      addInGameNotification('+ PARRY', 3000);
+      pushInGameNotification('+ PARRY', 3000);
     });
 
     // Player left
@@ -730,12 +947,22 @@ async function joinRankedQueue() {
     document.getElementById('rankedErrorMsg').textContent = errorMsg;
     document.getElementById('rankedQueue').style.display = 'none';
     document.getElementById('rankedMenu').style.display = 'flex';
+  } finally {
+    rankedJoinInFlight = false;
   }
 }
 
-function cancelRankedQueue() {
+async function cancelRankedQueue() {
   rankedMode = false;
   isInRankedQueue = false;
+  ffaMode = false;
+  gameStarted = false;
+  closeDirectGameSocketBridge();
+
+  if (rankedPingInterval) {
+    clearInterval(rankedPingInterval);
+    rankedPingInterval = null;
+  }
   
   if (queueUpdateInterval) {
     clearInterval(queueUpdateInterval);
@@ -743,25 +970,75 @@ function cancelRankedQueue() {
   }
   
   if (room) {
-    room.leave();
+    try {
+      await room.leave();
+    } catch (_) {}
     room = null;
   }
-  
-  document.getElementById('rankedQueue').style.display = 'none';
-  document.getElementById('rankedMenu').style.display = 'flex';
-  document.getElementById('menu').style.display = 'flex';
+
+  const overlayIds = [
+    'page-results',
+    'rankedQueue',
+    'rankedMenu',
+    'rankedCountdown',
+    'versusMenu',
+    'waitingRoom',
+    'mapVote',
+    'ffaMenu',
+    'ffaDeathMenu',
+  ];
+  overlayIds.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
+
+  const hudEl = document.getElementById('hud');
+  if (hudEl) hudEl.style.display = 'none';
+  const lockOverlay = document.getElementById('lockOverlay');
+  if (lockOverlay) lockOverlay.style.display = 'none';
+
+  if (typeof controls !== 'undefined' && controls && controls.isLocked) {
+    controls.unlock();
+  }
+
+  if (typeof renderer !== 'undefined' && renderer?.domElement) {
+    renderer.domElement.style.display = 'none';
+    renderer.domElement.style.visibility = 'hidden';
+    renderer.domElement.style.opacity = '0';
+    renderer.domElement.style.pointerEvents = 'none';
+    renderer.domElement.style.zIndex = '-10';
+  }
+
+  const bgCanvas = document.getElementById('bgCanvas');
+  if (bgCanvas) {
+    bgCanvas.style.display = 'block';
+    bgCanvas.style.visibility = 'visible';
+    bgCanvas.style.opacity = '1';
+    bgCanvas.style.zIndex = '0';
+  }
+
+  showBackground();
+  showMenu();
 }
 
-function resetRankedGame() {
+async function resetRankedGame() {
   // Clean up all game state before requeuing
   gameStarted = false;
+  closeDirectGameSocketBridge();
+
+  if (rankedPingInterval) {
+    clearInterval(rankedPingInterval);
+    rankedPingInterval = null;
+  }
   
   // Hide results screen
   document.getElementById('page-results').style.display = 'none';
   
   // Leave current room
   if (room) {
-    room.leave();
+    try {
+      await room.leave();
+    } catch (_) {}
     room = null;
   }
   
@@ -961,6 +1238,10 @@ async function ffaDeployClicked() {
   const authUser = getUser();
   if (!authUser) return;
 
+  // Ensure FFA update/render path is enabled even if we came from 1v1/ranked.
+  // The FFA animate loop is gated by !oppId.
+  oppId = null;
+
   const deployBtn = document.getElementById('ffaDeployBtn');
   if (deployBtn) deployBtn.disabled = true;
 
@@ -970,10 +1251,33 @@ async function ffaDeployClicked() {
       token: authUser.token,
     });
     myId = room.sessionId;
+    openDirectGameSocketBridge(room);
 
     // Hide preview menu immediately after joining
     stopFFAMapPreview();
     document.getElementById('ffaMenu').style.display = 'none';
+
+    // ── FFA State Listeners ───────────────────────────────────
+    // Use onAdd as a primary skin-loading trigger — fires for every player
+    // that appears in the schema state, including those already present when
+    // we join.  This is more reliable than relying solely on skinInfo messages
+    // arriving at the right time relative to gameStart.
+    if (room.state && room.state.players) {
+      const onAddPlayer = (ps, sessionId) => {
+        if (sessionId === myId) return;
+        // Bootstrap visuals immediately for late joiners, independent of
+        // pointer-lock/gameStarted timing.
+        ensureFFAVisuals(sessionId);
+      };
+
+      // Colyseus MapSchema listeners are function-based in most builds.
+      if (typeof room.state.players.onAdd === 'function') {
+        room.state.players.onAdd(onAddPlayer);
+      } else {
+        // Fallback for legacy code paths that used direct assignment.
+        room.state.players.onAdd = onAddPlayer;
+      }
+    }
 
     // ── FFA Message Handlers ──────────────────────────────────
 
@@ -994,6 +1298,7 @@ async function ffaDeployClicked() {
     room.onMessage('init', (data) => {
       myId = data.myId;
       ffaCurrentMap = data.currentMap;
+      openDirectGameSocketBridge(room);
     });
 
     room.onMessage('playerCountUpdate', (data) => {
@@ -1031,11 +1336,12 @@ async function ffaDeployClicked() {
 
     room.onMessage('skinInfo', (data) => {
       console.log('[FFA skinInfo] Received for', Object.keys(data).length, 'players');
-      _pendingSkinInfo = data;
+      // Merge into pending cache so multiple mid-game joiners don't overwrite each other.
+      _pendingSkinInfo = Object.assign(_pendingSkinInfo || {}, data);
     
-    // If game is already started, immediately load skins for mid-game joiners
-    if (gameStarted && window.skinMgr) {
-      console.log('[FFA skinInfo] Game already started, loading skins immediately');
+    // Load skins immediately for players announced via skinInfo.
+    if (window.skinMgr) {
+      console.log('[FFA skinInfo] Loading skins immediately');
       (async () => {
         for (const [oppId, oppSkinData] of Object.entries(data)) {
           if (oppId !== myId) {
@@ -1063,6 +1369,9 @@ async function ffaDeployClicked() {
     if (window.nametags) {
       for (const [sid, nametagInfo] of Object.entries(data)) {
         window.nametags.register(nametagInfo);
+        if (sid !== myId) {
+          ensureFFAVisuals(sid);
+        }
       }
     }
   });
@@ -1070,17 +1379,22 @@ async function ffaDeployClicked() {
     room.onMessage('gameStart', async (data) => {
       console.log('[FFA gameStart] Game starting!', data);
       try {
-        // Load skins for all opponents
+        // Load skins for all opponents (individual try/catch so one failure
+        // doesn't prevent gameStarted from being set).
         if (_pendingSkinInfo && window.skinMgr) {
           console.log('[FFA gameStart] Loading skins for', Object.keys(_pendingSkinInfo).length, 'opponents');
           for (const [oppId, oppSkinData] of Object.entries(_pendingSkinInfo)) {
-            await window.skinMgr.assignSkin(oppId, oppSkinData, false);
-            const oppMesh = window.skinMgr.getRoot(oppId);
-            if (oppMesh && window.playerMeshMap) {
-              window.playerMeshMap.set(oppId, oppMesh);
-            }
-            if (window.hookMgr) {
-              window.hookMgr.assignHook(oppId, oppSkinData.grapple, false);
+            try {
+              await window.skinMgr.assignSkin(oppId, oppSkinData, false);
+              const oppMesh = window.skinMgr.getRoot(oppId);
+              if (oppMesh && window.playerMeshMap) {
+                window.playerMeshMap.set(oppId, oppMesh);
+              }
+              if (window.hookMgr) {
+                window.hookMgr.assignHook(oppId, oppSkinData.grapple, false);
+              }
+            } catch (skinErr) {
+              console.warn('[FFA gameStart] Failed to load skin for', oppId, skinErr);
             }
           }
           _pendingSkinInfo = null;
@@ -1173,12 +1487,21 @@ async function ffaDeployClicked() {
       }
     });
 
+    room.onMessage('parrySuccess', () => {
+      pushInGameNotification('+ PARRY', 3000, { variant: 'parry' });
+    });
+
+    room.onMessage('parryActivated', () => {
+      pushInGameNotification('PARRY READY', 1200, { variant: 'parry' });
+    });
+
     room.onMessage('bombExploded', (data) => {
       if (typeof bombMgr !== 'undefined' && bombMgr && bombMgr._bombs?.has(data.id)) {
         bombMgr.removeBomb(data.id);
       }
       if (typeof Explosion !== 'undefined') {
-        explosions.push(new Explosion(data.position));
+        const explosionPos = normalizeVec3(data?.position ?? data?.pos);
+        explosions.push(new Explosion(explosionPos));
       }
     });
 
@@ -1205,7 +1528,21 @@ async function ffaDeployClicked() {
       }
     });
 
-    room.onMessage('playerDead', (data) => {
+    room.onMessage('playerDied', (data) => {
+      // Kill feed notification for everyone in FFA.
+      const victimName = (data.playerId && nametags?._entries?.get(data.playerId)?.info?.username) || 'A player';
+      const killerName = data.killerName || (data.killerId && nametags?._entries?.get(data.killerId)?.info?.username) || 'Unknown';
+      if (data.killerId || data.killerName) {
+        const killMsg = (data.killerId === myId)
+          ? `YOU ELIMINATED ${victimName}`
+          : `${killerName} eliminated ${victimName}`;
+        pushInGameNotification(killMsg, 3000, { variant: 'kill' });
+      }
+
+      // Only affect local state if IT IS the local player who died.
+      // playerDied is broadcast to all clients — don't break alive players.
+      if (data.playerId !== myId) return;
+
       if (typeof controls !== 'undefined' && controls && controls.isLocked) {
         controls.unlock();
       }
@@ -1240,11 +1577,11 @@ async function ffaDeployClicked() {
     });
 
     room.onMessage('mapRotationWarning', (data) => {
-      addInGameNotification('[MAP ROTATION] Changing map in 10 seconds');
+      pushInGameNotification('[MAP ROTATION] Changing map in 10 seconds');
     });
 
     room.onMessage('mapRotated', (data) => {
-      addInGameNotification(`Map changed to: ${data.mapName}`);
+      pushInGameNotification(`Map changed to: ${data.mapName}`);
     });
 
     room.onMessage('sniperLine', (data) => {
@@ -1258,11 +1595,11 @@ async function ffaDeployClicked() {
       const end = new THREE.Vector3(endData.x, endData.y, endData.z);
       const distance = start.distanceTo(end);
       const geometry = new THREE.CylinderGeometry(0.08, 0.08, distance, 3);
-      geometry.rotateX(Math.PI / 2);
       const material = new THREE.MeshBasicMaterial({ color: 0xff6600, depthWrite: true, transparent: true, opacity: 1.0 });
       const cylinder = new THREE.Mesh(geometry, material);
       cylinder.position.copy(start).add(end).divideScalar(2);
-      cylinder.lookAt(end);
+      const sniperDir2 = new THREE.Vector3().subVectors(end, start).normalize();
+      cylinder.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), sniperDir2);
       scene.add(cylinder);
       setTimeout(() => scene.remove(cylinder), 1000);
     });
@@ -1407,13 +1744,13 @@ async function ffaDeployClicked() {
     });
 
     room.onMessage('notification', (data) => {
-      addInGameNotification(data.message, data.duration);
+      pushInGameNotification(data.message, data.duration, { variant: data.variant || 'default' });
     });
 
     // Register input handlers
     room.onMessage('input', () => {});  // Placeholder
     room.onMessage('playerRespawned', () => {});
-    room.onMessage('playerDied', () => {});
+    // playerDied is handled above
 
   } catch (err) {
     console.error('[ffaDeployClicked] Failed:', err);
@@ -1431,6 +1768,7 @@ function ffaCancelPreview() {
 }
 
 async function ffaRespawnRequest() {
+  closeDirectGameSocketBridge();
   if (room) {
     try { await room.leave(); } catch (_) {}
     room = null;
@@ -1454,6 +1792,7 @@ async function ffaRespawnRequest() {
 }
 
 async function ffaRelogRequest() {
+  closeDirectGameSocketBridge();
   if (room) {
     try { await room.leave(); } catch (_) {}
     room = null;
@@ -1464,6 +1803,7 @@ async function ffaRelogRequest() {
 
 function ffaExitToMenu() {
   stopFFAMapPreview();
+  closeDirectGameSocketBridge();
   
   if (room) {
     room.send('requestExit');
@@ -1477,6 +1817,10 @@ function ffaExitToMenu() {
 
 
 function handleCountdown(data) {
+  rankedDebug('handleCountdown:start', {
+    myId,
+    data,
+  });
   isInRankedQueue = false;
   
   if (queueUpdateInterval) {
@@ -1500,10 +1844,23 @@ function handleCountdown(data) {
   countdownEl.classList.add('show');
   
   // Get players data for display
-  const myPlayerData = data.players[myId];
-  const oppPlayerData = Object.values(data.players).find(p => p.sessionId !== myId);
+  const players = Array.isArray(data?.players)
+    ? data.players
+    : Object.values(data?.players || {});
+  const myPlayerData = players.find(p => p.sessionId === myId);
+  const oppPlayerData = players.find(p => p.sessionId !== myId);
+  rankedDebug('handleCountdown:playersResolved', {
+    playerCount: players.length,
+    myPlayerData,
+    oppPlayerData,
+  });
   
   if (myPlayerData && oppPlayerData) {
+    const myNameEl = document.getElementById('player1Name');
+    const oppNameEl = document.getElementById('player2Name');
+    if (myNameEl) myNameEl.textContent = myPlayerData.username || 'Player 1';
+    if (oppNameEl) oppNameEl.textContent = oppPlayerData.username || 'Player 2';
+
     // Fetch player names and ELO from server
     fetchCountdownPlayerInfo(myId, 1);
     fetchCountdownPlayerInfo(oppPlayerData.sessionId, 2);
@@ -1532,7 +1889,10 @@ function handleCountdown(data) {
 async function fetchCountdownPlayerInfo(sessionId, playerNumber) {
   try {
     // Try to find player data in the countdown message first
-    const playerData = Object.values(window._countdownData?.players || {}).find(p => p.sessionId === sessionId);
+    const players = Array.isArray(window._countdownData?.players)
+      ? window._countdownData.players
+      : Object.values(window._countdownData?.players || {});
+    const playerData = players.find(p => p.sessionId === sessionId);
     
     if (playerData && playerData.elo) {
       // Display rank and ELO from countdown data
@@ -1540,6 +1900,18 @@ async function fetchCountdownPlayerInfo(sessionId, playerNumber) {
       document.getElementById(`player${playerNumber}Rank`).textContent = rankInfo.name;
       document.getElementById(`player${playerNumber}Rank`).style.color = rankInfo.color;
       document.getElementById(`player${playerNumber}Elo`).textContent = `${rankInfo.elo} ELO`;
+
+      // Use provided username immediately when present.
+      const nameEl = document.getElementById(`player${playerNumber}Name`);
+      if (nameEl && playerData.username) {
+        nameEl.textContent = playerData.username;
+      }
+
+      rankedDebug('fetchCountdownPlayerInfo:fromPayload', {
+        sessionId,
+        playerNumber,
+        playerData,
+      });
     }
     
     // Fetch username from server using userId if available
@@ -1548,10 +1920,16 @@ async function fetchCountdownPlayerInfo(sessionId, playerNumber) {
       if (res.ok) {
         const user = await res.json();
         document.getElementById(`player${playerNumber}Name`).textContent = user.username || 'Player ' + playerNumber;
+        rankedDebug('fetchCountdownPlayerInfo:fromApi', {
+          sessionId,
+          playerNumber,
+          user,
+        });
       }
     }
   } catch (err) {
     console.warn(`[fetchCountdownPlayerInfo] Failed for player ${playerNumber}:`, err);
+    rankedDebug('fetchCountdownPlayerInfo:error', { sessionId, playerNumber, message: err?.message });
   }
 }
 
@@ -1651,8 +2029,35 @@ function showAuthOverlay() {
         </div>
         <div id="authEmailWrap" style="display:none;flex-direction:column;gap:6px;">
           <label style="font-size:11px;color:#aaa;letter-spacing:1.5px;font-family:'Space Mono',monospace;">recovery email <span style="font-size:10px;color:#aaa;">(optional)</span></label>
-          <input id="authEmail" type="email" placeholder="you@example.com"
+          <input id="authEmail" type="email" placeholder="phrog@grapplegame.com"
             style="padding:10px 16px;font-size:14px;font-family:'Space Mono',monospace;background:rgba(30,30,40,0.8);color:#fff;border:1px solid rgba(255,255,255,0.12);border-radius:6px;width:100%;outline:none;letter-spacing:1px;" />
+        </div>
+        <div id="authForgotActions" style="display:flex;justify-content:space-between;align-items:center;">
+          <button id="authForgotBtn" class="btn btn-outline" style="padding:8px 10px;font-size:11px;">forgot password?</button>
+          <button id="authBackToLogin" class="btn btn-outline" style="display:none;padding:8px 10px;font-size:11px;">back to sign in</button>
+        </div>
+        <div id="forgotWrap" style="display:none;flex-direction:column;gap:10px;">
+          <div style="font-size:11px;color:#aaa;font-family:'Space Mono',monospace;line-height:1.35;">
+            send a recovery code to your saved email, then reset your password.
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button id="forgotSendCode" class="btn" style="flex:1;font-size:11px;padding:8px 10px;">send code</button>
+            <button id="forgotResendCode" class="btn btn-outline" style="flex:1;font-size:11px;padding:8px 10px;">resend code</button>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px;">
+            <label style="font-size:11px;color:#aaa;letter-spacing:1.5px;font-family:'Space Mono',monospace;">recovery code</label>
+            <input id="forgotCode" type="text" inputmode="numeric" maxlength="6" placeholder="123456"
+              style="padding:10px 16px;font-size:14px;font-family:'Space Mono',monospace;background:rgba(30,30,40,0.8);color:#fff;border:1px solid rgba(255,255,255,0.12);border-radius:6px;width:100%;outline:none;letter-spacing:2px;" />
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px;">
+            <label style="font-size:11px;color:#aaa;letter-spacing:1.5px;font-family:'Space Mono',monospace;">new password</label>
+            <input id="forgotNewPass" type="password" placeholder="min 8 characters"
+              style="padding:10px 16px;font-size:14px;font-family:'Space Mono',monospace;background:rgba(30,30,40,0.8);color:#fff;border:1px solid rgba(255,255,255,0.12);border-radius:6px;width:100%;outline:none;letter-spacing:1px;" />
+          </div>
+          <button id="forgotResetSubmit" class="btn" style="width:100%;">reset password</button>
+          <button id="forgotContactSupport" class="btn btn-outline" style="width:100%;font-size:11px;padding:8px 10px;">contact support</button>
+          <input id="forgotSupportNote" type="text" maxlength="200" placeholder="optional note for support"
+            style="padding:8px 12px;font-size:11px;font-family:'Space Mono',monospace;background:rgba(30,30,40,0.8);color:#fff;border:1px solid rgba(255,255,255,0.12);border-radius:6px;width:100%;outline:none;letter-spacing:0.5px;" />
         </div>
         <div id="authStatus" style="font-size:12px;min-height:16px;font-family:'Space Mono',monospace;color:#ff4444;"></div>
         <button id="authSubmit" class="btn" style="width:100%;">sign in</button>
@@ -1662,25 +2067,184 @@ function showAuthOverlay() {
   document.body.appendChild(overlay);
 
   let authMode = 'login';
+  let forgotMode = false;
+  let resendCooldownUntil = 0;
+  let supportCooldownUntil = 0;
+
+  const statusEl = document.getElementById('authStatus');
+  const authSubmitBtn = document.getElementById('authSubmit');
+  const forgotResendBtn = document.getElementById('forgotResendCode');
+  const forgotSupportBtn = document.getElementById('forgotContactSupport');
+
+  const setStatus = (message, color = '#ff4444') => {
+    statusEl.textContent = message || '';
+    statusEl.style.color = color;
+  };
+
+  const fmtCooldown = (sec) => {
+    const s = Math.max(0, Number(sec || 0));
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    if (!m) return `${r}s`;
+    return `${m}m ${String(r).padStart(2, '0')}s`;
+  };
+
+  const refreshForgotCooldownButtons = () => {
+    const now = Date.now();
+    const resendMs = Math.max(0, resendCooldownUntil - now);
+    const supportMs = Math.max(0, supportCooldownUntil - now);
+    forgotResendBtn.disabled = resendMs > 0;
+    forgotSupportBtn.disabled = supportMs > 0;
+    forgotResendBtn.textContent = resendMs > 0
+      ? `resend (${fmtCooldown(Math.ceil(resendMs / 1000))})`
+      : 'resend code';
+    forgotSupportBtn.textContent = supportMs > 0
+      ? `contact support (${fmtCooldown(Math.ceil(supportMs / 1000))})`
+      : 'contact support';
+  };
+
+  const forgotCooldownTicker = setInterval(refreshForgotCooldownButtons, 1000);
+  refreshForgotCooldownButtons();
+
+  const setForgotMode = (enabled) => {
+    forgotMode = enabled;
+    document.getElementById('authTitle').textContent = enabled ? 'recover account' : (authMode === 'login' ? 'sign in' : 'register');
+    authSubmitBtn.style.display = enabled ? 'none' : 'block';
+    document.getElementById('authEmailWrap').style.display = (!enabled && authMode === 'signup') ? 'flex' : 'none';
+    document.getElementById('authForgotBtn').style.display = (!enabled && authMode === 'login') ? 'inline-flex' : 'none';
+    document.getElementById('authBackToLogin').style.display = enabled ? 'inline-flex' : 'none';
+    document.getElementById('forgotWrap').style.display = enabled ? 'flex' : 'none';
+    setStatus('');
+  };
 
   const switchTab = (mode) => {
     authMode = mode;
+    setForgotMode(false);
     document.getElementById('authTitle').textContent       = mode === 'login' ? 'sign in' : 'register';
     document.getElementById('authSubmit').textContent      = mode === 'login' ? 'sign in' : 'create account';
     document.getElementById('authEmailWrap').style.display = mode === 'signup' ? 'flex' : 'none';
-    document.getElementById('authStatus').textContent      = '';
+    document.getElementById('authForgotBtn').style.display = mode === 'login' ? 'inline-flex' : 'none';
+    setStatus('');
     document.getElementById('tabLogin').className  = mode === 'login'  ? 'btn' : 'btn btn-outline';
     document.getElementById('tabSignup').className = mode === 'signup' ? 'btn' : 'btn btn-outline';
   };
 
+  const requireForgotUsername = () => {
+    const username = document.getElementById('authUser').value.trim();
+    if (!username) {
+      setStatus('enter your username first.');
+      return null;
+    }
+    return username;
+  };
+
+  const forgotSendCode = async () => {
+    const username = requireForgotUsername();
+    if (!username) return;
+    setStatus('sending recovery code...', '#9ed0ff');
+    try {
+      const res = await fetch(`${API_BASE}/auth/forgot-password/request`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'failed to send recovery code.');
+      setStatus(data.message || 'recovery code sent.', '#6de38f');
+    } catch (err) {
+      setStatus(err.message || 'failed to send recovery code.');
+    }
+  };
+
+  const forgotResendCode = async () => {
+    const username = requireForgotUsername();
+    if (!username) return;
+    setStatus('resending code...', '#9ed0ff');
+    try {
+      const res = await fetch(`${API_BASE}/auth/forgot-password/resend`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        if (res.status === 429 && data.retryAfterSec) {
+          resendCooldownUntil = Date.now() + Number(data.retryAfterSec) * 1000;
+          refreshForgotCooldownButtons();
+        }
+        throw new Error(data.error || 'failed to resend recovery code.');
+      }
+      resendCooldownUntil = Date.now() + (5 * 60 * 1000);
+      refreshForgotCooldownButtons();
+      setStatus(data.message || 'recovery code re-sent.', '#6de38f');
+    } catch (err) {
+      setStatus(err.message || 'failed to resend recovery code.');
+    }
+  };
+
+  const forgotContactSupport = async () => {
+    const username = requireForgotUsername();
+    if (!username) return;
+    const note = document.getElementById('forgotSupportNote').value.trim();
+    setStatus('contacting support...', '#9ed0ff');
+    try {
+      const res = await fetch(`${API_BASE}/auth/forgot-password/contact-support`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, note }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        if (res.status === 429 && data.retryAfterSec) {
+          supportCooldownUntil = Date.now() + Number(data.retryAfterSec) * 1000;
+          refreshForgotCooldownButtons();
+        }
+        throw new Error(data.error || 'failed to contact support.');
+      }
+      supportCooldownUntil = Date.now() + (5 * 60 * 1000);
+      refreshForgotCooldownButtons();
+      setStatus(data.message || 'support request sent.', '#6de38f');
+    } catch (err) {
+      setStatus(err.message || 'failed to contact support.');
+    }
+  };
+
+  const forgotResetPassword = async () => {
+    const username = requireForgotUsername();
+    if (!username) return;
+    const code = document.getElementById('forgotCode').value.trim();
+    const newPassword = document.getElementById('forgotNewPass').value;
+    if (!code || !newPassword) {
+      setStatus('code and new password are required.');
+      return;
+    }
+    setStatus('resetting password...', '#9ed0ff');
+    try {
+      const res = await fetch(`${API_BASE}/auth/forgot-password/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, code, newPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'failed to reset password.');
+      setForgotMode(false);
+      document.getElementById('forgotCode').value = '';
+      document.getElementById('forgotNewPass').value = '';
+      document.getElementById('authPass').value = '';
+      setStatus(data.message || 'password updated. sign in with your new password.', '#6de38f');
+    } catch (err) {
+      setStatus(err.message || 'failed to reset password.');
+    }
+  };
+
   const submit = async () => {
+    if (forgotMode) return;
     const username = document.getElementById('authUser').value.trim();
     const password = document.getElementById('authPass').value;
     const email    = document.getElementById('authEmail').value.trim();
-    const statusEl = document.getElementById('authStatus');
     const btn      = document.getElementById('authSubmit');
-    if (!username || !password) { statusEl.textContent = 'username and password are required.'; return; }
-    btn.disabled = true; btn.textContent = '...'; statusEl.textContent = '';
+    if (!username || !password) { setStatus('username and password are required.'); return; }
+    btn.disabled = true; btn.textContent = '...'; setStatus('');
     try {
       const body = { username, password };
       if (authMode === 'signup' && email) body.email = email;
@@ -1692,6 +2256,7 @@ function showAuthOverlay() {
       if (!res.ok) throw new Error(data.error || 'something went wrong.');
       localStorage.setItem('auth_user', JSON.stringify({ username: data.username, token: data.token }));
       document.removeEventListener('keydown', onEnter);
+      clearInterval(forgotCooldownTicker);
       overlay.remove();
       hideLoadingScreen();  // Hide loading screen after successful login
       document.getElementById('menu').style.display = 'flex';
@@ -1751,16 +2316,26 @@ function showAuthOverlay() {
       })
       .catch(e => console.error('[Login] Failed to load settings after login:', e));
     } catch (err) {
-      statusEl.textContent = err.message;
+      setStatus(err.message);
       btn.disabled = false;
       btn.textContent = authMode === 'login' ? 'sign in' : 'create account';
     }
   };
 
-  const onEnter = (e) => { if (e.key === 'Enter') submit(); };
+  const onEnter = (e) => {
+    if (e.key !== 'Enter') return;
+    if (forgotMode) forgotResetPassword();
+    else submit();
+  };
   document.addEventListener('keydown', onEnter);
   document.getElementById('tabLogin').addEventListener('click',  () => switchTab('login'));
   document.getElementById('tabSignup').addEventListener('click', () => switchTab('signup'));
+  document.getElementById('authForgotBtn').addEventListener('click', () => setForgotMode(true));
+  document.getElementById('authBackToLogin').addEventListener('click', () => setForgotMode(false));
+  document.getElementById('forgotSendCode').addEventListener('click', forgotSendCode);
+  document.getElementById('forgotResendCode').addEventListener('click', forgotResendCode);
+  document.getElementById('forgotContactSupport').addEventListener('click', forgotContactSupport);
+  document.getElementById('forgotResetSubmit').addEventListener('click', forgotResetPassword);
   document.getElementById('authSubmit').addEventListener('click', submit);
 }
 
@@ -1882,27 +2457,86 @@ scene.add(camera);
 // State variables moved to top of file (before ranked functions that use them)
 
 // Results buttons
-document.getElementById('playAgainBtn').onclick = () => {
+document.getElementById('playAgainBtn').onclick = async () => {
   const btn = document.getElementById('playAgainBtn');
   if (rankedMode) {
     btn.textContent = 'requeue';
     // Completely reset game state before requeuing
-    resetRankedGame();
+    await resetRankedGame();
     // Re-enter ranked queue
-    joinRankedQueue();
+    await joinRankedQueue();
   } else {
     btn.textContent = 'rematch';
     if (room) {
       // For 1v1, send rematch
-      room.send('rematch', {});
+      sendGameplay('rematch', {});
     }
   }
 }
-document.getElementById('menuBtn').onclick      = () => {
+
+async function returnToMainMenuFromResults() {
   rankedMode = false;
   isInRankedQueue = false;
-  location.reload();
+  ffaMode = false;
+  gameStarted = false;
+  disableInputDuringCountdown(false);
+  closeDirectGameSocketBridge();
+
+  if (rankedPingInterval) {
+    clearInterval(rankedPingInterval);
+    rankedPingInterval = null;
+  }
+  if (queueUpdateInterval) {
+    clearInterval(queueUpdateInterval);
+    queueUpdateInterval = null;
+  }
+
+  const overlayIds = [
+    'page-results',
+    'rankedQueue',
+    'rankedMenu',
+    'rankedCountdown',
+    'versusMenu',
+    'waitingRoom',
+    'mapVote',
+    'ffaMenu',
+    'ffaDeathMenu',
+  ];
+  overlayIds.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
+
+  const hudEl = document.getElementById('hud');
+  if (hudEl) hudEl.style.display = 'none';
+  const lockOverlay = document.getElementById('lockOverlay');
+  if (lockOverlay) lockOverlay.style.display = 'none';
+  const scopeVignette = document.getElementById('scopeVignette');
+  if (scopeVignette) scopeVignette.classList.remove('active');
+
+  if (room) {
+    try { await room.leave(); } catch (_) {}
+    room = null;
+  }
+
+  if (typeof controls !== 'undefined' && controls && controls.isLocked) {
+    controls.unlock();
+  }
+
+  const bgCanvas = document.getElementById('bgCanvas');
+  if (bgCanvas) {
+    bgCanvas.style.display = 'block';
+    bgCanvas.style.visibility = 'visible';
+    bgCanvas.style.opacity = '1';
+    bgCanvas.style.zIndex = '0';
+  }
+
   showBackground();
+  showMenu();
+}
+
+document.getElementById('menuBtn').onclick      = async () => {
+  await returnToMainMenuFromResults();
 }
 
 // Debug: Track versusMenu visibility changes
@@ -1943,6 +2577,9 @@ const splashTextList = [
   'no',
   'Garry Egghead is the best (he told me to add)',
   'Cheese is delicious',
+  'Now hosted on AWS',
+  'blank',
+  'Mr Choi needs to lock in',
 ] 
 
 const randomIndex = Math.floor(Math.random() * splashTextList.length);
@@ -1977,6 +2614,17 @@ function applySettings() {
   const showHints = gameSettings.interface.showInputs !== false;
   const showSpeed = gameSettings.interface.showSpeed !== false;
   const showPing = gameSettings.interface.showPing !== false;
+
+  console.log('[applySettings] start', {
+    fov,
+    sensitivity,
+    invertY,
+    showHints,
+    showSpeed,
+    showPing,
+    hasControls: !!controls,
+    hasCamera: !!camera,
+  });
 
 
   if (!controls) {
@@ -2018,6 +2666,14 @@ function applySettings() {
     }
 
     camera.updateProjectionMatrix();
+    console.log('[applySettings] success', {
+      pointerSpeed: controls.pointerSpeed,
+      invertYAxis: controls.invertYAxis,
+      cameraFov: camera.fov,
+      hintsDisplay: hintsEl?.style?.display,
+      speedDisplay: velocityEl?.style?.display,
+      pingDisplay: pingEl?.style?.display,
+    });
     return true;
   } catch (err) {
     console.error('[applySettings] EXCEPTION during apply:', err);
@@ -2057,6 +2713,7 @@ document.getElementById('saveBtn').addEventListener('click', () => {
   }
 
   const applied = applySettings();
+  console.log('[Save] applySettings result', { applied, settings });
   if (applied) {
     // Close the settings menu after applying
     const settingsPanel = document.getElementById('panel-settings');
@@ -2091,7 +2748,170 @@ document.addEventListener('click', () => {
   }
 });
 
-let pingMs = 0;
+let directGameSocket = null;
+let directGameReady = false;
+const directGameplayEnabled = window.__ENABLE_DIRECT_GAMEPLAY_WS === true;
+const directNetState = {
+  tick: 0,
+  phase: 'waiting',
+  players: new Map(),
+  bombs: new Map(),
+};
+
+function resetDirectNetState() {
+  directNetState.tick = 0;
+  directNetState.phase = 'waiting';
+  directNetState.players.clear();
+  directNetState.bombs.clear();
+}
+
+function getGameplayPlayers() {
+  if (!directGameplayEnabled) return room?.state?.players;
+  // Only trust direct WS state when it contains this client.
+  // If the socket is stale/misaligned, fall back to Colyseus state so pvp
+  // interpolation and rendering still work.
+  if (directGameReady && directNetState.players.size > 0) {
+    if (myId && directNetState.players.has(myId)) return directNetState.players;
+  }
+  return room?.state?.players;
+}
+
+function getGameplayBombs() {
+  if (!directGameplayEnabled) return room?.state?.bombs;
+  if (directGameReady) return directNetState.bombs;
+  return room?.state?.bombs;
+}
+
+function sendGameplay(type, payload = {}) {
+  if (!directGameplayEnabled) {
+    if (room) room.send(type, payload);
+    return;
+  }
+  if (directGameReady && directGameSocket?.readyState === WebSocket.OPEN) {
+    directGameSocket.send(JSON.stringify({ type, ...payload }));
+    return;
+  }
+  if (room) room.send(type, payload);
+}
+
+function wsBaseUrl(port) {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const host = location.hostname || 'localhost';
+  return `${proto}://${host}:${port}`;
+}
+
+function resolveWsPort(activeRoom) {
+  const roomName = (activeRoom?.name || '').toLowerCase();
+  const isFfaRoom = roomName === 'ffa' || ffaMode === true;
+
+  if (isFfaRoom) {
+    return window.__CPP_FFA_WS_PORT || window.__CPP_WS_PORT || 51052;
+  }
+  return window.__CPP_PVP_WS_PORT || window.__CPP_WS_PORT || 51051;
+}
+
+function ingestDirectState(msg) {
+  directNetState.tick = msg.tick || 0;
+  directNetState.phase = msg.phase || 'waiting';
+
+  const players = new Map();
+  for (const p of (msg.players || [])) {
+    players.set(p.player_id, {
+      position: {
+        x: p.position?.x ?? 0,
+        y: p.position?.y ?? 0,
+        z: p.position?.z ?? 0,
+      },
+      velocity: {
+        x: p.velocity?.x ?? 0,
+        y: p.velocity?.y ?? 0,
+        z: p.velocity?.z ?? 0,
+      },
+      health: p.health ?? 100,
+      lastSeq: p.last_seq ?? 0,
+      alive: p.alive !== false,
+      grapple: {
+        active: !!p.grapple_active,
+        hx: p.grapple_pos?.x ?? 0,
+        hy: p.grapple_pos?.y ?? 0,
+        hz: p.grapple_pos?.z ?? 0,
+      },
+    });
+  }
+  directNetState.players = players;
+
+  const bombs = new Map();
+  for (const b of (msg.bombs || [])) {
+    bombs.set(b.id, {
+      bombSkinId: b.skin || 'default',
+      px: b.pos?.x ?? 0,
+      py: b.pos?.y ?? 0,
+      pz: b.pos?.z ?? 0,
+      rx: b.rot?.x ?? 0,
+      ry: b.rot?.y ?? 0,
+      rz: b.rot?.z ?? 0,
+      rw: b.rot?.w ?? 1,
+    });
+  }
+  directNetState.bombs = bombs;
+}
+
+function closeDirectGameSocket() {
+  if (!directGameSocket) return;
+  try { directGameSocket.close(); } catch {}
+  directGameSocket = null;
+  directGameReady = false;
+  resetDirectNetState();
+}
+
+function openDirectGameSocket(activeRoom) {
+  if (!directGameplayEnabled) return;
+  const roomId = activeRoom?.id || activeRoom?.roomId;
+  if (!roomId || !myId) return;
+
+  closeDirectGameSocket();
+
+  resetDirectNetState();
+  directGameReady = false;
+  const sock = new WebSocket(wsBaseUrl(resolveWsPort(activeRoom)));
+  directGameSocket = sock;
+
+  sock.onopen = () => {
+    sock.send(JSON.stringify({
+      type: 'hello',
+      room_id: roomId,
+      player_id: myId,
+    }));
+  };
+
+  sock.onmessage = (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); }
+    catch { return; }
+
+    if (msg.type === 'helloAck') {
+      directGameReady = true;
+      return;
+    }
+    if (msg.type === 'pong') {
+      pingMs = Math.max(0, Date.now() - (msg.t || Date.now()));
+      const el = document.getElementById('ping');
+      if (el) el.textContent = pingMs + ' ms';
+      return;
+    }
+    if (msg.type === 'state') {
+      ingestDirectState(msg);
+    }
+  };
+
+  sock.onclose = () => {
+    directGameReady = false;
+  };
+
+  sock.onerror = () => {
+    directGameReady = false;
+  };
+}
 
 //friend request
 
@@ -2731,43 +3551,8 @@ function updateNotificationsDisplay() {
  * @param {string} message - The notification message
  * @param {number} duration - How long to show (ms), default 3000
  */
-function addInGameNotification(message, duration = 3000) {
-  const container = document.querySelector('.inGameNotifications .notificationContent');
-  if (!container) {
-    console.warn('[addInGameNotification] Container not found');
-    return;
-  }
-
-  const notifId = `ingame-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  const notifEl = document.createElement('div');
-  notifEl.id = notifId;
-  notifEl.style.cssText = 'padding:8px 10px; margin:4px 0; background:rgba(0,255,136,0.2); border-left:3px solid #ffe600; color:#00ff88; word-break:break-word; font-size: 12px; animation: slideIn 0.3s ease-out;';
-  notifEl.textContent = message;
-  
-  container.insertAdjacentElement('afterbegin', notifEl);
-  
-  // Show the notifications container if it was hidden
-  const notificationsDiv = document.querySelector('.inGameNotifications');
-  if (notificationsDiv) {
-    notificationsDiv.style.opacity = '1';
-    notificationsDiv.style.pointerEvents = 'auto';
-  }
-
-  // Auto-remove after duration
-  setTimeout(() => {
-    const el = document.getElementById(notifId);
-    if (el) el.remove();
-    
-    // Hide container if no more notifications
-    if (container.children.length === 0 || container.querySelectorAll('[id^="ingame-"]').length === 0) {
-      setTimeout(() => {
-        if (container.querySelectorAll('[id^="ingame-"]').length === 0 && notificationsDiv) {
-          notificationsDiv.style.opacity = '0';
-          notificationsDiv.style.pointerEvents = 'none';
-        }
-      }, 1000);  // Wait 1s after all notifications are gone before hiding
-    }
-  }, duration);
+function addInGameNotification(message, duration = 3000, options = {}) {
+  pushInGameNotification(message, duration, options);
 }
 
 function updateNotificationsDisplay() {
@@ -3564,10 +4349,9 @@ if (!window.joinPresence) {
 joinPresence();
 
 // ── Client physics ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-let cWorld = null;   // RAPIER.World
-let cBody  = null;   // RAPIER.RigidBody (our player)
 async function buildClientWorld(collisionPath, spawnX, spawnY, spawnZ) {
   cWorld = new RAPIER.World({ x: 0, y: -25, z: 0 });
+  cWorld.timestep = 1 / CLIENT_TICK_RATE;
 
   // Load the same collision JSON the server uses
   try {
@@ -3593,6 +4377,7 @@ async function buildClientWorld(collisionPath, spawnX, spawnY, spawnZ) {
       .lockRotations()
       .setLinearDamping(0.1)
   );
+  cBody.enableCcd(true);
   cWorld.createCollider(
   RAPIER.ColliderDesc.ball(1.0).setFriction(0.0),
   cBody
@@ -3601,23 +4386,27 @@ async function buildClientWorld(collisionPath, spawnX, spawnY, spawnZ) {
 
 // ground checker
 // Pre-allocated scratch to avoid per-call allocation in the prediction loop
-const _clientRayOrigin = { x: 0, y: 0, z: 0 };
-const _clientRayDir    = { x: 0, y: -1, z: 0 };
-const _clientRay       = new RAPIER.Ray(_clientRayOrigin, _clientRayDir);
 const _clientVel       = { x: 0, y: 0, z: 0 };
 
 function clientGrounded() {
   if (!cBody || !cWorld) return false;
 
   const pos = cBody.translation();
-  _clientRayOrigin.x = pos.x;
-  _clientRayOrigin.y = pos.y - 0.5;
-  _clientRayOrigin.z = pos.z;
-  const hit = cWorld.castRay(_clientRay, 0.52, false);
+  // Create a fresh Ray each call — Rapier copies the values internally on construction
+  const ray = new RAPIER.Ray(
+    { x: pos.x, y: pos.y - 0.5, z: pos.z },
+    { x: 0,     y: -1,          z: 0     }
+  );
+  const hit = cWorld.castRay(ray, 0.52, false);
   return hit !== null;
 }
 
 // ──  apply input frame onto client body
+const CLIENT_TICK_RATE = 100;
+const CLIENT_WALK_SPEED = 25;
+const CLIENT_JUMP_VEL = 10;
+const LOCAL_AUTH_SPEED = 28;
+
 function applyInput(inputs, camDir) {
   const len = Math.sqrt(camDir.x**2 + camDir.z**2);
   const fx  = len > 0 ? camDir.x / len : 0;
@@ -3636,17 +4425,20 @@ function applyInput(inputs, camDir) {
   let curVy = vel.y;
 
   if (inputs.space && grounded) {
-    curVy = 15;
+    curVy = CLIENT_JUMP_VEL;
     _clientVel.x = curVx; _clientVel.y = curVy; _clientVel.z = curVz;
     cBody.setLinvel(_clientVel, true);
   }
 
   const moving = inputs.w || inputs.s || inputs.a || inputs.d;
   if (moving) {
-    _clientVel.x = vx * 12; _clientVel.y = curVy; _clientVel.z = vz * 12;
+    _clientVel.x = vx * CLIENT_WALK_SPEED; _clientVel.y = curVy; _clientVel.z = vz * CLIENT_WALK_SPEED;
     cBody.setLinvel(_clientVel, true);
   } else {
-    _clientVel.x = curVx * 0.8; _clientVel.y = curVy; _clientVel.z = curVz * 0.8;
+    // Match server drag: 12 when grounded (factor ≈ 0.88/tick), 2 when airborne (factor ≈ 0.98/tick)
+    const drag   = grounded ? 12 : 2;
+    const factor = Math.max(0, 1 - drag / CLIENT_TICK_RATE);  // 100 Hz — matches C++ Config::DT = 1/100
+    _clientVel.x = curVx * factor; _clientVel.y = curVy; _clientVel.z = curVz * factor;
     cBody.setLinvel(_clientVel, true);
   }
 }
@@ -3654,8 +4446,40 @@ function applyInput(inputs, camDir) {
 
 const pending = [];     // { seq, inputs, camDir }
 let   lastAck = 0;
+let   lastReconcileAck = -1;
 
 const localGrapple = {};
+
+function acceptServerState(serverPos, serverVel, ackSeq) {
+  while (pending.length > 0 && pending[0].seq <= ackSeq) pending.shift();
+  lastAck = ackSeq;
+
+  const p = cBody.translation();
+  const dx = serverPos.x - p.x;
+  const dy = serverPos.y - p.y;
+  const dz = serverPos.z - p.z;
+  const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+  if (d >= 4.0) {
+    cBody.setTranslation({ x: serverPos.x, y: serverPos.y, z: serverPos.z }, true);
+    cBody.setLinvel({ x: serverVel.x, y: serverVel.y, z: serverVel.z }, true);
+    return;
+  }
+
+  const blend = d > 1.0 ? 0.45 : 0.3;
+  cBody.setTranslation({
+    x: p.x + dx * blend,
+    y: p.y + dy * blend,
+    z: p.z + dz * blend,
+  }, true);
+
+  const v = cBody.linvel();
+  cBody.setLinvel({
+    x: v.x + (serverVel.x - v.x) * 0.35,
+    y: v.y + (serverVel.y - v.y) * 0.35,
+    z: v.z + (serverVel.z - v.z) * 0.35,
+  }, true);
+}
 
 function reconcile(serverPos, serverVel, ackSeq) {
   // Drop inputs the server has already processed
@@ -3677,35 +4501,89 @@ function reconcile(serverPos, serverVel, ackSeq) {
       cWorld.step();
     }
   } else {
-
-    const k = Math.min(d * 0.15, 0.4);
+    // Use gentler correction to avoid visible jitter under moderate RTT.
+    const k = Math.min(d * 0.08, 0.18);
+    const yk = Math.min(k * 0.5, 0.08);
     const p = cBody.translation();
     cBody.setTranslation({
-      x: p.x + dx*k, y: p.y + dy*k, z: p.z + dz*k
+      x: p.x + dx*k,
+      y: p.y + dy*yk,
+      z: p.z + dz*k
     }, true);
     const v = cBody.linvel();
     cBody.setLinvel({
-      x: v.x + (serverVel.x - v.x)*0.1,
-      y: v.y + (serverVel.y - v.y)*0.1,
-      z: v.z + (serverVel.z - v.z)*0.1
+      x: v.x + (serverVel.x - v.x)*0.06,
+      y: v.y + (serverVel.y - v.y)*0.06,
+      z: v.z + (serverVel.z - v.z)*0.06
     }, true);
   }
 }
 
-// Interpolate the opp
-const oppBuffer   = [];         // { time, position }
-const INTERP_DELAY = 100;       // ms behind real-time
+// Interpolate remote players with a small delay buffer + bounded extrapolation.
+const oppBuffer = [];           // { time, position, velocity }
+const MAX_SNAP_BUFFER = 40;
+const MAX_EXTRAP_MS = 45;
+const MIN_INTERP_DELAY_MS = 100;
+const MAX_INTERP_DELAY_MS = 220;
+let snapIntervalEwma = 10;
+let snapJitterEwma = 0;
+let lastSnapAt = 0;
 
-function pushOppSnap(pos) {
-  oppBuffer.push({ time: performance.now(), position: { ...pos } });
-  if (oppBuffer.length > 30) oppBuffer.shift();
+function updateSnapTiming(now) {
+  if (lastSnapAt > 0) {
+    const interval = now - lastSnapAt;
+    const alpha = 0.15;
+    const prev = snapIntervalEwma;
+    snapIntervalEwma = prev + (interval - prev) * alpha;
+    snapJitterEwma = snapJitterEwma + (Math.abs(interval - prev) - snapJitterEwma) * alpha;
+  }
+  lastSnapAt = now;
+}
+
+function getInterpDelayMs() {
+  const adaptive = Math.max(
+    MIN_INTERP_DELAY_MS,
+    pingMs + 40,
+    snapIntervalEwma * 2 + snapJitterEwma * 2
+  );
+  return Math.max(MIN_INTERP_DELAY_MS, Math.min(MAX_INTERP_DELAY_MS, adaptive));
+}
+
+function pushOppSnap(pos, vel) {
+  if (!pos) return;
+  const now = performance.now();
+  const last = oppBuffer[oppBuffer.length - 1];
+  if (last) {
+    const dx = pos.x - last.position.x;
+    const dy = pos.y - last.position.y;
+    const dz = pos.z - last.position.z;
+    if ((dx * dx + dy * dy + dz * dz) < 1e-6) return;
+  }
+  updateSnapTiming(now);
+  oppBuffer.push({
+    time: now,
+    position: { x: pos.x, y: pos.y, z: pos.z },
+    velocity: { x: vel?.x ?? 0, y: vel?.y ?? 0, z: vel?.z ?? 0 },
+  });
+  if (oppBuffer.length > MAX_SNAP_BUFFER) oppBuffer.shift();
 }
 
 function interpolateOpp() {
-  if (oppBuffer.length < 2) return;
-  const rt = performance.now() - INTERP_DELAY;
+  if (oppBuffer.length === 0) return;
+  const rt = performance.now() - getInterpDelayMs();
   while (oppBuffer.length >= 2 && oppBuffer[1].time <= rt) oppBuffer.shift();
-  if (oppBuffer.length < 2) return;
+  if (oppBuffer.length < 2) {
+    const only = oppBuffer[0];
+    if (!only) return;
+    const lead = Math.max(0, Math.min(MAX_EXTRAP_MS, rt - only.time)) / 1000;
+    skinMgr.setPosition(
+      oppId,
+      only.position.x + only.velocity.x * lead,
+      only.position.y + only.velocity.y * lead,
+      only.position.z + only.velocity.z * lead
+    );
+    return;
+  }
   const a = oppBuffer[0], b = oppBuffer[1];
   let t = (rt - a.time) / (b.time - a.time);
   t = Math.max(0, Math.min(1, t));
@@ -3718,22 +4596,47 @@ function interpolateOpp() {
 }
 
 // Per-player interpolation buffers for FFA (keyed by session ID)
-const ffaBuffers = new Map(); // playerId → [{ time, position }]
+const ffaBuffers = new Map(); // playerId → [{ time, position, velocity }]
+const ffaSkinBootstrapPending = new Set();
 
-function pushFFASnap(playerId, pos) {
+function pushFFASnap(playerId, pos, vel) {
+  if (!pos) return;
   let buf = ffaBuffers.get(playerId);
   if (!buf) { buf = []; ffaBuffers.set(playerId, buf); }
-  buf.push({ time: performance.now(), position: { x: pos.x, y: pos.y, z: pos.z } });
-  if (buf.length > 30) buf.shift();
+  const now = performance.now();
+  const last = buf[buf.length - 1];
+  if (last) {
+    const dx = pos.x - last.position.x;
+    const dy = pos.y - last.position.y;
+    const dz = pos.z - last.position.z;
+    if ((dx * dx + dy * dy + dz * dz) < 1e-6) return;
+  }
+  updateSnapTiming(now);
+  buf.push({
+    time: now,
+    position: { x: pos.x, y: pos.y, z: pos.z },
+    velocity: { x: vel?.x ?? 0, y: vel?.y ?? 0, z: vel?.z ?? 0 },
+  });
+  if (buf.length > MAX_SNAP_BUFFER) buf.shift();
 }
 
 function interpolateFFA(playerId) {
   const buf = ffaBuffers.get(playerId);
-  if (!buf || buf.length < 2) return null;
-  const rt = performance.now() - INTERP_DELAY;
+  if (!buf || buf.length === 0) return null;
+  const rt = performance.now() - getInterpDelayMs();
   while (buf.length >= 2 && buf[1].time <= rt) buf.shift();
-  if (buf.length < 2) return null;
+  if (buf.length < 2) {
+    const only = buf[0];
+    if (!only) return null;
+    const lead = Math.max(0, Math.min(MAX_EXTRAP_MS, rt - only.time)) / 1000;
+    return {
+      x: only.position.x + only.velocity.x * lead,
+      y: only.position.y + only.velocity.y * lead,
+      z: only.position.z + only.velocity.z * lead,
+    };
+  }
   const a = buf[0], b = buf[1];
+  if (!a.position || !b.position) return null;
   let t = (rt - a.time) / (b.time - a.time);
   t = Math.max(0, Math.min(1, t));
   return {
@@ -3741,6 +4644,32 @@ function interpolateFFA(playerId) {
     y: a.position.y + (b.position.y - a.position.y) * t,
     z: a.position.z + (b.position.z - a.position.z) * t,
   };
+}
+
+async function ensureFFAVisuals(oppId) {
+  if (!skinMgr || !hookMgr || !playerMeshMap) return;
+  if (playerMeshMap.has(oppId) || skinMgr.getRoot(oppId) || ffaSkinBootstrapPending.has(oppId)) return;
+
+  ffaSkinBootstrapPending.add(oppId);
+  try {
+    const fallbackSkin = {
+      id: 'default',
+      image: '/skins/default.png',
+      scale: 1.5,
+      color: '#ffffff',
+      grapple: { id: 'default', image: '/skins/grapples/grapple_default.png', scale: 1.0, color: '#00ffff' },
+    };
+
+    const oppSkinData = (_pendingSkinInfo && _pendingSkinInfo[oppId]) || fallbackSkin;
+    await skinMgr.assignSkin(oppId, oppSkinData, false);
+    const oppMesh = skinMgr.getRoot(oppId);
+    if (oppMesh) playerMeshMap.set(oppId, oppMesh);
+    hookMgr.assignHook(oppId, oppSkinData.grapple || fallbackSkin.grapple, false);
+  } catch (e) {
+    console.warn('[FFA visuals] Failed to bootstrap player visuals for', oppId, e);
+  } finally {
+    ffaSkinBootstrapPending.delete(oppId);
+  }
 }
 
 // Scene objets
@@ -3944,6 +4873,22 @@ function updateRope(pivot, a, b) {
 const myHook  = makeHook(0x00ffff);  const myRope  = makeRopeLine(0x00ffff);
 const oppHook = makeHook(0xff00ff);  const oppRope = makeRopeLine(0xff00ff);
 
+function normalizeVec3(pos) {
+  if (Array.isArray(pos)) {
+    return {
+      x: Number(pos[0]) || 0,
+      y: Number(pos[1]) || 0,
+      z: Number(pos[2]) || 0,
+    };
+  }
+  const src = pos || {};
+  return {
+    x: Number(src.x) || 0,
+    y: Number(src.y) || 0,
+    z: Number(src.z) || 0,
+  };
+}
+
 
 // ── explosions ────────────────────────────────────────────────
 const explosions = [];
@@ -4091,7 +5036,7 @@ document.addEventListener('keydown', e => {
     console.log('[keydown] Grapple key pressed, sending to server');
     const camDir = new THREE.Vector3();
     camera.getWorldDirection(camDir);
-    room.send('grapple', { camDir: { x: camDir.x, y: camDir.y, z: camDir.z } });
+    sendGameplay('grapple', { camDir: { x: camDir.x, y: camDir.y, z: camDir.z } });
   }
 
   if (e.code === window.keybinds.bomb && gameStarted && room) {
@@ -4104,7 +5049,7 @@ document.addEventListener('keydown', e => {
     console.log('[keydown] Parry key pressed');
     const now = performance.now();
     if (now - lastParry >= 2000) {
-      room.send('parry');
+      sendGameplay('parry');
       startParryCooldown();
       lastParry = now;
     }
@@ -4141,7 +5086,7 @@ function shootBomb() {
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
   const pos = camera.position.clone().add(dir.clone().multiplyScalar(2));
-  room.send('spawnBomb', {
+  sendGameplay('spawnBomb', {
     position: { x:pos.x, y:pos.y, z:pos.z },
     impulse:  { x:dir.x*15, y:dir.y*15, z:dir.z*15 }
   });
@@ -4207,7 +5152,7 @@ function useGear() {
     .addScaledVector(dir, 0.5)
     .addScaledVector(right, 0.5);
   
-  room.send('useGear', {
+  sendGameplay('useGear', {
     gearName: gearName,
     cameraPos: { x: pos.x, y: pos.y, z: pos.z },
     cameraDir: { x: dir.x, y: dir.y, z: dir.z }
@@ -4242,22 +5187,28 @@ function startGearCooldown() {
 async function setupRoom(r) {
   room = r;
   myId = room.sessionId;
+  openDirectGameSocket(room);
 
   // Ping/pong — works for all modes that use BaseGameRoom (versus, private)
   setInterval(() => {
     if (room) room.send('ping', { t: Date.now() });
   }, 1000);
   room.onMessage('pong', ({ t }) => {
+    pingMs = Math.max(0, Date.now() - t);
     const el = document.getElementById('ping');
-    if (el) el.textContent = (Date.now() - t) + ' ms';
+    if (el) el.textContent = pingMs + ' ms';
   });
 
   // ── One-time messages ──────────────────────────────────────
 
 
-  room.onMessage('loadMap', async ({ glb, collision, spawnPoints }) => {
+  room.onMessage('loadMap', async ({ glb, collision, spawnPoints, skyColor }) => {
     // Load visual mesh
     await loadMapGLB(glb);
+
+    if (skyColor && scene) {
+      scene.background = new THREE.Color(skyColor);
+    }
 
     const spawnIndex = isHost ? 0 : 1;
     const spawn      = spawnPoints[spawnIndex] || { x: 0, y: 5, z: 0 };
@@ -4267,6 +5218,7 @@ async function setupRoom(r) {
   room.onMessage('init', (data) => {
     myId   = data.myId;
     isHost = data.isHost;
+    openDirectGameSocket(room);
   });
 
 
@@ -4290,6 +5242,20 @@ async function setupRoom(r) {
 
   room.onMessage('skinInfo', (data) => {
     _pendingSkinInfo = data;
+
+    // If game has already started, apply the opponent skin immediately.
+    if (gameStarted && oppId && skinMgr) {
+      const oppSkinData = _pendingSkinInfo[oppId];
+      if (oppSkinData) {
+        skinMgr.assignSkin(oppId, oppSkinData, false)
+          .then(() => {
+            const oppMesh = skinMgr.getRoot(oppId);
+            if (oppMesh) playerMeshMap.set(oppId, oppMesh);
+            hookMgr.assignHook(oppId, oppSkinData.grapple, false);
+          })
+          .catch(err => console.warn('[1v1 skinInfo] Late skin apply failed:', err));
+      }
+    }
   });
 
   room.onMessage('nametagInfo', (data) => {
@@ -4328,7 +5294,9 @@ async function setupRoom(r) {
       
       // Load opponent's skins into cache
       // First get opponent username from user ID
-      fetch(`${API_BASE}/api/users-by-id/${oppId}`)
+      const oppDbId4 = myId === data.hostId ? data.guestDbId : data.hostDbId;
+      if (oppDbId4) {
+        fetch(`${API_BASE}/api/users-by-id/${oppDbId4}`)
         .then(r => {
           if (!r.ok) throw new Error(`Failed to fetch opponent info: ${r.status}`);
           return r.json();
@@ -4353,7 +5321,8 @@ async function setupRoom(r) {
         .then(result => {
         })
         .catch(err => console.warn('[GameStart] Failed to load opponent skins:', err));
-    }
+      }  // end if (oppDbId4)
+    }  // end if (authUser)
 
     showGame();
     gameStarted = true;
@@ -4376,7 +5345,8 @@ async function setupRoom(r) {
     if (bombMgr._bombs.has(data.id)) {
       bombMgr.removeBomb(data.id);
     }
-    explosions.push(new Explosion(data.position));
+    const explosionPos = normalizeVec3(data?.position ?? data?.pos);
+    explosions.push(new Explosion(explosionPos));
   });
 
   // spawnParticles is now at module level, available to both ranked and non-ranked modes
@@ -4443,15 +5413,7 @@ async function setupRoom(r) {
     mesh.position.copy(midpoint);
     
     const direction = new THREE.Vector3().subVectors(end, start).normalize();
-    const up = new THREE.Vector3(0, 1, 0);
-    const quaternion = new THREE.Quaternion();
-    const axis = new THREE.Vector3().crossVectors(up, direction).normalize();
-    
-    if (axis.length() > 0.001) {
-      const angle = Math.acos(Math.max(-1, Math.min(1, up.dot(direction))));
-      quaternion.setFromAxisAngle(axis, angle);
-    }
-    mesh.quaternion.copy(quaternion);
+    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
     
     console.log('[FFA sniperLine] Adding beam mesh to scene at', midpoint);
     scene.add(mesh);
@@ -4793,7 +5755,7 @@ async function setupRoom(r) {
   });
 
   room.onMessage('parrySuccess', (data) => {
-    addInGameNotification('+ PARRY', 3000); //ultrakill reference?
+    pushInGameNotification('+ PARRY', 3000); //ultrakill reference?
   });
 
   room.onMessage('gameEnd', async (data) => {
@@ -5149,7 +6111,7 @@ window.gameSettings = gameSettings;
 window.colyseus = colyseus;
 
 // ── Main loop ─────────────────────────────────────────────
-const FT   = 1 / 60;
+const FT   = 1 / 100;  // 100 Hz client physics — matches C++ TICK_RATE=100
 let   acc  = 0;
 let   last = performance.now();
 let   lastPingTime = Date.now();
@@ -5158,6 +6120,7 @@ let   lastPingTime = Date.now();
 let fpsFrameCount = 0;
 let fpsLastTime = performance.now();
 let fps = 0;
+let rankedRenderLogLast = 0;
 
 function updateFPS() {
   fpsFrameCount++;
@@ -5181,10 +6144,67 @@ function animate() {
   requestAnimationFrame(animate);
   updateFPS();
 
+  // Hard runtime override for ranked rendering: keep game canvas visible and
+  // keep background canvas fully disabled even if another UI path toggles it.
+  if (rankedMode && gameStarted) {
+    if (renderer?.domElement) {
+      renderer.domElement.style.display = 'block';
+      renderer.domElement.style.visibility = 'visible';
+      renderer.domElement.style.opacity = '1';
+      renderer.domElement.style.pointerEvents = 'auto';
+      renderer.domElement.style.zIndex = '50';
+    }
+    const bgCanvas = document.getElementById('bgCanvas');
+    if (bgCanvas) {
+      bgCanvas.style.display = 'none';
+      bgCanvas.style.visibility = 'hidden';
+      bgCanvas.style.opacity = '0';
+      bgCanvas.style.zIndex = '-10';
+    }
+  }
+
   const now = performance.now();
   const dt  = Math.min((now - last) / 1000, 0.1);
   last = now;
   const _frameStart = now;
+  const gameplayPlayers = getGameplayPlayers();
+  const gameplayBombs = getGameplayBombs();
+  const myServerState = gameplayPlayers && myId ? gameplayPlayers.get(myId) : null;
+  const myServerSpeed = myServerState
+    ? Math.sqrt(
+        (myServerState.velocity?.x ?? 0) ** 2 +
+        (myServerState.velocity?.y ?? 0) ** 2 +
+        (myServerState.velocity?.z ?? 0) ** 2
+      )
+    : 0;
+  const localServerAuthMotion = !!(myServerState && (myServerState.grapple?.active || myServerSpeed > LOCAL_AUTH_SPEED));
+
+  // Throttled ranked runtime heartbeat for diagnosing invisible game state.
+  if (rankedMode && gameStarted) {
+    const ts = Date.now();
+    if (ts - rankedRenderLogLast > 2000) {
+      rankedRenderLogLast = ts;
+      const bgCanvas = document.getElementById('bgCanvas');
+      rankedDebug('renderHeartbeat', {
+        controlsLocked: !!controls?.isLocked,
+        hasCWorld: !!cWorld,
+        hasCBody: !!cBody,
+        myId,
+        oppId,
+        gameplayPlayerCount: gameplayPlayers?.size,
+        hasMyState: !!(gameplayPlayers && myId && gameplayPlayers.get(myId)),
+        hasOppState: !!(gameplayPlayers && oppId && gameplayPlayers.get(oppId)),
+        rendererDisplay: renderer?.domElement?.style?.display,
+        rendererVisibility: renderer?.domElement?.style?.visibility,
+        rendererOpacity: renderer?.domElement?.style?.opacity,
+        rendererZ: renderer?.domElement?.style?.zIndex,
+        bgDisplay: bgCanvas?.style?.display,
+        bgVisibility: bgCanvas?.style?.visibility,
+        bgOpacity: bgCanvas?.style?.opacity,
+        bgZ: bgCanvas?.style?.zIndex,
+      });
+    }
+  }
 
 
   // ── Client prediction ──────────────────────────────────────
@@ -5198,6 +6218,7 @@ function animate() {
     const camDir = new THREE.Vector3();
     camera.getWorldDirection(camDir);
     const cd = { x:camDir.x, y:camDir.y, z:camDir.z };
+    const cp = { x:camera.position.x, y:camera.position.y, z:camera.position.z };
 
     while (acc >= FT) {
       // Detect if space was newly pressed this frame (false → true transition)
@@ -5207,25 +6228,32 @@ function animate() {
       const inp = {
         seq: seq++,
         inputs: { w:keys.w, a:keys.a, s:keys.s, d:keys.d, space: spaceJustPressed },
-        camDir: cd
+        camDir: cd,
+        camPos: cp
       };
 
       pending.push(inp);
       if (pending.length > 120) pending.shift();  // safety cap
 
-      applyInput(inp.inputs, inp.camDir);
-      cWorld.step();
+      if (!localServerAuthMotion) {
+        applyInput(inp.inputs, inp.camDir);
+        cWorld.step();
+      }
 
-      room.send('input', { seq:inp.seq, inputs:inp.inputs, camDir:inp.camDir });
+      sendGameplay('input', { seq:inp.seq, inputs:inp.inputs, camDir:inp.camDir, camPos:inp.camPos });
 
       acc -= FT;
     }
 
     // ── Reconcile against server state 
-    if (room && myId) {
-      const sp = room.state.players.get(myId);
-      if (sp) {
-        reconcile(sp.position, sp.velocity, sp.lastSeq);
+    if (myServerState) {
+      if (myServerState.lastSeq !== lastReconcileAck) {
+        if (localServerAuthMotion) {
+          acceptServerState(myServerState.position, myServerState.velocity, myServerState.lastSeq);
+        } else {
+          reconcile(myServerState.position, myServerState.velocity, myServerState.lastSeq);
+        }
+        lastReconcileAck = myServerState.lastSeq;
         lastPingTime = Date.now(); // proxy for ping update
       }
     }
@@ -5313,7 +6341,7 @@ function animate() {
       
       // Handle mace animation (rises up over duration)
       if (effect.animationType === 'mace') {
-        const shooterState = room.state.players.get(effect.shooterId);
+        const shooterState = gameplayPlayers?.get(effect.shooterId);
         if (shooterState && shooterState.position) {
           // Calculate target position (mace rises up from player position)
           const riseHeight = progress * 2.5;  // Rise up to 2.5 meters
@@ -5343,7 +6371,7 @@ function animate() {
       
       // Handle sniper animation (follows player)
       if (effect.animationType === 'sniper') {
-        const shooterState = room.state.players.get(effect.shooterId);
+        const shooterState = gameplayPlayers?.get(effect.shooterId);
         if (shooterState && shooterState.position && effect.direction) {
           // Calculate target position: 2 units ahead in the direction they're aiming
           const offset = 2.0;
@@ -5386,11 +6414,11 @@ function animate() {
 
   // ── FFA: Update all opponent positions and visuals ─────────
   // Runs when game is started and we are NOT in a 1v1/ranked match (oppId is null in FFA).
-  if (gameStarted && room && !oppId && typeof room.state.players !== 'undefined') {
+  if (gameStarted && room && !oppId && typeof gameplayPlayers !== 'undefined') {
     // Remove meshes for players no longer in state (disconnected)
     if (playerMeshMap) {
       for (const [sid] of playerMeshMap) {
-        if (sid !== myId && !room.state.players.has(sid)) {
+        if (sid !== myId && !gameplayPlayers.has(sid)) {
           if (skinMgr) skinMgr.removePlayer(sid);
           if (hookMgr) hookMgr.removeHook(sid);
           if (nametags) nametags.remove(sid);
@@ -5400,11 +6428,14 @@ function animate() {
       }
     }
 
-    for (const [oppId, os] of room.state.players.entries()) {
+    for (const [oppId, os] of gameplayPlayers.entries()) {
       if (oppId === myId || !os) continue;  // Skip self and null states
 
+      // Guarantee a visible mesh even if skinInfo arrives late for a mid-game join.
+      ensureFFAVisuals(oppId);
+
       // Check if player is dead and remove them
-      if (os.health <= 0) {
+      if (os.alive === false || os.health <= 0) {
         if (skinMgr) skinMgr.removePlayer(oppId);
         if (hookMgr) hookMgr.removeHook(oppId);
         if (nametags) nametags.remove(oppId);
@@ -5414,14 +6445,14 @@ function animate() {
       }
 
       // Push snapshot into per-player buffer for interpolation
-      pushFFASnap(oppId, os.position);
+      if (os.position) pushFFASnap(oppId, os.position, os.velocity);
 
       // Interpolate position from buffer (smooth, no snapping)
       const interpPos = interpolateFFA(oppId);
       if (skinMgr) {
         if (interpPos) {
           skinMgr.setPosition(oppId, interpPos.x, interpPos.y, interpPos.z);
-        } else {
+        } else if (os.position) {
           // Buffer not yet warmed up — use raw position as fallback
           skinMgr.setPosition(oppId, os.position.x, os.position.y, os.position.z);
         }
@@ -5436,11 +6467,13 @@ function animate() {
       if (skinMgr && hookMgr) {
         const oppRoot = skinMgr.getRoot(oppId);
         if (oppRoot) {
-          const oppYawFFA = SkinManager.yawFromVelocity(os.velocity.x, os.velocity.z, 0);
+          const oppYawFFA = SkinManager.yawFromVelocity(os.velocity?.x ?? 0, os.velocity?.z ?? 0, 0);
           skinMgr.setRotationY(oppId, oppYawFFA);
-          hookMgr.update(oppId, oppRoot.position,
-            { x: os.grapple.hx, y: os.grapple.hy, z: os.grapple.hz },
-            os.grapple.active);
+          if (os.grapple) {
+            hookMgr.update(oppId, oppRoot.position,
+              { x: os.grapple.hx, y: os.grapple.hy, z: os.grapple.hz },
+              os.grapple.active);
+          }
         }
       }
     }
@@ -5448,8 +6481,8 @@ function animate() {
 
   // ── Opponent interpolation ─────────────────────────────────
   if (!window.isFFA && gameStarted && room && oppId) {
-    const os = room.state.players.get(oppId);
-    if (os) pushOppSnap(os.position);
+    const os = gameplayPlayers?.get(oppId);
+    if (os) pushOppSnap(os.position, os.velocity);
     interpolateOpp();
 
     // Opponent grapple visuals (use interpolated mesh position, not raw server position)
@@ -5473,21 +6506,21 @@ function animate() {
 
   // ── My grapple visuals ───────────
   if (gameStarted && room && myId && hookMgr) {
-    const ms = room.state.players.get(myId);
-    if (!ms) return;
-
-    hookMgr.update('local', barrelPos,
-      { x: ms.grapple.hx, y: ms.grapple.hy, z: ms.grapple.hz },
-      ms.grapple.active);
+    const ms = gameplayPlayers?.get(myId);
+    if (ms) {
+      hookMgr.update('local', barrelPos,
+        { x: ms.grapple.hx, y: ms.grapple.hy, z: ms.grapple.hz },
+        ms.grapple.active);
+    }
   }
 
   _ft.opponents = performance.now() - _t2;
   const _t3 = performance.now();
 
   // ── Bombs ────────────────────────────
-  if (gameStarted && room) {
+  if (gameStarted && room && gameplayBombs) {
     const liveIds = new Set();
-    room.state.bombs?.forEach((bs, id) => {
+    gameplayBombs.forEach((bs, id) => {
       liveIds.add(id);
       
       // Check if bomb needs to be created (and not already pending/loaded)
@@ -5615,6 +6648,9 @@ window.nametags = nametags;
 window.gBombSkins = gBombSkins;
 window.activeGearEffects = activeGearEffects;
 window.spawnParticles = spawnParticles;
+window.ensureFFAVisuals = ensureFFAVisuals;
+window.__openDirectGameSocketImpl = openDirectGameSocket;
+window.__closeDirectGameSocketImpl = closeDirectGameSocket;
 
 // ── Expose FFA functions globally ────────────────────────────────
 window.ffaJoin = ffaJoin;

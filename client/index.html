@@ -1168,7 +1168,7 @@
     #chatMenu {
       display: none;
       position: fixed;
-      top: 50%;
+      top: 30%;
       left: 50%;
       transform: translate(-50%, -50%);
       width: 340px;
@@ -2218,7 +2218,7 @@
         <div id="joinCodeDisplay">------</div>
       </div>
     </div>
-    <div class="MainUI" style="width:280px; padding-bottom:0; margin-top:20px; position:absolute; left:25%; transform:translateX(-50%); height:400px; flex-direction:column;">
+    <div class="MainUI" style="width:280px; padding-bottom:0; margin-top:20px; position:absolute; left:10%; transform:translateX(-50%); height:400px; flex-direction:column;">
       <div class="title-bar">
         <div class="controls">
           <span class="control close"
@@ -2340,6 +2340,10 @@
                   <span>Reset password (Requires old password):</span>
                   <button class="btn btn-outline" id="settingsChangePswdBtn" style="padding:6px 16px; font-size:11px;">change password</button>
                 </div>
+                <div class="settings-row">
+                  <span>Edit recovery email</span>
+                  <button class="btn btn-outline" id="settingsChangeEmailBtn" style="padding:6px 16px; font-size:11px;">change email</button>
+                </div>
               </div>
               <div class="settings-group">
                 <div class="settings-label">session</div>
@@ -2441,12 +2445,27 @@
   </div>
 
   <!-- ── RESULTS ────────────────────────────────────────────── -->
-  <div id="page-results">
-    <h1 id="resultTitle" style="font-size:64px;letter-spacing:4px;">you won</h1>
-    <p id="resultSub" style="color:#aaa;font-size:18px;">opponent eliminated</p>
-    <div style="display:flex;gap:16px;margin-top:40px;">
-      <button class="btn" id="playAgainBtn">rematch</button>
-      <button class="btn btn-outline" id="menuBtn">menu</button>
+  <div id="page-results" class="overlay" style="display:none;">
+    <div class="MainUI" style="width:300px; padding-bottom:40px;">
+      <div class="title-bar">
+        <div class="controls">
+          <span class="control none"></span>
+          <span class="control none"></span>
+          <span class="control none"></span>
+        </div>
+        <div class="menu-title">match result</div>
+      </div>
+
+      <div id="resultTitle" style="margin-top:20px; color:#00ff88; font-size:16px; text-align:center;">
+        you won
+      </div>
+
+      <div id="resultSub" style="margin-top:12px; color:#aaa; font-size:12px; text-align:center;">
+        opponent eliminated
+      </div>
+
+      <button class="btn" id="playAgainBtn" style="margin-top:20px; width:100%;">rematch</button>
+      <button class="btn btn-outline" id="menuBtn" style="margin-top:8px; width:100%;">menu</button>
     </div>
   </div>
 
@@ -2885,8 +2904,7 @@
     });
 
     document.getElementById('settingsSignOutBtn').addEventListener('click', async () => {
-      if (presenceRoom) await presenceRoom.leave();
-      localStorage.removeItem('auth_user');
+      localStorage.clear();
       location.reload();
     });
 

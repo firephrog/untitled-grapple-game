@@ -1,1 +1,45 @@
+# Node
 node_modules/
+dist/
+.env
+.env.*
+*.log
+
+# Vite
+client/dist/
+
+# C++ / CMake
+cpp-server/build/
+cpp-server/build-ninja/
+
+# Rust / Cargo
+cpp-server/target/
+
+# VS Build artifacts
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.exe
+x64/
+Debug/
+Release/
+
+# CMake generated
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+
+# Proto generated
+proto_generated/
+
+# OS
+.DS_Store
+Thumbs.db
+

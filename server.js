@@ -1,4 +1,5 @@
 'use strict';
+require('dotenv').config();
 
 const express                = require('express');
 const { createServer }       = require('http');
@@ -8,19 +9,21 @@ const { WebSocketTransport } = require('@colyseus/ws-transport');
 const mongoose               = require('mongoose');  
 const bcrypt                 = require('bcryptjs'); 
 const jwt                    = require('jsonwebtoken'); 
+const crypto                 = require('crypto');
 
-const { PrivateRoom }     = require('./rooms/PrivateRoom');
-const { MatchmakingRoom } = require('./rooms/MatchmakingRoom');
-const { RankedRoom }      = require('./rooms/RankedRoom');
-const { FreeForAllRoom }  = require('./rooms/FreeForAllRoom');
+const PrivateRoom     = require('./rooms/PrivateRoom');
+const MatchmakingRoom = require('./rooms/MatchmakingRoom');
+const RankedRoom      = require('./rooms/RankedRoom');
+const FreeForAllRoom  = require('./rooms/FreeForAllRoom');
 const { Lobby, getLobby } = require('./rooms/Lobby');
-const { PhysicsWorld }    = require('./game/PhysicsWorld');
 const { skinRoutes, unlockSkin, unlockGrapple, unlockBombSkin } = require('./routes/skins');
-const gearRoutes          = require('./routes/gear');
-const CFG                 = require('./config');
-const User = require('./models/User'); 
+const gearRoutes      = require('./routes/gear');
+const CFG             = require('./config');
+const User            = require('./models/User');
 const { TITLES, TITLE_LIST, getTitle } = require('./skins');
-const { migrateSkinsStructure } = require('./migrations/migrateSkinsStructure'); 
+const { migrateSkinsStructure }        = require('./migrations/migrateSkinsStructure');
+const { getGrpcClient }                = require('./game/GrpcClient');
+const { getRedisGameBridge }           = require('./game/RedisGameBridge');
 
 
 //mango db
@@ -168,6 +171,111 @@ app.get('/api/ffa/playercount', (req, res) => {
   }
 });
 
+const FIVE_MIN_COOLDOWN_MS = 5 * 60 * 1000;
+const supportFallbackCooldown = new Map();
+const supportFallbackDaily    = new Map(); // key → { dayStart: Date, count: Number }
+
+function hashRecoveryCode(code) {
+  return crypto.createHash('sha256').update(String(code)).digest('hex');
+}
+
+function createRecoveryCode() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+function getRetryAfterMs(lastAt, cooldownMs) {
+  if (!lastAt) return 0;
+  const retryAt = new Date(lastAt).getTime() + cooldownMs;
+  return Math.max(0, retryAt - Date.now());
+}
+
+async function sendBrevoEmail({ to, subject, htmlContent, textContent }) {
+  if (!CFG.BREVO_API_KEY) {
+    throw new Error('BREVO_API_KEY is not configured.');
+  }
+
+  const resp = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'api-key': CFG.BREVO_API_KEY,
+    },
+    body: JSON.stringify({
+      sender: {
+        name: CFG.BREVO_SENDER_NAME,
+        email: CFG.BREVO_SENDER_EMAIL,
+      },
+      to: [{ email: to }],
+      subject,
+      htmlContent,
+      textContent,
+    }),
+  });
+
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`Brevo send failed (${resp.status}): ${body}`);
+  }
+}
+
+async function sendPasswordRecoveryCodeEmail({ email, username, code, ttlMinutes }) {
+  const subject = 'UGG password recovery code';
+  const textContent = [
+    `Hi ${username},`,
+    '',
+    `Your password recovery code is: ${code}`,
+    `This code expires in ${ttlMinutes} minutes.`,
+    '',
+    'Did not get a working code or need another email?',
+    '- Use Resend code in-game (5 minute cooldown).',
+    '- Use Contact support in-game (5 minute cooldown).',
+  ].join('\n');
+
+  const htmlContent = `
+    <div style="font-family:Arial,sans-serif;color:#111;line-height:1.5;">
+      <p>Hi <strong>${username}</strong>,</p>
+      <p>Your password recovery code is:</p>
+      <p style="font-size:28px;letter-spacing:4px;font-weight:700;margin:8px 0;">${code}</p>
+      <p>This code expires in ${ttlMinutes} minutes.</p>
+      <hr style="border:none;border-top:1px solid #ddd;margin:20px 0;" />
+      <p style="margin:0;">Did not get a working code or need another email?</p>
+      <p style="margin:6px 0 0;">Use <strong>Resend code</strong> in-game (5 minute cooldown).</p>
+      <p style="margin:6px 0 0;">Use <strong>Contact support</strong> in-game (5 minute cooldown).</p>
+    </div>
+  `;
+
+  await sendBrevoEmail({ to: email, subject, htmlContent, textContent });
+}
+
+async function sendSupportRequestEmail({ username, recoveryEmail, note }) {
+  const subject = `UGG support request: ${username || 'unknown-user'}`;
+  const textContent = [
+    'A player requested password recovery help.',
+    '',
+    `Username: ${username || 'n/a'}`,
+    `Recovery email on file: ${recoveryEmail || 'n/a'}`,
+    `Player note: ${note || 'n/a'}`,
+    `Requested at: ${new Date().toISOString()}`,
+  ].join('\n');
+
+  const htmlContent = `
+    <div style="font-family:Arial,sans-serif;color:#111;line-height:1.5;">
+      <h3 style="margin:0 0 10px;">Password Recovery Support Request</h3>
+      <p><strong>Username:</strong> ${username || 'n/a'}</p>
+      <p><strong>Recovery email on file:</strong> ${recoveryEmail || 'n/a'}</p>
+      <p><strong>Player note:</strong> ${note || 'n/a'}</p>
+      <p><strong>Requested at:</strong> ${new Date().toISOString()}</p>
+    </div>
+  `;
+
+  await sendBrevoEmail({
+    to: CFG.SUPPORT_EMAIL,
+    subject,
+    htmlContent,
+    textContent,
+  });
+}
+
 // ── Auth routes ──────────────────────────────────────────── // ← ADD BLOCK
 app.post('/auth/signup', async (req, res) => {
   try {
@@ -198,6 +306,210 @@ app.post('/auth/login', async (req, res) => {
   } catch (err) {
     console.error('[AUTH] Login error:', err.message);
     res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/auth/forgot-password/request', async (req, res) => {
+  try {
+    const username = String(req.body?.username || '').trim();
+    if (!username) return res.status(400).json({ error: 'Username is required.' });
+
+    const user = await User.findOne({ username });
+    if (!user || !user.email) {
+      return res.json({
+        ok: true,
+        message: 'If that account has a recovery email, a code has been sent.',
+      });
+    }
+
+    const code = createRecoveryCode();
+    const ttlMinutes = Math.max(1, Number(CFG.PASSWORD_RESET_CODE_TTL_MIN || 10));
+    user.passwordReset = user.passwordReset || {};
+    user.passwordReset.codeHash = hashRecoveryCode(code);
+    user.passwordReset.expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000);
+    user.passwordReset.lastSentAt = new Date();
+    await user.save();
+
+    await sendPasswordRecoveryCodeEmail({
+      email: user.email,
+      username: user.username,
+      code,
+      ttlMinutes,
+    });
+
+    res.json({ ok: true, message: 'Recovery code sent.', codeTtlMinutes: ttlMinutes });
+  } catch (err) {
+    console.error('[AUTH] Forgot password request error:', err.message);
+    res.status(500).json({ error: 'Unable to send recovery email right now.' });
+  }
+});
+
+app.post('/auth/forgot-password/resend', async (req, res) => {
+  try {
+    const username = String(req.body?.username || '').trim();
+    if (!username) return res.status(400).json({ error: 'Username is required.' });
+
+    const user = await User.findOne({ username });
+    if (!user || !user.email) {
+      return res.json({
+        ok: true,
+        message: 'If that account has a recovery email, a code has been sent.',
+      });
+    }
+
+    const retryAfterMs = getRetryAfterMs(user.passwordReset?.lastSentAt, FIVE_MIN_COOLDOWN_MS);
+    if (retryAfterMs > 0) {
+      return res.status(429).json({
+        error: 'You can resend a code every 5 minutes.',
+        retryAfterSec: Math.ceil(retryAfterMs / 1000),
+      });
+    }
+
+    const code = createRecoveryCode();
+    const ttlMinutes = Math.max(1, Number(CFG.PASSWORD_RESET_CODE_TTL_MIN || 10));
+    user.passwordReset = user.passwordReset || {};
+    user.passwordReset.codeHash = hashRecoveryCode(code);
+    user.passwordReset.expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000);
+    user.passwordReset.lastSentAt = new Date();
+    await user.save();
+
+    await sendPasswordRecoveryCodeEmail({
+      email: user.email,
+      username: user.username,
+      code,
+      ttlMinutes,
+    });
+
+    res.json({ ok: true, message: 'Recovery code re-sent.', codeTtlMinutes: ttlMinutes });
+  } catch (err) {
+    console.error('[AUTH] Forgot password resend error:', err.message);
+    res.status(500).json({ error: 'Unable to resend recovery email right now.' });
+  }
+});
+
+app.post('/auth/forgot-password/contact-support', async (req, res) => {
+  try {
+    const username = String(req.body?.username || '').trim();
+    const note = String(req.body?.note || '').trim();
+    if (!username) return res.status(400).json({ error: 'Username is required.' });
+
+    const user = await User.findOne({ username });
+    const fallbackKey = username.toLowerCase();
+
+    // ── 5-minute cooldown check ──
+    const retryAfterMs = user
+      ? getRetryAfterMs(user.passwordReset?.lastSupportAt, FIVE_MIN_COOLDOWN_MS)
+      : getRetryAfterMs(supportFallbackCooldown.get(fallbackKey), FIVE_MIN_COOLDOWN_MS);
+
+    if (retryAfterMs > 0) {
+      return res.status(429).json({
+        error: 'You can contact support every 5 minutes.',
+        retryAfterSec: Math.ceil(retryAfterMs / 1000),
+      });
+    }
+
+    // ── 1-per-day limit check ──
+    const nowMs = Date.now();
+    const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+    if (user) {
+      const pr = user.passwordReset || {};
+      const dayStart = pr.supportDayStart ? new Date(pr.supportDayStart).getTime() : 0;
+      const sameDay  = (nowMs - dayStart) < ONE_DAY_MS;
+      if (sameDay && (pr.supportCountToday || 0) >= 1) {
+        const retryDaySec = Math.ceil((dayStart + ONE_DAY_MS - nowMs) / 1000);
+        return res.status(429).json({
+          error: 'You can only contact support once per day.',
+          retryAfterSec: retryDaySec,
+        });
+      }
+    } else {
+      const daily = supportFallbackDaily.get(fallbackKey);
+      if (daily) {
+        const sameDay = (nowMs - new Date(daily.dayStart).getTime()) < ONE_DAY_MS;
+        if (sameDay && daily.count >= 1) {
+          const retryDaySec = Math.ceil((new Date(daily.dayStart).getTime() + ONE_DAY_MS - nowMs) / 1000);
+          return res.status(429).json({
+            error: 'You can only contact support once per day.',
+            retryAfterSec: retryDaySec,
+          });
+        }
+      }
+    }
+
+    await sendSupportRequestEmail({
+      username,
+      recoveryEmail: user?.email || null,
+      note,
+    });
+
+    if (user) {
+      user.passwordReset = user.passwordReset || {};
+      user.passwordReset.lastSupportAt = new Date();
+      const pr = user.passwordReset;
+      const dayStart = pr.supportDayStart ? new Date(pr.supportDayStart).getTime() : 0;
+      if ((nowMs - dayStart) >= ONE_DAY_MS) {
+        pr.supportDayStart   = new Date();
+        pr.supportCountToday = 1;
+      } else {
+        pr.supportCountToday = (pr.supportCountToday || 0) + 1;
+      }
+      await user.save();
+    } else {
+      const daily = supportFallbackDaily.get(fallbackKey);
+      const dayStart = daily ? new Date(daily.dayStart).getTime() : 0;
+      if ((nowMs - dayStart) >= ONE_DAY_MS) {
+        supportFallbackDaily.set(fallbackKey, { dayStart: new Date(), count: 1 });
+      } else {
+        daily.count += 1;
+      }
+      supportFallbackCooldown.set(fallbackKey, new Date());
+    }
+
+    res.json({ ok: true, message: 'Support request sent. We will reach out soon.' });
+  } catch (err) {
+    console.error('[AUTH] Contact support error:', err.message);
+    res.status(500).json({ error: 'Unable to contact support right now.' });
+  }
+});
+
+app.post('/auth/forgot-password/verify', async (req, res) => {
+  try {
+    const username = String(req.body?.username || '').trim();
+    const code = String(req.body?.code || '').trim();
+    const newPassword = String(req.body?.newPassword || '');
+
+    if (!username || !code || !newPassword) {
+      return res.status(400).json({ error: 'Username, code, and new password are required.' });
+    }
+    if (newPassword.length < 8) {
+      return res.status(400).json({ error: 'Password must be 8+ characters.' });
+    }
+
+    const user = await User.findOne({ username });
+    if (!user || !user.passwordReset?.codeHash || !user.passwordReset?.expiresAt) {
+      return res.status(400).json({ error: 'Invalid or expired recovery code.' });
+    }
+
+    if (new Date(user.passwordReset.expiresAt).getTime() < Date.now()) {
+      user.passwordReset.codeHash = null;
+      user.passwordReset.expiresAt = null;
+      await user.save();
+      return res.status(400).json({ error: 'Invalid or expired recovery code.' });
+    }
+
+    if (hashRecoveryCode(code) !== user.passwordReset.codeHash) {
+      return res.status(400).json({ error: 'Invalid or expired recovery code.' });
+    }
+
+    user.passwordHash = await bcrypt.hash(newPassword, 12);
+    user.passwordReset.codeHash = null;
+    user.passwordReset.expiresAt = null;
+    await user.save();
+
+    res.json({ ok: true, message: 'Password updated. You can sign in now.' });
+  } catch (err) {
+    console.error('[AUTH] Forgot password verify error:', err.message);
+    res.status(500).json({ error: 'Unable to reset password right now.' });
   }
 });
 
@@ -704,11 +1016,14 @@ httpServer.listen(CFG.PORT, () => {
   console.log(`  - /api/skins/*`);
   console.log(`  - /auth/*`);
 
-  // Pre-parse all collision JSON files into typed arrays so that
-  // new PhysicsWorld(map) never blocks the event loop with sync I/O.
-  const { MAPS, FFA_MAPS } = require('./maps');
-  const allMaps = [...Object.values(MAPS), ...Object.values(FFA_MAPS)];
-  PhysicsWorld.preload(allMaps)
-    .then(() => console.log('[STARTUP] Collision meshes preloaded'))
-    .catch(e  => console.error('[STARTUP] Mesh preload error:', e));
+  // Connect to gRPC game server and Redis bridge.
+  getGrpcClient('pvp');
+  getGrpcClient('ffa');
+  const bridge = getRedisGameBridge();
+  bridge.connect()
+    .then(() => console.log('[STARTUP] Redis game bridge connected'))
+    .catch(e  => console.error('[STARTUP] Redis bridge connection error:', e));
+  console.log(`[STARTUP] gRPC PVP backend: ${process.env.CPP_SERVER_ADDR || '127.0.0.1:50051'}`);
+  console.log(`[STARTUP] gRPC FFA backend: ${process.env.FFA_CPP_SERVER_ADDR || process.env.CPP_SERVER_ADDR || '127.0.0.1:50051'}`);
+  console.log('[STARTUP] Game simulation: C++ server (Rapier3D via cxx bridge)');
 });

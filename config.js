@@ -16,8 +16,13 @@ module.exports = {
   PORT:       process.env.PORT || 3000,
 
   // ── Database & Auth ────────────────────────────────────────  ← ADD
-  MONGO_URI:  process.env.MONGO_URI  || 'mongodb+srv://phrog:basicTestPass@cluster0.t8grp4o.mongodb.net/?appName=Cluster0',
-  JWT_SECRET: process.env.JWT_SECRET || 'DeezNuts420',
+  MONGO_URI:  process.env.MONGO_URI,
+  JWT_SECRET: process.env.JWT_SECRET,
+  BREVO_API_KEY: process.env.BREVO_API_KEY,
+  BREVO_SENDER_EMAIL: process.env.BREVO_SENDER_EMAIL,
+  BREVO_SENDER_NAME: process.env.BREVO_SENDER_NAME,
+  SUPPORT_EMAIL: process.env.SUPPORT_EMAIL || process.env.BREVO_SENDER_EMAIL,
+  PASSWORD_RESET_CODE_TTL_MIN: Number(process.env.PASSWORD_RESET_CODE_TTL_MIN || 10),
 
   // ── Room limits ────────────────────────────────────────────
   PRIVATE_MAX_CLIENTS:      2,
@@ -50,7 +55,7 @@ module.exports = {
   GRAPPLE_SPEED:       120,   // units/s — hook travel speed
   GRAPPLE_MAX:          80,   // max hook travel distance before auto-cancel
   REEL_SPEED:           40,   // units/s — rope shortens this fast while reeling
-  GRAPPLE_PULL_SPEED:   36,   // max speed (units/s) the pull accelerates you toward anchor
+  GRAPPLE_PULL_SPEED:   12,   // max speed (units/s) the pull accelerates you toward anchor
   GRAPPLE_PULL_SNAP:    0.25, // 0-1: how instantly you reach pull speed per tick (0=never,1=instant)
   GRAPPLE_PULL_ZONE:    5,    // units of overshoot before pull reaches full speed
   MIN_ROPE_LEN:         1,  // rope length at which reeling auto-releases

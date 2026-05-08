@@ -1,0 +1,15 @@
+[package]
+name    = "rapier-bridge"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name       = "rapier_bridge"
+crate-type = ["staticlib"]
+
+[dependencies]
+rapier3d = { version = "0.22", features = ["parallel"] }
+cxx      = "1"
+
+[build-dependencies]
+cxx-build = "1"

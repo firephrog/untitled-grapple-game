@@ -44,6 +44,7 @@ class PlayerState extends Schema {
     this.position = new Vec3();
     this.velocity = new Vec3();
     this.health   = 100;
+    this.alive    = true;
     this.lastSeq  = 0;
     this.grapple  = new GrappleState();
     this.bombSkinId = 'default';
@@ -53,6 +54,7 @@ defineTypes(PlayerState, {
   position: Vec3,
   velocity: Vec3,
   health:   'int16',
+  alive:    'boolean',
   lastSeq:  'int32',
   grapple:  GrappleState,
   bombSkinId: 'string',

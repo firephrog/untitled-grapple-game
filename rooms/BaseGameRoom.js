@@ -1,854 +1,568 @@
-'use strict';
-
-// ── rooms/BaseGameRoom.js ─────────────────────────────────────────────────────
-// All game logic lives here. Subclasses handle matchmaking concerns only.
-//
-// Phase flow:
-//   'waiting'  → both players join
-//   'voting'   → map vote (VOTE_TIMEOUT_MS to submit, then resolves)
-//   'playing'  → physics loop running
-//   'ended'    → game over, room closes after 5s
-//
-// Skin system additions:
-//   - Each client's equipped skin is fetched from MongoDB when they join.
-//   - After voting resolves, before 'gameStart', the server sends each client
-//     a 'skinInfo' message containing BOTH players' skin data so the client
-//     can pre-load GLB files before rendering begins.
-// ─────────────────────────────────────────────────────────────────────────────
-
-const { Room }           = require('colyseus');
+﻿'use strict';
+/**
+ * BaseGameRoom  (1v1 modes: private / matchmaking / ranked)
+ *
+ * Thin WebSocket proxy to the C++ game server.
+ * Auth, skin loading, and DB writes stay in Node.js.
+ * All game simulation (physics, systems, tick) runs in C++.
+ */
+const { Room }  = require('colyseus');
+const jwt       = require('jsonwebtoken');
+const { JWT_SECRET, PRIVATE_MAX_CLIENTS } = require('../config');
+const User      = require('../models/User');
+const { getSkin, getGrapple, getBombSkin } = require('../skins');
+const { getGrpcClient }      = require('../game/GrpcClient');
+const { getRedisGameBridge } = require('../game/RedisGameBridge');
+const { MAP_LIST, getMap, resolveVotes, mapFilePath } = require('../maps');
 const { RoomState, PlayerState, BombState } = require('../schema');
-const { PhysicsWorld, RAPIER_READY }        = require('../game/PhysicsWorld');
-const { applyMovement }  = require('../game/PlayerController');
-const { GrappleSystem }  = require('../game/GrappleSystem');
-const { BombSystem }     = require('../game/BombSystem');
-const { GearSystem }     = require('../game/GearSystem');
-const ParrySystem        = require('../game/ParrySystem');
-const { MAP_LIST, getMap, resolveVotes } = require('../maps');
-const { getSkin, getGrapple, getBombSkin }        = require('../skins');
-const { checkAndUnlockRewards }      = require('../routes/skins');
-const CFG                = require('../config');
-
-const mongoose = require('mongoose');
-const jwt      = require('jsonwebtoken');
-const User     = require('../models/User');
-
-// How long to wait for votes before auto-resolving (ms)
-const VOTE_TIMEOUT_MS = 30_000;
 
 class BaseGameRoom extends Room {
-
-  // ── Lifecycle ────────────────────────────────────────────────
-
-  async onCreate(opts = {}) {
-    await RAPIER_READY;
-
-    this.maxClients = CFG.PRIVATE_MAX_CLIENTS;
+  onCreate(options) {
+    this.maxClients   = options.maxClients || PRIVATE_MAX_CLIENTS;
+    this._grpc        = getGrpcClient(options.mode === 'ffa' ? 'ffa' : 'pvp');
+    this._bridge      = getRedisGameBridge();
     this.setState(new RoomState());
-    this.setPatchRate(CFG.PATCH_RATE_MS);
-
-    // Per-session server-side data
-    this._input    = new Map();   // sid → { inputs, camDir, lastSeq }
-    this._bodies   = new Map();   // sid → RAPIER.RigidBody
-    this._grapples = new Map();   // sid → GrappleSystem
-    this._grappleLastInput = new Map();  // sid → frame number of last grapple button press
-    this._parries  = new Map();   // sid → ParrySystem
-
-    // Skin data fetched at join time: sid → { skinId, glb, scale, eyeOffset }
-    this._skins    = new Map();
-
-    // Player nametag info: sid → { username, userPrefix, prefixColor, usernameColor }
+    this._stream      = null;
+    this._votes       = new Map();
+    this._rematches   = new Set();
+    this._skinData    = new Map();
     this._playerNames = new Map();
+    this._dbIds       = new Map();  // sessionId → MongoDB user _id string
+    this._camYaw      = new Map();  // sessionId → latest cam yaw (radians)
+    this._camPitch    = new Map();  // sessionId → latest cam pitch (radians)
+    this._mode        = options.mode || 'private';
+    this._matchStarted = false;
+    this._matchResolved = false;
+    this._pingCount   = 0;     // total pings received
+    this._snapProcMs  = 0;     // cumulative ms in _applyStateSnapshot, reset every 10 pings
+    this._snapCount   = 0;     // gRPC snapshots processed, reset every 10 pings
 
-    // Vote phase state — server only, never sent to clients until resolved
-    this._votes    = new Map();   // sid → mapId string
-    this._voteTimer = null;
+    // Disable the timer-based patch loop — we call broadcastPatch() manually
+    // immediately after each gRPC state update, so clients get it with zero
+    // extra wait instead of up to 50ms of phase-mismatch delay.
+    this.setPatchRate(0);
 
-    // Rematch votes after game ends
-    this._rematches = new Map(); // sid → boolean
-    this._rematchTimer = null;
+    this._grpc.createRoom(this.roomId, this._mode)
+      .then(r => { if (!r.ok) console.error('[BaseGameRoom] createRoom failed:', r.error); })
+      .catch(e  => console.error('[BaseGameRoom] createRoom error:', e));
 
-    // Physics and bombs are created AFTER the vote resolves
-    this._physics = null;
-    this._bombs   = null;
-    
-    // Frame counter for grapple timeout detection
-    this._tickCount = 0;
-
-    // Messages that are always valid
-    this.onMessage('vote', (c, d) => this._handleVote(c, d));
-    this.onMessage('ping', (c, d) => c.send('pong', { t: d.t }));
-    this.onMessage('rematch', (c, d) => this._handleRematch(c, d));
-
-    // Game messages registered once voting is done (in _beginGame)
-  }
-
-  async onJoin(client, opts = {}) {
-    const isFirst = this.clients.length === 1;
-
-    let skinData = { skinId: 'default', glb: null, scale: 1.0, eyeOffset: 1.0, grapple: { image: null, scale: 0.6, color: 0x00ffff } };
-    let nametagInfo = { sessionId: client.sessionId, username: 'Player', userPrefix: '', prefixColor: '#00ffcc', usernameColor: '#ffffff' };
-    
-    if (opts.token) {
-      try {
-        const { userId } = jwt.verify(opts.token, CFG.JWT_SECRET);
-        client._userId = userId;
-
-        const { unlockGrapple } = require('../routes/skins');
-
-        const { unlockSkin } = require('../routes/skins');
-        await unlockSkin(userId, 'cube');
-        await unlockGrapple(userId, 'cyan');
-        await User.findByIdAndUpdate(userId, { status: 'In Game' });
-
-        const user = await User.findById(userId).select('skins username userPrefix prefixColor usernameColor');
-        if (user) {
-          // Find equipped player skin from nested structure
-          let equippedId = 'default';
-          if (user.skins?.player) {
-            for (const [id, data] of Object.entries(user.skins.player)) {
-              if (data.equipped) { equippedId = id; break; }
-            }
-          }
-          const skin = getSkin(equippedId);
-
-          // Find equipped grapple from nested structure
-          let grappleId = 'default';
-          if (user.skins?.grapples) {
-            for (const [id, data] of Object.entries(user.skins.grapples)) {
-              if (data.equipped) { grappleId = id; break; }
-            }
-          }
-          const grappleDef = getGrapple(grappleId);
-
-          // Find equipped bomb skin from nested structure
-          let bombSkinId = 'default';
-          if (user.skins?.bombs) {
-            for (const [id, data] of Object.entries(user.skins.bombs)) {
-              if (data.equipped) { bombSkinId = id; break; }
-            }
-          }
-          const bombSkinDef = getBombSkin(bombSkinId);
-
-          skinData = {
-            skinId:    skin.id,
-            glb:       skin.glb,
-            scale:     skin.scale,
-            eyeOffset: skin.eyeOffset,
-            grapple: {
-              image: grappleDef.image,
-              localImage: grappleDef.localImage,
-              scale: grappleDef.scale,
-              color: grappleDef.color,
-            },
-            bombSkinId: bombSkinId,
-            bombSkin: {
-              id: bombSkinDef.id,
-              glb: bombSkinDef.glb,
-              scale: bombSkinDef.scale,
-            },
-          };
-
-          nametagInfo = {
-            sessionId: client.sessionId,
-            username: user.username || 'Player',
-            userPrefix: user.userPrefix || '',
-            prefixColor: user.prefixColor || '#00ffcc',
-            usernameColor: user.usernameColor || '#ffffff',
-          };
-        }
-      } catch (e) { console.error('[onJoin] skin error:', e); }
-    }
-    this._skins.set(client.sessionId, skinData);
-    this._playerNames.set(client.sessionId, nametagInfo);
-
-    this._input.set(client.sessionId, {
-      inputs:  { w: false, a: false, s: false, d: false, space: false },
-      camDir:  { x: 0, y: 0, z: -1 },
-      lastSeq: 0,
+    this.onMessage('vote',    (c, d) => this._handleVote(c, d));
+    this.onMessage('rematch', (c)    => this._handleRematch(c));
+    this.onMessage('ping', (c, d) => {
+      const _t0 = process.hrtime.bigint();
+      c.send('pong', { t: d?.t });
+      const handlerUs = Number(process.hrtime.bigint() - _t0) / 1e3;
+      this._pingCount++;
+      if (this._pingCount % 10 === 0) {
+        const avgSnapMs = this._snapCount
+          ? (this._snapProcMs / this._snapCount).toFixed(2)
+          : '—';
+        console.log(
+          `[Room ${this.roomId}] Ping#${this._pingCount} | ` +
+          `pong dispatch: ${handlerUs.toFixed(1)}µs | ` +
+          `gRPC snaps (last 10s): ${this._snapCount} | ` +
+          `avg snap proc: ${avgSnapMs}ms | ` +
+          `total snap CPU: ${this._snapProcMs.toFixed(2)}ms | ` +
+          `clients: ${this.clients.length}`
+        );
+        this._snapProcMs = 0;
+        this._snapCount  = 0;
+      }
     });
 
-    const ps = new PlayerState();
-    ps.health = CFG.START_HEALTH;
-    ps.bombSkinId = skinData.bombSkinId || 'default';
-    this.state.players.set(client.sessionId, ps);
+    // All gameplay inputs are forwarded directly to C++ via gRPC stream.
+    // Input: map client field names to proto field names.
+    this.onMessage('input', (client, data) => {
+      if (!this._stream || !data) return;
+      const d = data.inputs || data;
+      const cd = data.camDir || {};
+      const cp = data.camPos || data.cam_pos || {};
+      // Derive yaw/pitch from camDir vector so C++ grapple direction is correct
+      const yaw   = Math.atan2(cd.x || 0, -(cd.z || 0));
+      const pitch = Math.asin(Math.max(-1, Math.min(1, cd.y || 0)));
+      const inputMsg = {
+        room_id: this.roomId, player_id: client.sessionId,
+        input: {
+          seq:       data.seq   || 0,
+          forward:   !!(d.w),
+          backward:  !!(d.s),
+          left:      !!(d.a),
+          right:     !!(d.d),
+          jump:      !!(d.space),
+          cam_yaw:   yaw,
+          cam_pitch: pitch,
+        }
+      };
+      if (Number.isFinite(cp.x) && Number.isFinite(cp.y) && Number.isFinite(cp.z)) {
+        inputMsg.input.cam_pos = { x: cp.x, y: cp.y, z: cp.z };
+      }
+      this._stream.send(inputMsg);
+      // Cache latest cam yaw/pitch for grapple direction
+      this._camYaw.set(client.sessionId,   yaw);
+      this._camPitch.set(client.sessionId, pitch);
+    });
 
-    client.send('init', { myId: client.sessionId, isHost: isFirst });
+    this.onMessage('grapple', (client) => {
+      if (!this._stream) return;
+      // Pass the last known cam orientation inside an input message first,
+      // then send the grapple action so C++ uses the correct direction.
+      this._stream.send({
+        room_id: this.roomId, player_id: client.sessionId,
+        grapple: {}
+      });
+    });
 
-    if (this.clients.length === this.maxClients) {
-      this._startVotePhase();
-    }
+    this.onMessage('spawnBomb', (client, data) => {
+      if (!this._stream || !data) return;
+      this._stream.send({
+        room_id: this.roomId, player_id: client.sessionId,
+        spawn_bomb: {
+          position: { x: data.position?.x || 0, y: data.position?.y || 0, z: data.position?.z || 0 },
+          impulse:  { x: data.impulse?.x  || 0, y: data.impulse?.y  || 0, z: data.impulse?.z  || 0 },
+        }
+      });
+    });
+
+    this.onMessage('useGear', (client, data) => {
+      if (!this._stream || !data) return;
+      this._stream.send({
+        room_id: this.roomId, player_id: client.sessionId,
+        use_gear: {
+          gear_type: data.gearName   || data.gear_type || '',
+          cam_pos:   data.cameraPos  || data.cam_pos   || { x:0, y:0, z:0 },
+          cam_dir:   data.cameraDir  || data.cam_dir   || { x:0, y:0, z:0 },
+        }
+      });
+    });
+
+    this.onMessage('parry', (client) => {
+      if (!this._stream) return;
+      this._stream.send({ room_id: this.roomId, player_id: client.sessionId, parry: {} });
+    });
   }
 
-  async onLeave(client, consented) {
-    if (client._userId) {
-      await User.findByIdAndUpdate(client._userId, { status: 'Online' });
+  async onJoin(client, options) {
+    let decoded;
+    try { decoded = jwt.verify(options?.token, JWT_SECRET); }
+    catch { client.leave(4001); return; }
+
+    const user = await User.findById(decoded.userId)
+      .select('username equippedSkin equippedGrapple equippedGear userPrefix prefixColor usernameColor skins');
+    if (!user) { client.leave(4002); return; }
+
+    const skinId      = _equippedId(user.skins?.player)   || user.equippedSkin   || 'default';
+    const grappleId   = _equippedId(user.skins?.grapples) || user.equippedGrapple || 'default';
+    const bombSkinId  = _equippedId(user.skins?.bombs)    || 'default';
+    const gear        = user.equippedGear || 'sniper';
+
+    const skinDef    = getSkin(skinId);
+    const grappleDef = getGrapple(grappleId);
+    const bombDef    = getBombSkin(bombSkinId);
+
+    this._skinData.set(client.sessionId, { skinId, skinDef, grappleId, grappleDef, bombSkinId, bombDef, gear });
+    this._playerNames.set(client.sessionId, {
+      username:      user.username,
+      userPrefix:    user.userPrefix    || '',
+      prefixColor:   user.prefixColor   || '#00ffcc',
+      usernameColor: user.usernameColor || '#ffffff',
+    });
+
+    client._userId  = decoded.userId;
+    client._decoded = decoded;
+    this._dbIds.set(client.sessionId, String(decoded.userId));
+
+    await User.findByIdAndUpdate(decoded.userId, { status: 'In Game' });
+
+    await this._grpc.addPlayer(this.roomId, {
+      player_id:    client.sessionId,
+      user_db_id:   decoded.userId,
+      skin_id:      skinId,
+      grapple_id:   grappleId,
+      bomb_skin_id: bombSkinId,
+      gear,
+      spawn_index:  this.clients.length - 1,
+    }).catch(e => console.warn('[BaseGameRoom] addPlayer gRPC error (C++ server down?):', e.message));
+
+    client.send('init', {
+      sessionId: client.sessionId,
+      myId:      client.sessionId,
+      isHost:    this.clients[0]?.sessionId === client.sessionId,
+      username:  user.username,
+    });
+
+    if (!this._stream) this._openStream();
+    if (this.clients.length >= this.maxClients) this._startVotePhase();
+  }
+
+  async onLeave(client) {
+    const leaverSid = client.sessionId;
+    const shouldForfeitOnLeave = (
+      this._mode === 'ranked' &&
+      this._matchStarted &&
+      !this._matchResolved
+    );
+
+    if (shouldForfeitOnLeave) {
+      const winnerClient = this.clients.find(c => c.sessionId !== leaverSid);
+      if (winnerClient) {
+        const winnerSid = winnerClient.sessionId;
+        this._matchResolved = true;
+        this._matchStarted = false;
+
+        // Score disconnect as a forfeit before cleaning room-local session data.
+        await this.onGameEnd(winnerSid, leaverSid)
+          .catch(e => console.error('[BaseGameRoom] ranked forfeit ELO update error:', e));
+
+        this.broadcast('gameEnd', {
+          winner: this._getDbId(winnerSid),
+          loser: this._getDbId(leaverSid),
+          reason: 'disconnectForfeit',
+        });
+
+        // Force both sides out to avoid any stale post-forfeit room state.
+        winnerClient.send('opponentDisconnected', { reason: 'opponentRefreshedForfeit' });
+        setTimeout(() => {
+          try { winnerClient.leave(4012); } catch {}
+        }, 100);
+
+        this.lock();
+      }
     }
-    if (this._physics) {
-      const body = this._bodies.get(client.sessionId);
-      if (body) this._physics.removeBody(body);
-    }
-    this._bodies.delete(client.sessionId);
-    this._grapples.delete(client.sessionId);
-    this._grappleLastInput.delete(client.sessionId);
-    this._input.delete(client.sessionId);
+
+    await this._grpc.removePlayer(this.roomId, client.sessionId).catch(() => {});
+    if (client._userId)
+      await User.findByIdAndUpdate(client._userId, { status: 'Online' }).catch(() => {});
+    this._skinData.delete(client.sessionId);
+    this._playerNames.delete(client.sessionId);
     this._votes.delete(client.sessionId);
     this._rematches.delete(client.sessionId);
-    this._skins.delete(client.sessionId);
-    this._playerNames.delete(client.sessionId);
-    this.state.players.delete(client.sessionId);
+    this._dbIds.delete(client.sessionId);
+    this._camYaw.delete(client.sessionId);
+    this._camPitch.delete(client.sessionId);
+  }
 
-    if (this.state.phase === 'playing') {
-      this.broadcast('opponentDisconnected');
-    } else if (this.state.phase === 'ended') {
-      // Disconnect the room if someone leaves during results screen
-      if (this._rematchTimer) {
-        this._rematchTimer.clear();
-        this._rematchTimer = null;
-      }
-      this.disconnect();
+  onDispose() {
+    this._stream?.close();
+    this._stream = null;
+    this._grpc.destroyRoom(this.roomId).catch(() => {});
+    this._bridge.unsubscribeRoom(this.roomId);
+  }
+
+  // ── gRPC stream ────────────────────────────────────────────────────────────
+
+  _openStream() {
+    this._stream = this._grpc.openRoomStream(this.roomId, (msg) => {
+      this._onServerMessage(msg);
+    });
+    // Send an identifying first message so C++ knows which room this stream is.
+    this._stream.send({ room_id: this.roomId, player_id: '__gateway__' });
+  }
+
+  _onServerMessage(msg) {
+    if (msg.payload === 'state') {
+      const snap = msg.state;
+      this._applyStateSnapshot(snap);
+      // Push the patch to clients immediately (no timer wait)
+      this.broadcastPatch();
+    } else if (msg.payload === 'event') {
+      let data = {};
+      try { data = JSON.parse(msg.event.json_payload); } catch {}
+      this._handleGameEvent(msg.event.type, data);
     }
   }
 
-  // ── Vote phase ───────────────────────────────────────────────
+  _applyStateSnapshot(snap) {
+    if (!snap) return;
+    const _t0 = Date.now();
+
+    // ── Players ──────────────────────────────────────────────
+    const incomingIds = new Set();
+    for (const p of (snap.players || [])) {
+      const id = p.player_id;
+      if (!id) continue;
+      incomingIds.add(id);
+
+      let ps = this.state.players.get(id);
+      if (!ps) {
+        ps = new PlayerState();
+        this.state.players.set(id, ps);
+      }
+
+      // Dirty-check every field: Colyseus only encodes changed fields into the
+      // binary patch, but the dirty-flag setter still runs on every assignment.
+      // Skipping unchanged writes keeps the patch small and reduces CPU overhead.
+      const pos = p.position || {};
+      const px = pos.x ?? 0, py = pos.y ?? 0, pz = pos.z ?? 0;
+      if (ps.position.x !== px) ps.position.x = px;
+      if (ps.position.y !== py) ps.position.y = py;
+      if (ps.position.z !== pz) ps.position.z = pz;
+
+      const vel = p.velocity || {};
+      const vx = vel.x ?? 0, vy = vel.y ?? 0, vz = vel.z ?? 0;
+      if (ps.velocity.x !== vx) ps.velocity.x = vx;
+      if (ps.velocity.y !== vy) ps.velocity.y = vy;
+      if (ps.velocity.z !== vz) ps.velocity.z = vz;
+
+      const hp  = p.health   ?? ps.health;
+      const alive = p.alive ?? ps.alive;
+      const seq = p.last_seq ?? ps.lastSeq;
+      if (ps.health  !== hp)  ps.health  = hp;
+      if (ps.alive   !== alive) ps.alive = alive;
+      if (ps.lastSeq !== seq) ps.lastSeq = seq;
+
+      // Only write grapple anchor when active; stale values don't matter
+      // because clients skip rendering the hook when active=false.
+      const ga = !!p.grapple_active;
+      if (ps.grapple.active !== ga) ps.grapple.active = ga;
+      if (ga) {
+        const gp = p.grapple_pos || {};
+        const hx = gp.x ?? 0, hy = gp.y ?? 0, hz = gp.z ?? 0;
+        if (ps.grapple.hx !== hx) ps.grapple.hx = hx;
+        if (ps.grapple.hy !== hy) ps.grapple.hy = hy;
+        if (ps.grapple.hz !== hz) ps.grapple.hz = hz;
+      }
+    }
+    // Remove players that left
+    for (const id of this.state.players.keys()) {
+      if (!incomingIds.has(id)) this.state.players.delete(id);
+    }
+
+    // ── Bombs ─────────────────────────────────────────────────
+    const incomingBombs = new Set();
+    for (const b of (snap.bombs || [])) {
+      const id = b.id;
+      if (!id) continue;
+      incomingBombs.add(id);
+
+      let bs = this.state.bombs.get(id);
+      if (!bs) {
+        bs = new BombState(id, b.skin || 'default');
+        this.state.bombs.set(id, bs);
+      }
+
+      const bp = b.pos || {};
+      const bpx = bp.x ?? 0, bpy = bp.y ?? 0, bpz = bp.z ?? 0;
+      if (bs.px !== bpx) bs.px = bpx;
+      if (bs.py !== bpy) bs.py = bpy;
+      if (bs.pz !== bpz) bs.pz = bpz;
+
+      const br = b.rot || {};
+      const rx = br.x ?? 0, ry = br.y ?? 0, rz = br.z ?? 0, rw = br.w ?? 1;
+      if (bs.rx !== rx) bs.rx = rx;
+      if (bs.ry !== ry) bs.ry = ry;
+      if (bs.rz !== rz) bs.rz = rz;
+      if (bs.rw !== rw) bs.rw = rw;
+    }
+    for (const id of this.state.bombs.keys()) {
+      if (!incomingBombs.has(id)) this.state.bombs.delete(id);
+    }
+
+    if (snap.phase) this.state.phase = snap.phase;
+
+    this._snapProcMs += Date.now() - _t0;
+    this._snapCount++;
+  }
+
+  // Returns the MongoDB user ID string for a session ID (or the session ID as fallback)
+  _getDbId(sessionId) {
+    return this._dbIds.get(sessionId) || sessionId;
+  }
+
+  _handleGameEvent(type, data) {
+    switch (type) {
+      case 'gameStart': {
+        this._matchStarted = true;
+        this._matchResolved = false;
+        // C++ only sends { phase:"playing" }. Inject both player session IDs
+        // and their DB IDs so clients can render opponents and load skins.
+        const clientIds = this.clients.map(c => c.sessionId);
+        const enriched = {
+          ...data,
+          hostId:   clientIds[0],
+          guestId:  clientIds[1] || null,
+          hostDbId: this._getDbId(clientIds[0]),
+          guestDbId: clientIds[1] ? this._getDbId(clientIds[1]) : null,
+        };
+        this.broadcast('gameStart', enriched);
+        break;
+      }
+      case 'gameEnd': {
+        this._matchStarted = false;
+        this._matchResolved = true;
+        // Remap session IDs to DB user IDs so clients can compare with their own DB ID
+        const enrichedEnd = { ...data };
+        if (data.winner) enrichedEnd.winner = this._getDbId(data.winner);
+        if (data.loser)  enrichedEnd.loser  = this._getDbId(data.loser);
+        // Ranked rooms should not be reused as an implicit queue after a match ends.
+        // Players must explicitly leave and requeue to be matched again.
+        if (this._mode === 'ranked') {
+          this.lock();
+        }
+        this.broadcast('gameEnd', enrichedEnd);
+        // onGameEnd expects session IDs for in-room maps (ratings/dbIds by session).
+        this.onGameEnd(data.winner, data.loser);
+        break;
+      }
+      case 'playerHit': {
+        // C++ sends: { targetId, sourceId, damage, newHealth }
+        // Client expects: { playerId, damage, currentHealth }
+        this.broadcast('playerHit', {
+          playerId:      data.targetId,
+          sourceId:      data.sourceId,
+          damage:        data.damage,
+          currentHealth: data.newHealth,
+        });
+        break;
+      }
+      case 'bombExploded': {
+        // C++ may send pos as either [x,y,z] or {x,y,z} depending on producer.
+        // Normalize to the object shape expected by clients.
+        const rawPos = data.pos ?? data.position;
+        const pos = Array.isArray(rawPos)
+          ? { x: rawPos[0], y: rawPos[1], z: rawPos[2] }
+          : (rawPos || {});
+        this.broadcast('bombExploded', {
+          id:       data.id,
+          position: {
+            x: Number(pos.x) || 0,
+            y: Number(pos.y) || 0,
+            z: Number(pos.z) || 0,
+          },
+          ownerId:  data.ownerId,
+        });
+        break;
+      }
+      case 'parryActivated':     this.broadcast('parryActivated',data); break;
+      case 'attackParried':      this.broadcast('parrySuccess',  data); break;
+      case 'gearPreview': {
+        // C++ sends: { playerId, gearType, pos:[x,y,z], dir:[x,y,z], durationSec }
+        // Client expects: { gearName, shooterId, position:{x,y,z}, direction:{x,y,z}, duration(ms) }
+        const p = data.pos || [];
+        const d = data.dir || [];
+        this.broadcast('gearEffect', {
+          gearName:  data.gearType,
+          shooterId: data.playerId,
+          position:  { x: p[0]||0, y: p[1]||0, z: p[2]||0 },
+          direction: { x: d[0]||0, y: d[1]||0, z: d[2]||0 },
+          duration:  (data.durationSec || 2) * 1000,
+        });
+        break;
+      }
+      case 'snipeLine': {
+        // C++ sends: { from:[x,y,z], to:[x,y,z] } (or object vectors in some builds)
+        // Client expects: { start:{x,y,z}, end:{x,y,z} }
+        const fv = data.from || {};
+        const tv = data.to   || {};
+        const f = Array.isArray(fv) ? { x: fv[0], y: fv[1], z: fv[2] } : fv;
+        const t = Array.isArray(tv) ? { x: tv[0], y: tv[1], z: tv[2] } : tv;
+        this.broadcast('sniperLine', {
+          start: { x: f.x || 0, y: f.y || 0, z: f.z || 0 },
+          end:   { x: t.x || 0, y: t.y || 0, z: t.z || 0 },
+        });
+        break;
+      }
+      case 'particles': {
+        const pv = data.pos || data.position || {};
+        const p = Array.isArray(pv) ? { x: pv[0], y: pv[1], z: pv[2] } : pv;
+        this.broadcast('particles', {
+          position: { x: p.x || 0, y: p.y || 0, z: p.z || 0 },
+          type: data.type || 'impact',
+          count: data.count || 12,
+        });
+        break;
+      }
+      case 'playerDisconnected': this.broadcast('opponentDisconnected', data); break;
+      case 'rematchStart':       this.broadcast('rematchStart',  data); break;
+      case 'playerDied':         this.broadcast('playerDied',    data); break;
+      default:                   this.broadcast(type,            data); break;
+    }
+  }
+
+  // ── vote phase ─────────────────────────────────────────────────────────────
 
   _startVotePhase() {
-    this.state.phase = 'voting';
-    this.broadcast('mapVote', { maps: MAP_LIST, timeoutMs: VOTE_TIMEOUT_MS });
-    this._voteTimer = this.clock.setTimeout(
-      () => this._resolveVotes(),
-      VOTE_TIMEOUT_MS
-    );
+    this.broadcast('mapVote', { maps: MAP_LIST, timeoutMs: 30_000 });
+    this._voteTimeout = setTimeout(() => this._resolveVotes(), 30_000);
   }
 
   _handleVote(client, data) {
-    if (this.state.phase !== 'voting') return;
-    const mapId = typeof data.mapId === 'string' ? data.mapId : null;
-    this._votes.set(client.sessionId, mapId);
-
-    if (this._votes.size === this.clients.length) {
+    this._votes.set(client.sessionId, data?.mapId);
+    if (this._votes.size >= this.clients.length) {
+      clearTimeout(this._voteTimeout);
       this._resolveVotes();
     }
   }
 
   _resolveVotes() {
-    if (this.state.phase !== 'voting') return;
-    if (this._voteTimer) { this._voteTimer.clear(); this._voteTimer = null; }
-
-    const [sidA, sidB] = [...this.clients.map(c => c.sessionId)];
-    const voteA = this._votes.get(sidA);
-    const voteB = this._votes.get(sidB);
+    const [voteA, voteB] = [...this._votes.values()];
     const mapId = resolveVotes(voteA, voteB);
     const map   = getMap(mapId);
-
-
     this.broadcast('mapChosen', { mapId: map.id, mapName: map.name, skyColor: map.skyColor });
-    this.clock.setTimeout(() => this._beginGame(map), 500);
+    setTimeout(() => this._beginGame(map), 500);
   }
-
-  // ── Begin game ───────────────────────────────────────────────
 
   async _beginGame(map) {
-    // Refresh skin data from database before starting the game
-    for (const client of this.clients) {
-      try {
-        if (client._userId) {
-          const user = await User.findById(client._userId).select('skins');
-          if (user) {
-            // Find equipped player skin
-            let equippedId = 'default';
-            if (user.skins?.player) {
-              for (const [id, data] of Object.entries(user.skins.player)) {
-                if (data.equipped) { equippedId = id; break; }
-              }
-            }
-            const skin = getSkin(equippedId);
+    let fsPath;
+    try { fsPath = mapFilePath(map.id); } catch(e) { console.error(`[BaseGameRoom ${this.roomId}] mapFilePath threw:`, e.message); return; }
+    console.log(`[BaseGameRoom ${this.roomId}] _beginGame: map.id=${map.id} fsPath=${fsPath}`);
+    const res = await this._grpc.beginGame(this.roomId, map.id, fsPath).catch(e => ({ ok: false, error: e.message }));
+    console.log(`[BaseGameRoom ${this.roomId}] beginGame gRPC result: ok=${res.ok} error=${res.error || '(none)'}`);
+    if (!res.ok) { console.error(`[BaseGameRoom ${this.roomId}] beginGame failed:`, res.error); return; }
 
-            // Find equipped grapple
-            let grappleId = 'default';
-            if (user.skins?.grapples) {
-              for (const [id, data] of Object.entries(user.skins.grapples)) {
-                if (data.equipped) { grappleId = id; break; }
-              }
-            }
-            const grappleDef = getGrapple(grappleId);
-
-            // Find equipped bomb skin
-            let bombSkinId = 'default';
-            if (user.skins?.bombs) {
-              for (const [id, data] of Object.entries(user.skins.bombs)) {
-                if (data.equipped) { bombSkinId = id; break; }
-              }
-            }
-            const bombSkinDef = getBombSkin(bombSkinId);
-
-            this._skins.set(client.sessionId, {
-              skinId:    skin.id,
-              glb:       skin.glb,
-              scale:     skin.scale,
-              eyeOffset: skin.eyeOffset,
-              grapple: {
-                image: grappleDef.image,
-                localImage: grappleDef.localImage,
-                scale: grappleDef.scale,
-                color: grappleDef.color,
-              },
-              bombSkinId: bombSkinId,
-              bombSkin: {
-                id: bombSkinDef.id,
-                glb: bombSkinDef.glb,
-                scale: bombSkinDef.scale,
-              },
-            });
-
-            // Set the bomb skin ID in the player state so it's available during gameplay
-            const ps = this.state.players.get(client.sessionId);
-            if (ps) {
-              ps.bombSkinId = bombSkinId;
-            }
-          }
-        }
-      } catch (e) {
-        console.error('[_beginGame] Failed to refresh skin:', e);
-      }
-    }
-
-    this._physics = new PhysicsWorld(map);
-
-    this._bombs = new BombSystem(this._physics, (id, pos, ownerId) => {
-      this._handleExplosion(id, pos, ownerId);
-    });
-
-    this._gear = new GearSystem(
-      this._physics,
-      (shooterId, targetId, damage) => this._handleSnipeHit(shooterId, targetId, damage),
-      (line) => this._broadcastLine(line),
-      (effect) => this._broadcastGearEffect(effect),
-      (shooterId, targetId, damage) => this._handleAoeDamage(shooterId, targetId, damage),
-      (position, type, count) => this._broadcastParticles(position, type, count)
-    );
-
-    const sessions = this.clients.map(c => c.sessionId);
-    sessions.forEach((sid, index) => {
-      const body = this._physics.createPlayerBody(index);
-      this._bodies.set(sid, body);
-      this._grapples.set(sid, new GrappleSystem());
-      this._parries.set(sid, new ParrySystem());
-    });
-
-    // ── Send map load payload ──────────────────────────────────
     this.broadcast('loadMap', {
-      glb:         map.glb,
-      collision:   map.collision,
+      glb: map.glb,
+      collision: map.collision,
       spawnPoints: map.spawnPoints,
+      skyColor: map.skyColor,
     });
 
-    // ── Send skin info to each player ──────────────────────────
-    // Each client receives their OWN skin and their OPPONENT's skin.
-    // This lets the client pre-load both GLBs before gameStart fires.
+    // Send skin and nametag data to each client.
+    // skinInfo format: { [sessionId]: { ...skinDef, grapple: grappleDef, bombSkinId, gear } }
+    // nametagInfo format: { sessionId, username, userPrefix, prefixColor, usernameColor }
     for (const client of this.clients) {
-      const oppSid  = this._getOpponentId(client.sessionId);
-      const oppSkin = (oppSid && this._skins.get(oppSid)) || { skinId: 'default', glb: null, scale: 1.0, eyeOffset: 1.0 };
-
-      client.send('skinInfo', {
-        [oppSid]: oppSkin,
-      });
-    }
-
-    // Register game message handlers
-    this.onMessage('input',     (c, d) => this._handleInput(c, d));
-    this.onMessage('grapple',   (c)    => this._handleGrapple(c));
-    this.onMessage('spawnBomb', (c, d) => this._handleSpawnBomb(c, d));
-    this.onMessage('parry',     (c)    => this._handleParry(c));
-    this.onMessage('useGear',   (c, d) => this._handleUseGear(c, d));
-
-    this.setSimulationInterval(() => this._tick(), 1000 / CFG.TICK_RATE);
-    this._startGame();
-  }
-
-  // ── Game flow ────────────────────────────────────────────────
-
-  _startGame() {
-    this.state.phase = 'playing';
-    const ids = this.clients.map(c => c.sessionId);
-    
-    // Send nametag info to each player about their opponent
-    for (const client of this.clients) {
-      const oppId = this._getOpponentId(client.sessionId);
-      if (oppId) {
-        const oppNametagInfo = this._playerNames.get(oppId);
-        if (oppNametagInfo) {
-          client.send('nametagInfo', oppNametagInfo);
+      const skinMap = {};
+      for (const other of this.clients) {
+        if (other.sessionId === client.sessionId) continue;
+        const sd = this._skinData.get(other.sessionId);
+        if (sd) {
+          skinMap[other.sessionId] = {
+            ...sd.skinDef,
+            grapple:    sd.grappleDef,
+            bombSkinId: sd.bombSkinId,
+            gear:       sd.gear,
+          };
         }
       }
-    }
-    
-    this.broadcast('gameStart', { hostId: ids[0], guestId: ids[1] });
-  }
+      client.send('skinInfo', skinMap);
 
-  _endGame(winnerId, loserId) {
-    this.state.phase = 'ended';
-    
-    // Convert session IDs to database user IDs
-    const winnerClient = this.clients.find(c => c.sessionId === winnerId);
-    const loserClient = this.clients.find(c => c.sessionId === loserId);
-    const winnerDbId = winnerClient?._userId;
-    const loserDbId = loserClient?._userId;
-    
-    // Update stats and check for unlocks asynchronously
-    if (winnerDbId && loserDbId) {
-      (async () => {
-        try {
-          await User.findByIdAndUpdate(winnerDbId, { $inc: { wins: 1 } });
-          await User.findByIdAndUpdate(loserDbId, { $inc: { deaths: 1 } });
-          
-          // Check and unlock any earned rewards for both players
-          const winnerUnlocks = await checkAndUnlockRewards(winnerDbId);
-          const loserUnlocks = await checkAndUnlockRewards(loserDbId);
-          
-          // Send updated unlock info to clients
-          if (winnerUnlocks.length > 0 || loserUnlocks.length > 0) {
-            this.broadcast('unlocksNotification', {
-              winnerUnlocks,
-              loserUnlocks,
-            });
-          }
-        } catch (e) {
-          console.error('Error updating player stats/unlocks:', e);
-        }
-      })();
-    }
-    
-    this.broadcast('gameEnd', { winner: winnerDbId, loser: loserDbId });
-    this.onGameEnd(winnerId, loserId);
-    
-    // Clear rematch votes and start timeout
-    this._rematches.clear();
-    if (this._rematchTimer) this._rematchTimer.clear();
-    this._rematchTimer = this.clock.setTimeout(() => {
-      this.disconnect();
-    }, 30000); // 30 second timeout for rematch decision
-  }
-
-  onGameEnd(winnerId, loserId) { /* hook for subclasses */ }
-
-  // ── Message handlers ─────────────────────────────────────────
-
-  _handleInput(client, data) {
-    const pi = this._input.get(client.sessionId);
-    if (!pi) return;
-    pi.inputs  = data.inputs;
-    pi.camDir  = data.camDir;
-    pi.lastSeq = data.seq;
-  }
-
-  _handleGrapple(client) {
-    const sid     = client.sessionId;
-    const grapple = this._grapples.get(sid);
-    const body    = this._bodies.get(sid);
-    const pi      = this._input.get(sid);
-    const skin    = this._skins.get(sid);
-    if (!grapple || !body || !pi) return;
-    
-    // Record that we received grapple input on this frame
-    this._grappleLastInput.set(sid, this._tickCount);
-    
-    // Pass the player's actual eye offset (defaults to 1.0 if not found)
-    const eyeOffset = skin?.eyeOffset || 1.0;
-    grapple.activate(body, pi.camDir, eyeOffset);
-  }
-
-  _handleSpawnBomb(client, data) {
-    const id = this._bombs.spawn(data.position, data.impulse, client.sessionId);
-    
-    // Get the player's equipped bomb skin
-    let equippedBombSkinId = 'default';
-    const playerState = this.state.players.get(client.sessionId);
-    if (playerState?.bombSkinId) {
-      equippedBombSkinId = playerState.bombSkinId;
-    }
-    
-    const bombState = new BombState(id, equippedBombSkinId);
-    // Initialize with spawn position to prevent rendering at origin before first tick
-    bombState.px = data.position.x;
-    bombState.py = data.position.y;
-    bombState.pz = data.position.z;
-    
-    this.state.bombs.set(id, bombState);
-  }
-
-  _handleParry(client) {
-    const sid = client.sessionId;
-    const parry = this._parries.get(sid);
-    if (!parry) return;
-    
-    // Try to activate the parry
-    const activated = parry.activate();
-    
-    if (activated) {
-      // Parry was successfully activated, send notification to the player
-      client.send('parryActivated', {
-        success: true,
-        message: 'parry ready'
-      });
-    }
-  }
-
-  _handleUseGear(client, data) {
-    const sid = client.sessionId;
-    const gearName = data.gearName || 'sniper';
-    const body = this._bodies.get(sid);
-    const pi = this._input.get(sid);
-    const skin = this._skins.get(sid);
-    
-    if (!body || !pi) return;
-
-    if (gearName === 'sniper') {
-      const playerEntries = [];
-      for (const [sessionId, playerBody] of this._bodies) {
-        playerEntries.push({ sid: sessionId, body: playerBody });
-      }
-
-      // Pass the player's actual eye offset (defaults to 1.0 if not found)
-      const eyeOffset = skin?.eyeOffset || 1.0;
-      const result = this._gear.snipe(
-        body,
-        data.cameraPos,
-        data.cameraDir,
-        [],  // allBodies (not used in our simple raycast)
-        playerEntries,
-        sid,
-        eyeOffset
-      );
-
-      if (result.success) {
-
-      }
-    } else if (gearName === 'mace') {
-      const playerEntries = [];
-      for (const [sessionId, playerBody] of this._bodies) {
-        playerEntries.push({ sid: sessionId, body: playerBody });
-      }
-
-      const result = this._gear.mace(body, playerEntries, sid);
-      
-      if (result.success) {
-
+      for (const other of this.clients) {
+        if (other.sessionId === client.sessionId) continue;
+        const nd = this._playerNames.get(other.sessionId);
+        if (nd) client.send('nametagInfo', { sessionId: other.sessionId, ...nd });
       }
     }
   }
 
-  _handleSnipeHit(shooterId, targetId, damage) {
-    const ps = this.state.players.get(targetId);
-    if (!ps) return;
-    
-    ps.health = Math.max(0, ps.health - damage);
+  // ── rematch ────────────────────────────────────────────────────────────────
 
-    
-    // Broadcast hit to all clients with current health
-    this.broadcast('playerHit', {
-      playerId: targetId,
-      damage: damage,
-      currentHealth: ps.health
-    });
-    
-    if (ps.health <= 0) {
-      this._endGame(shooterId, targetId);
+  _handleRematch(client) {
+    this._rematches.add(client.sessionId);
+    if (this._rematches.size >= this.clients.length) {
+      this._rematches.clear();
+      this._stream?.send({ room_id: this.roomId, player_id: client.sessionId, rematch: {} });
     }
   }
 
-  _broadcastLine(line) {
-    // Broadcast the sniper line to all clients for rendering
-    this.broadcast('sniperLine', {
-      start: line.startPos,
-      end: line.endPos,
-      duration: line.duration,
-      direction: line.direction,  // Include direction for client-side offset
-    });
-  }
+  // ── hook for subclasses ────────────────────────────────────────────────────
 
-  _broadcastGearEffect(effect) {
-    // Broadcast gear preview effect to all clients for rendering
-    this.broadcast('gearEffect', {
-      gearName: effect.gearName,
-      shooterId: effect.shooterId,
-      position: effect.position,
-      rotation: effect.rotation,
-      direction: effect.direction,
-      duration: effect.duration,
-    });
-  }
-
-  _handleAoeDamage(shooterId, targetId, damage) {
-    // Handle AOE damage (for mace and similar gear)
-    const ps = this.state.players.get(targetId);
-    if (!ps) return;
-    
-    ps.health = Math.max(0, ps.health - damage);
-
-    
-    // Broadcast hit to all clients with current health
-    this.broadcast('playerHit', {
-      playerId: targetId,
-      damage: damage,
-      currentHealth: ps.health
-    });
-    
-    if (ps.health <= 0) {
-      this._endGame(shooterId, targetId);
-    }
-  }
-
-  _broadcastParticles(position, type, count) {
-    // Broadcast particle effect to all clients for rendering
-    this.broadcast('particles', {
-      position: position,
-      type: type,  // 'mace_impact', 'sniper_flash', etc.
-      count: count,
-      timestamp: Date.now()
-    });
-  }
-
-  _handleRematch(client, data) {
-    if (this.state.phase !== 'ended') return;
-    
-    this._rematches.set(client.sessionId, true);
-
-    
-    // If both players voted for rematch, start a new game
-    if (this._rematches.size === this.clients.length) {
-      if (this._rematchTimer) {
-        this._rematchTimer.clear();
-        this._rematchTimer = null;
-      }
-      this._resetForRematch();
-    }
-  }
-
-  async _resetForRematch() {
-    // Refresh skin data from database before rematch
-    for (const client of this.clients) {
-      try {
-        if (client._userId) {
-          const user = await User.findById(client._userId).select('skins');
-          if (user) {
-            // Find equipped player skin
-            let equippedId = 'default';
-            if (user.skins?.player) {
-              for (const [id, data] of Object.entries(user.skins.player)) {
-                if (data.equipped) { equippedId = id; break; }
-              }
-            }
-            const skin = getSkin(equippedId);
-
-            // Find equipped grapple
-            let grappleId = 'default';
-            if (user.skins?.grapples) {
-              for (const [id, data] of Object.entries(user.skins.grapples)) {
-                if (data.equipped) { grappleId = id; break; }
-              }
-            }
-            const grappleDef = getGrapple(grappleId);
-
-            this._skins.set(client.sessionId, {
-              skinId:    skin.id,
-              glb:       skin.glb,
-              scale:     skin.scale,
-              eyeOffset: skin.eyeOffset,
-              grapple: {
-                image: grappleDef.image,
-                localImage: grappleDef.localImage,
-                scale: grappleDef.scale,
-                color: grappleDef.color,
-              },
-            });
-          }
-        }
-      } catch (e) {
-        console.error('[_resetForRematch] Failed to refresh skin:', e);
-      }
-    }
-
-    // Reset phase and clear old state
-    this.state.phase = 'playing';
-    this._rematches.clear();
-
-    // Reset player health and positions
-    const sessions = [...this.clients.map(c => c.sessionId)];
-    sessions.forEach((sid, index) => {
-      const ps = this.state.players.get(sid);
-      if (ps) {
-        ps.health = CFG.START_HEALTH;
-        const body = this._bodies.get(sid);
-        if (body) {
-          const spawnPoint = this._physics.getSpawnPoint(index);
-          body.setTranslation({ x: spawnPoint.x, y: spawnPoint.y, z: spawnPoint.z }, true);
-          body.setLinvel({ x: 0, y: 0, z: 0 }, true);
-        }
-      }
-    });
-
-    // Clear bombs from physics and state
-    this._bombs.clear(this._physics);
-    this.state.bombs.clear();
-
-    // Reset grapple systems
-    for (const [sid, grapple] of this._grapples) {
-      grapple.reset();
-    }
-
-    // Reset input state to prevent old movement from carrying over
-    for (const sid of sessions) {
-      const pi = this._input.get(sid);
-      if (pi) {
-        pi.inputs = { w: false, a: false, s: false, d: false, space: false };
-        pi.camDir = { x: 0, y: 0, z: -1 };
-        pi.lastSeq = 0;
-      }
-    }
-
-    // Reload the map for clients
-    const map = this._physics.map;
-    this.broadcast('loadMap', {
-      glb:         map.glb,
-      collision:   map.collision,
-      spawnPoints: map.spawnPoints,
-    });
-
-    // Resend skin info to each player
-    for (const client of this.clients) {
-      const oppSid  = this._getOpponentId(client.sessionId);
-      const oppSkin = (oppSid && this._skins.get(oppSid)) || { skinId: 'default', glb: null, scale: 1.0, eyeOffset: 1.0 };
-
-      client.send('skinInfo', {
-        [oppSid]: oppSkin,
-      });
-    }
-
-    // Tell clients to reset UI and prepare for new game
-    this.broadcast('rematchStart');
-  }
-
-  // ── Physics tick (60 Hz) ─────────────────────────────────────
-
-  _tick() {
-    if (this.state.phase !== 'playing') return;
-    
-    this._tickCount++;
-
-    for (const [sid, body] of this._bodies) {
-      const pi      = this._input.get(sid);
-      const grapple = this._grapples.get(sid);
-      if (!pi || !grapple) continue;
-
-      const grounded = this._physics.isGrounded(body);
-      applyMovement(body, pi.inputs, pi.camDir, grounded, grapple.status);
-      grapple.tick(body, this._physics);
-    }
-
-    this._physics.step();
-
-    for (const [sid, body] of this._bodies) {
-      const pos = body.translation();
-      const vel = body.linvel();
-      const pi  = this._input.get(sid);
-      const g   = this._grapples.get(sid);
-      const ps  = this.state.players.get(sid);
-      if (!ps || !pi) continue;
-
-      ps.position.x = pos.x; ps.position.y = pos.y; ps.position.z = pos.z;
-      ps.velocity.x = vel.x; ps.velocity.y = vel.y; ps.velocity.z = vel.z;
-      ps.lastSeq    = pi.lastSeq;
-
-      if (g) {
-        ps.grapple.active = g.isActive;
-        if (g.isActive && g.hookPos) {
-          ps.grapple.hx = g.hookPos.x;
-          ps.grapple.hy = g.hookPos.y;
-          ps.grapple.hz = g.hookPos.z;
-        }
-      }
-
-      if (pos.y < CFG.VOID_Y) {
-        const otherId = this._getOpponentId(sid);
-        this._endGame(otherId, sid);
-        return;
-      }
-    }
-
-    const detonated = this._bombs.tick();
-    for (const id of detonated) this.state.bombs.delete(id);
-
-    // Execute gear logic and handle ready snipes and maces
-    const { readySnipes, readyMaces } = this._gear.tick();
-    
-    for (const pending of readySnipes) {
-      const shooterBody = this._bodies.get(pending.shooterId);
-      const shooterInput = this._input.get(pending.shooterId);
-      if (shooterBody && shooterInput) {
-        this._gear.executePendingSnipe(pending, shooterBody, shooterInput);
-      }
-    }
-
-    for (const pending of readyMaces) {
-      this._gear.executePendingMace(pending);
-    }
-
-    this._bombs.forEachLive((id, pos, rot) => {
-      const bs = this.state.bombs.get(id);
-      if (!bs) return;
-      bs.px = pos.x; bs.py = pos.y; bs.pz = pos.z;
-      bs.rx = rot.x; bs.ry = rot.y; bs.rz = rot.z; bs.rw = rot.w;
-    });
-  }
-
-  // ── Explosion ────────────────────────────────────────────────
-
-  _handleExplosion(bombId, center, ownerId) {
-    this.broadcast('bombExploded', {
-      id:       bombId,
-      position: { x: center.x, y: center.y, z: center.z },
-    });
-
-    const allBodies     = [...this._bodies.values()];
-    const playerEntries = [...this._bodies.entries()].map(([sid, body]) => ({ sid, body }));
-    const hits          = BombSystem.resolveExplosion(center, allBodies, playerEntries, ownerId);
-
-    for (const { sid, damage } of hits) {
-      const ps = this.state.players.get(sid);
-      if (!ps) continue;
-
-      // Check if the target player has an active parry
-      const parry = this._parries.get(sid);
-      if (parry && parry.isAttackBlocked()) {
-        // Parry blocked the attack!
-        parry.deactivate();
-        
-        // Find the client and send notification
-        const targetClient = this.clients.find(c => c.sessionId === sid);
-        if (targetClient) {
-          targetClient.send('parrySuccess', { message: 'parry blocked' });
-        }
-        continue;  // Skip damage application
-      }
-
-      ps.health = Math.max(0, ps.health - damage);
-      this.broadcast('playerHit', { playerId: sid, damage, by: ownerId });
-      if (ps.health <= 0) {
-        this._endGame(ownerId, sid);
-        return;
-      }
-    }
-  }
-
-  // ── Utility ──────────────────────────────────────────────────
-
-  _getOpponentId(sid) {
-    for (const c of this.clients) {
-      if (c.sessionId !== sid) return c.sessionId;
-    }
-    return null;
-  }
+  onGameEnd(winnerId, loserId) {}
 }
 
-module.exports = { BaseGameRoom };
+function _equippedId(skinsMap) {
+  if (!skinsMap) return null;
+  for (const [id, data] of Object.entries(skinsMap))
+    if (data.equipped) return id;
+  return null;
+}
+
+module.exports = BaseGameRoom;

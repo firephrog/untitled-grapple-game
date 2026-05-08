@@ -110,4 +110,22 @@ const FFA_MAP_LIST = Object.values(FFA_MAPS).map(({ id, name, description, thumb
   id, name, description, thumbnail,
 }));
 
-module.exports = { MAPS, MAP_LIST, getMap, randomMapId, resolveVotes, FFA_MAPS, FFA_MAP_LIST, getFFAMap, randomFFAMapId };
+const path = require('path');
+
+/** Absolute filesystem path to the .collision.json for a given mapId. */
+function mapFilePath(mapId) {
+  const map =
+    MAPS[mapId] ||
+    FFA_MAPS[mapId] ||
+    Object.values(MAPS).find((m) => m.id === mapId) ||
+    Object.values(FFA_MAPS).find((m) => m.id === mapId);
+  if (!map) throw new Error(`Unknown mapId: ${mapId}`);
+  // map.collision is like '/maps/testMap1.collision.json'
+  // Source files always live in client/static/ (Vite publicDir).
+  // After `npm run build` they also exist in public/, but client/static/
+  // is always authoritative and doesn't require a build step.
+  const rel = map.collision.replace(/^\//, '');
+  return path.join(__dirname, '..', 'client', 'static', rel);
+}
+
+module.exports = { MAPS, MAP_LIST, getMap, randomMapId, resolveVotes, mapFilePath, FFA_MAPS, FFA_MAP_LIST, getFFAMap, randomFFAMapId };

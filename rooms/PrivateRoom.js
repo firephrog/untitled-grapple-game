@@ -5,7 +5,7 @@
 // room metadata so clients never have to show the full Colyseus UUID.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const { BaseGameRoom } = require('./BaseGameRoom');
+const BaseGameRoom = require('./BaseGameRoom');
 
 function generateShortCode() {
   // 6 uppercase chars, excluding ambiguous chars (0/O, 1/I/L)
@@ -48,4 +48,5 @@ class PrivateRoom extends BaseGameRoom {
   }
 }
 
-module.exports = { PrivateRoom, generateShortCode };
+module.exports = PrivateRoom;
+module.exports.generateShortCode = generateShortCode;

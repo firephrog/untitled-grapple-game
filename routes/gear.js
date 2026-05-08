@@ -3,7 +3,7 @@
 const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
-const { GEAR_REGISTRY } = require('../game/GearSystem');
+const { GEAR_REGISTRY } = require('../game/GearRegistry');
 
 // Middleware to verify JWT token
 function verifyToken(req, res, next) {

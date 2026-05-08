@@ -1,0 +1,159 @@
+syntax = "proto3";
+
+package game;
+
+option optimize_for = SPEED;
+
+// ── shared value types ───────────────────────────────────────────────────────
+
+message Vec3 {
+  float x = 1;
+  float y = 2;
+  float z = 3;
+}
+
+message Quat {
+  float x = 1;
+  float y = 2;
+  float z = 3;
+  float w = 4;
+}
+
+// ── room lifecycle (unary RPCs) ──────────────────────────────────────────────
+
+message CreateRoomRequest {
+  string room_id = 1;
+  string mode    = 2;  // "private" | "matchmaking" | "ranked" | "ffa"
+}
+message CreateRoomResponse { bool ok = 1; string error = 2; }
+
+message DestroyRoomRequest  { string room_id = 1; }
+message DestroyRoomResponse { bool ok = 1; }
+
+message AddPlayerRequest {
+  string room_id      = 1;
+  string player_id    = 2;  // WebSocket session id
+  string user_db_id   = 3;  // MongoDB _id
+  string skin_id      = 4;
+  string grapple_id   = 5;
+  string bomb_skin_id = 6;
+  string gear         = 7;  // "sniper" | "mace"
+  int32  spawn_index  = 8;
+}
+message AddPlayerResponse {
+  bool   ok        = 1;
+  string error     = 2;
+  Vec3   spawn_pos = 3;
+}
+
+message RemovePlayerRequest  { string room_id = 1; string player_id = 2; }
+message RemovePlayerResponse { bool ok = 1; }
+
+message BeginGameRequest {
+  string room_id  = 1;
+  string map_id   = 2;
+  string map_file = 3;  // absolute path to collision JSON on server
+}
+message BeginGameResponse { bool ok = 1; string error = 2; }
+
+// ── real-time bidirectional stream ───────────────────────────────────────────
+
+// PlayerInput is sent every tick by each connected player (via Node gateway).
+message PlayerInput {
+  int32 seq       = 1;
+  bool  forward   = 2;
+  bool  backward  = 3;
+  bool  left      = 4;
+  bool  right     = 5;
+  bool  jump      = 6;
+  float cam_yaw   = 7;
+  float cam_pitch = 8;
+  Vec3  cam_pos   = 9;
+}
+
+message GrappleAction   {}  // toggle grapple
+message SpawnBombAction { Vec3 position = 1; Vec3 impulse = 2; }
+message UseGearAction   { string gear_type = 1; Vec3 cam_pos = 2; Vec3 cam_dir = 3; }
+message ParryAction     {}
+message RematchAction   {}
+message VoteMapAction   { string map_id = 1; }
+
+// Multiplexed envelope: Node.js forwards all client messages for a room.
+message RoomClientMessage {
+  string room_id   = 1;
+  string player_id = 2;
+  oneof payload {
+    PlayerInput     input      = 10;
+    GrappleAction   grapple    = 11;
+    SpawnBombAction spawn_bomb = 12;
+    UseGearAction   use_gear   = 13;
+    ParryAction     parry      = 14;
+    RematchAction   rematch    = 15;
+    VoteMapAction   vote_map   = 16;
+  }
+}
+
+// State snapshot sent back to Node.js for relay to clients.
+message PlayerSnapshot {
+  string player_id      = 1;
+  Vec3   position       = 2;
+  Vec3   velocity       = 3;
+  int32  health         = 4;
+  int32  last_seq       = 5;
+  bool   grapple_active = 6;
+  Vec3   grapple_pos    = 7;
+  bool   alive          = 8;  // relevant for FFA
+}
+
+message BombSnapshot {
+  string id   = 1;
+  Vec3   pos  = 2;
+  Quat   rot  = 3;
+  string skin = 4;
+}
+
+message GearEffectSnapshot {
+  string player_id  = 1;
+  string gear_type  = 2;
+  Vec3   position   = 3;
+  Vec3   direction  = 4;
+  float  remaining  = 5;  // seconds until execution
+}
+
+message GameStateSnapshot {
+  int64                      tick         = 1;
+  repeated PlayerSnapshot    players      = 2;
+  repeated BombSnapshot      bombs        = 3;
+  repeated GearEffectSnapshot gear_effects = 4;
+  string                     phase        = 5;
+}
+
+// Named game events forwarded from C++ to Node.js.
+// Node.js interprets and relays/acts on these.
+message GameEvent {
+  string type         = 1;  // e.g. "gameEnd", "bombExploded", "playerHit"
+  string json_payload = 2;  // JSON-encoded event-specific data
+}
+
+// Envelope for server→Node.js messages on the stream.
+message RoomServerMessage {
+  string room_id = 1;
+  oneof payload {
+    GameStateSnapshot state = 10;
+    GameEvent         event = 11;
+  }
+}
+
+// ── service ──────────────────────────────────────────────────────────────────
+
+service GameService {
+  // Room/player lifecycle
+  rpc CreateRoom   (CreateRoomRequest)   returns (CreateRoomResponse);
+  rpc DestroyRoom  (DestroyRoomRequest)  returns (DestroyRoomResponse);
+  rpc AddPlayer    (AddPlayerRequest)    returns (AddPlayerResponse);
+  rpc RemovePlayer (RemovePlayerRequest) returns (RemovePlayerResponse);
+  rpc BeginGame    (BeginGameRequest)    returns (BeginGameResponse);
+
+  // Bidirectional real-time stream (one per room, multiplexed by Node.js)
+  rpc RoomStream (stream RoomClientMessage) returns (stream RoomServerMessage);
+}

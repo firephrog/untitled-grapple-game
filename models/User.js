@@ -66,6 +66,16 @@ const userSchema = new mongoose.Schema({
     requests: { type: mongoose.Schema.Types.Mixed, default: {} },
     list:     { type: mongoose.Schema.Types.Mixed, default: {} },
   },
+
+  // ── Password recovery ───────────────────────────────────────
+  passwordReset: {
+    codeHash:      { type: String, default: null },
+    expiresAt:     { type: Date,   default: null },
+    lastSentAt:    { type: Date,   default: null },
+    lastSupportAt:       { type: Date,   default: null },
+    supportDayStart:     { type: Date,   default: null },
+    supportCountToday:   { type: Number, default: 0    },
+  },
 });
 
 module.exports = mongoose.models.User || mongoose.model('User', userSchema);
