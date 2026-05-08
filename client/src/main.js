@@ -4529,26 +4529,42 @@ const MAX_SNAP_BUFFER = 40;
 const MAX_EXTRAP_MS = 45;
 const MIN_INTERP_DELAY_MS = 100;
 const MAX_INTERP_DELAY_MS = 220;
-let snapIntervalEwma = 10;
-let snapJitterEwma = 0;
-let lastSnapAt = 0;
-
-function updateSnapTiming(now) {
-  if (lastSnapAt > 0) {
-    const interval = now - lastSnapAt;
-    const alpha = 0.15;
-    const prev = snapIntervalEwma;
-    snapIntervalEwma = prev + (interval - prev) * alpha;
-    snapJitterEwma = snapJitterEwma + (Math.abs(interval - prev) - snapJitterEwma) * alpha;
-  }
-  lastSnapAt = now;
+function createSnapTimingState() {
+  return {
+    snapIntervalEwma: 10,
+    snapJitterEwma: 0,
+    lastSnapAt: 0,
+  };
 }
 
-function getInterpDelayMs() {
+const oppTiming = createSnapTimingState();
+const ffaTimingByPlayer = new Map();
+
+function getFfaTimingState(playerId) {
+  let t = ffaTimingByPlayer.get(playerId);
+  if (!t) {
+    t = createSnapTimingState();
+    ffaTimingByPlayer.set(playerId, t);
+  }
+  return t;
+}
+
+function updateSnapTiming(state, now) {
+  if (state.lastSnapAt > 0) {
+    const interval = now - state.lastSnapAt;
+    const alpha = 0.15;
+    const prev = state.snapIntervalEwma;
+    state.snapIntervalEwma = prev + (interval - prev) * alpha;
+    state.snapJitterEwma = state.snapJitterEwma + (Math.abs(interval - prev) - state.snapJitterEwma) * alpha;
+  }
+  state.lastSnapAt = now;
+}
+
+function getInterpDelayMs(state) {
   const adaptive = Math.max(
     MIN_INTERP_DELAY_MS,
     pingMs + 40,
-    snapIntervalEwma * 2 + snapJitterEwma * 2
+    state.snapIntervalEwma * 2 + state.snapJitterEwma * 2
   );
   return Math.max(MIN_INTERP_DELAY_MS, Math.min(MAX_INTERP_DELAY_MS, adaptive));
 }
@@ -4563,7 +4579,7 @@ function pushOppSnap(pos, vel) {
     const dz = pos.z - last.position.z;
     if ((dx * dx + dy * dy + dz * dz) < 1e-6) return;
   }
-  updateSnapTiming(now);
+  updateSnapTiming(oppTiming, now);
   oppBuffer.push({
     time: now,
     position: { x: pos.x, y: pos.y, z: pos.z },
@@ -4574,7 +4590,7 @@ function pushOppSnap(pos, vel) {
 
 function interpolateOpp() {
   if (oppBuffer.length === 0) return;
-  const rt = performance.now() - getInterpDelayMs();
+  const rt = performance.now() - getInterpDelayMs(oppTiming);
   while (oppBuffer.length >= 2 && oppBuffer[1].time <= rt) oppBuffer.shift();
   if (oppBuffer.length < 2) {
     const only = oppBuffer[0];
@@ -4615,7 +4631,7 @@ function pushFFASnap(playerId, pos, vel) {
     const dz = pos.z - last.position.z;
     if ((dx * dx + dy * dy + dz * dz) < 1e-6) return;
   }
-  updateSnapTiming(now);
+  updateSnapTiming(getFfaTimingState(playerId), now);
   buf.push({
     time: now,
     position: { x: pos.x, y: pos.y, z: pos.z },
@@ -4627,7 +4643,7 @@ function pushFFASnap(playerId, pos, vel) {
 function interpolateFFA(playerId) {
   const buf = ffaBuffers.get(playerId);
   if (!buf || buf.length === 0) return null;
-  const rt = performance.now() - getInterpDelayMs();
+  const rt = performance.now() - getInterpDelayMs(getFfaTimingState(playerId));
   while (buf.length >= 2 && buf[1].time <= rt) buf.shift();
   if (buf.length < 2) {
     const only = buf[0];
@@ -6442,6 +6458,7 @@ function animate() {
           if (nametags) nametags.remove(sid);
           playerMeshMap.delete(sid);
           ffaBuffers.delete(sid);
+          ffaTimingByPlayer.delete(sid);
         }
       }
     }
@@ -6459,6 +6476,7 @@ function animate() {
         if (nametags) nametags.remove(oppId);
         if (playerMeshMap) playerMeshMap.delete(oppId);
         ffaBuffers.delete(oppId);
+        ffaTimingByPlayer.delete(oppId);
         continue;  // Skip further updates for dead players
       }
 

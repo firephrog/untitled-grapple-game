@@ -7,6 +7,18 @@ This game is going to be browser based, although I might make a cross-playable d
 
 Currently a WIP, No planned release date yet
 
+## EC2 (c7i-flex.large) Tuned Run
+
+For AWS EC2 c7i-flex.large (2 vCPU, 4 GB RAM), use the tuned launcher profile:
+
+./start.sh --ec2
+
+What this profile changes:
+- Runs a single shared C++ backend process for both PVP and FFA.
+- Lowers state/patch pressure to avoid CPU starvation on 2 vCPU.
+- Uses smaller Node heap settings suitable for 4 GB instances.
+- Applies more conservative gRPC/Redis retry and keepalive defaults.
+
 ## Forgot Password Email Setup (Brevo)
 
 Set these environment variables before starting the server:

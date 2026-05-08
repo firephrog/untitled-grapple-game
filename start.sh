@@ -7,19 +7,27 @@ set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 START_CLIENT=0
+PROFILE_EC2=0
 
 for arg in "$@"; do
   case "$arg" in
     -c|--client)
       START_CLIENT=1
       ;;
+    --ec2)
+      PROFILE_EC2=1
+      ;;
     *)
       echo "[start] Unknown argument: $arg"
-      echo "Usage: ./start.sh [--client]"
+      echo "Usage: ./start.sh [--client] [--ec2]"
       exit 1
       ;;
   esac
 done
+
+if [ "$PROFILE_EC2" -eq 1 ]; then
+  echo "[start] EC2 profile enabled (c7i-flex.large tuned defaults)."
+fi
 
 # ── Ensure system build dependencies are installed (Debian/Ubuntu) ───────────
 MISSING_PKGS=()
@@ -200,34 +208,71 @@ pkill -f 'node .*server.js' >/dev/null 2>&1 || true
 pkill -f 'npm start' >/dev/null 2>&1 || true
 sleep 0.3
 
-# Start C++ servers (PVP + FFA).
-echo "[start] Starting C++ PVP physics server on :50051..."
-GRPC_PORT=50051 WS_PORT=51051 "$cpp_bin" >"$ROOT/.runlogs/cpp-pvp.log" 2>&1 &
-cpp_pvp_pid=$!
-echo "  PID $cpp_pvp_pid  -> $cpp_bin (gRPC 50051, WS 51051)"
+CPP_PVP_GRPC_PORT=50051
+CPP_PVP_WS_PORT=51051
+CPP_FFA_GRPC_PORT=50052
+CPP_FFA_WS_PORT=51052
 
-echo "[start] Starting C++ FFA physics server on :50052..."
-GRPC_PORT=50052 WS_PORT=51052 "$cpp_bin" >"$ROOT/.runlogs/cpp-ffa.log" 2>&1 &
-cpp_ffa_pid=$!
-echo "  PID $cpp_ffa_pid  -> $cpp_bin (gRPC 50052, WS 51052)"
+if [ "$PROFILE_EC2" -eq 1 ]; then
+  # On 2 vCPU instances, one shared C++ backend significantly reduces context
+  # switching and avoids starvation under mixed PVP/FFA load.
+  echo "[start] Starting single shared C++ physics server on :${CPP_PVP_GRPC_PORT}..."
+  STATE_EVERY_TICKS=3 GRPC_PORT=${CPP_PVP_GRPC_PORT} WS_PORT=${CPP_PVP_WS_PORT} "$cpp_bin" >"$ROOT/.runlogs/cpp-shared.log" 2>&1 &
+  cpp_shared_pid=$!
+  echo "  PID $cpp_shared_pid  -> $cpp_bin (gRPC ${CPP_PVP_GRPC_PORT}, WS ${CPP_PVP_WS_PORT}, mode=shared)"
 
-# Wait for both gRPC ports before Node tries to connect.
-if ! wait_for_tcp_port 127.0.0.1 50051 15; then
-  echo "[start] WARNING: PVP gRPC port 50051 did not become ready in time."
-fi
-if ! wait_for_tcp_port 127.0.0.1 50052 15; then
-  echo "[start] WARNING: FFA gRPC port 50052 did not become ready in time."
+  if ! wait_for_tcp_port 127.0.0.1 ${CPP_PVP_GRPC_PORT} 15; then
+    echo "[start] WARNING: shared gRPC port ${CPP_PVP_GRPC_PORT} did not become ready in time."
+  fi
+
+  # Point both logical backends to the same C++ process.
+  CPP_FFA_GRPC_PORT=${CPP_PVP_GRPC_PORT}
+  CPP_FFA_WS_PORT=${CPP_PVP_WS_PORT}
+else
+  echo "[start] Starting C++ PVP physics server on :${CPP_PVP_GRPC_PORT}..."
+  GRPC_PORT=${CPP_PVP_GRPC_PORT} WS_PORT=${CPP_PVP_WS_PORT} "$cpp_bin" >"$ROOT/.runlogs/cpp-pvp.log" 2>&1 &
+  cpp_pvp_pid=$!
+  echo "  PID $cpp_pvp_pid  -> $cpp_bin (gRPC ${CPP_PVP_GRPC_PORT}, WS ${CPP_PVP_WS_PORT})"
+
+  echo "[start] Starting C++ FFA physics server on :${CPP_FFA_GRPC_PORT}..."
+  GRPC_PORT=${CPP_FFA_GRPC_PORT} WS_PORT=${CPP_FFA_WS_PORT} "$cpp_bin" >"$ROOT/.runlogs/cpp-ffa.log" 2>&1 &
+  cpp_ffa_pid=$!
+  echo "  PID $cpp_ffa_pid  -> $cpp_bin (gRPC ${CPP_FFA_GRPC_PORT}, WS ${CPP_FFA_WS_PORT})"
+
+  if ! wait_for_tcp_port 127.0.0.1 ${CPP_PVP_GRPC_PORT} 15; then
+    echo "[start] WARNING: PVP gRPC port ${CPP_PVP_GRPC_PORT} did not become ready in time."
+  fi
+  if ! wait_for_tcp_port 127.0.0.1 ${CPP_FFA_GRPC_PORT} 15; then
+    echo "[start] WARNING: FFA gRPC port ${CPP_FFA_GRPC_PORT} did not become ready in time."
+  fi
 fi
 
 # Start Node.js server.
 echo "[start] Starting Node.js game server..."
 (
   cd "$ROOT" || exit 1
-  CPP_SERVER_ADDR='127.0.0.1:50051' \
-  FFA_CPP_SERVER_ADDR='127.0.0.1:50052' \
-  CPP_PVP_WS_PORT='51051' \
-  CPP_FFA_WS_PORT='51052' \
-  npm start
+  if [ "$PROFILE_EC2" -eq 1 ]; then
+    CPP_SERVER_ADDR="127.0.0.1:${CPP_PVP_GRPC_PORT}" \
+    FFA_CPP_SERVER_ADDR="127.0.0.1:${CPP_FFA_GRPC_PORT}" \
+    CPP_PVP_WS_PORT="${CPP_PVP_WS_PORT}" \
+    CPP_FFA_WS_PORT="${CPP_FFA_WS_PORT}" \
+    ROOM_PATCH_HZ='30' \
+    EVENT_LOOP_WARN_MS='25' \
+    EVENT_LOOP_LOG_MS='80' \
+    GRPC_UNARY_RETRIES='6' \
+    GRPC_UNARY_DEADLINE_MS='4000' \
+    GRPC_KEEPALIVE_TIME_MS='15000' \
+    GRPC_KEEPALIVE_TIMEOUT_MS='7000' \
+    REDIS_RETRY_BASE_MS='500' \
+    REDIS_RETRY_CAP_MS='5000' \
+    node --max-semi-space-size=32 --max-old-space-size=1024 --expose-gc server.js
+  else
+    CPP_SERVER_ADDR="127.0.0.1:${CPP_PVP_GRPC_PORT}" \
+    FFA_CPP_SERVER_ADDR="127.0.0.1:${CPP_FFA_GRPC_PORT}" \
+    CPP_PVP_WS_PORT="${CPP_PVP_WS_PORT}" \
+    CPP_FFA_WS_PORT="${CPP_FFA_WS_PORT}" \
+    npm start
+  fi
 ) >"$ROOT/.runlogs/node.log" 2>&1 &
 node_pid=$!
 echo "  PID $node_pid  -> npm start"
@@ -248,3 +293,4 @@ echo "All processes launched in background."
 echo "Logs: $ROOT/.runlogs"
 echo "Stop all with: pkill -f '/ugg-server' ; pkill -f 'node .*server.js' ; pkill -f 'vite'"
 echo "To also start the Vite dev client, run: ./start.sh --client"
+echo "For EC2 tuned profile, run: ./start.sh --ec2"
