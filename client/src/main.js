@@ -4463,9 +4463,28 @@ function acceptServerState(serverPos, serverVel, ackSeq) {
   const dy = serverPos.y - p.y;
   const dz = serverPos.z - p.z;
   const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  const svx = serverVel?.x ?? 0;
+  const svy = serverVel?.y ?? 0;
+  const svz = serverVel?.z ?? 0;
+  const serverSpeed = Math.sqrt(svx * svx + svy * svy + svz * svz);
 
-  if (d >= 4.0) {
+  // At high speeds (grapple/slingshot), avoid aggressive hard snaps.
+  const softSnapDist = Math.max(4.0, Math.min(12.0, serverSpeed * 0.25));
+  const hardSnapDist = Math.max(12.0, Math.min(28.0, serverSpeed * 0.6));
+
+  if (d >= hardSnapDist) {
     cBody.setTranslation({ x: serverPos.x, y: serverPos.y, z: serverPos.z }, true);
+    cBody.setLinvel({ x: serverVel.x, y: serverVel.y, z: serverVel.z }, true);
+    return;
+  }
+
+  if (d >= softSnapDist) {
+    const k = 0.65;
+    cBody.setTranslation({
+      x: p.x + dx * k,
+      y: p.y + dy * k,
+      z: p.z + dz * k,
+    }, true);
     cBody.setLinvel({ x: serverVel.x, y: serverVel.y, z: serverVel.z }, true);
     return;
   }
@@ -4595,7 +4614,13 @@ function interpolateOpp() {
   if (oppBuffer.length < 2) {
     const only = oppBuffer[0];
     if (!only) return;
-    const lead = Math.max(0, Math.min(MAX_EXTRAP_MS, rt - only.time)) / 1000;
+    const speed = Math.sqrt(
+      (only.velocity?.x ?? 0) ** 2 +
+      (only.velocity?.y ?? 0) ** 2 +
+      (only.velocity?.z ?? 0) ** 2
+    );
+    const maxExtrapMs = Math.max(MAX_EXTRAP_MS, Math.min(140, 45 + speed * 2.5));
+    const lead = Math.max(0, Math.min(maxExtrapMs, rt - only.time)) / 1000;
     skinMgr.setPosition(
       oppId,
       only.position.x + only.velocity.x * lead,
@@ -4607,11 +4632,26 @@ function interpolateOpp() {
   const a = oppBuffer[0], b = oppBuffer[1];
   let t = (rt - a.time) / (b.time - a.time);
   t = Math.max(0, Math.min(1, t));
+
+  // Cubic Hermite interpolation using server velocity to reduce high-speed jumpiness.
+  const segDur = Math.max(0.001, (b.time - a.time) / 1000);
+  const t2 = t * t;
+  const t3 = t2 * t;
+  const h00 = 2 * t3 - 3 * t2 + 1;
+  const h10 = t3 - 2 * t2 + t;
+  const h01 = -2 * t3 + 3 * t2;
+  const h11 = t3 - t2;
+
+  const ax = a.position.x, ay = a.position.y, az = a.position.z;
+  const bx = b.position.x, by = b.position.y, bz = b.position.z;
+  const avx = a.velocity?.x ?? 0, avy = a.velocity?.y ?? 0, avz = a.velocity?.z ?? 0;
+  const bvx = b.velocity?.x ?? 0, bvy = b.velocity?.y ?? 0, bvz = b.velocity?.z ?? 0;
+
   skinMgr.setPosition(
     oppId,
-    a.position.x + (b.position.x - a.position.x) * t,
-    a.position.y + (b.position.y - a.position.y) * t,
-    a.position.z + (b.position.z - a.position.z) * t
+    h00 * ax + h10 * segDur * avx + h01 * bx + h11 * segDur * bvx,
+    h00 * ay + h10 * segDur * avy + h01 * by + h11 * segDur * bvy,
+    h00 * az + h10 * segDur * avz + h01 * bz + h11 * segDur * bvz
   );
 }
 
@@ -4648,7 +4688,13 @@ function interpolateFFA(playerId) {
   if (buf.length < 2) {
     const only = buf[0];
     if (!only) return null;
-    const lead = Math.max(0, Math.min(MAX_EXTRAP_MS, rt - only.time)) / 1000;
+    const speed = Math.sqrt(
+      (only.velocity?.x ?? 0) ** 2 +
+      (only.velocity?.y ?? 0) ** 2 +
+      (only.velocity?.z ?? 0) ** 2
+    );
+    const maxExtrapMs = Math.max(MAX_EXTRAP_MS, Math.min(140, 45 + speed * 2.5));
+    const lead = Math.max(0, Math.min(maxExtrapMs, rt - only.time)) / 1000;
     return {
       x: only.position.x + only.velocity.x * lead,
       y: only.position.y + only.velocity.y * lead,
@@ -4659,10 +4705,24 @@ function interpolateFFA(playerId) {
   if (!a.position || !b.position) return null;
   let t = (rt - a.time) / (b.time - a.time);
   t = Math.max(0, Math.min(1, t));
+
+  const segDur = Math.max(0.001, (b.time - a.time) / 1000);
+  const t2 = t * t;
+  const t3 = t2 * t;
+  const h00 = 2 * t3 - 3 * t2 + 1;
+  const h10 = t3 - 2 * t2 + t;
+  const h01 = -2 * t3 + 3 * t2;
+  const h11 = t3 - t2;
+
+  const ax = a.position.x, ay = a.position.y, az = a.position.z;
+  const bx = b.position.x, by = b.position.y, bz = b.position.z;
+  const avx = a.velocity?.x ?? 0, avy = a.velocity?.y ?? 0, avz = a.velocity?.z ?? 0;
+  const bvx = b.velocity?.x ?? 0, bvy = b.velocity?.y ?? 0, bvz = b.velocity?.z ?? 0;
+
   return {
-    x: a.position.x + (b.position.x - a.position.x) * t,
-    y: a.position.y + (b.position.y - a.position.y) * t,
-    z: a.position.z + (b.position.z - a.position.z) * t,
+    x: h00 * ax + h10 * segDur * avx + h01 * bx + h11 * segDur * bvx,
+    y: h00 * ay + h10 * segDur * avy + h01 * by + h11 * segDur * bvy,
+    z: h00 * az + h10 * segDur * avz + h01 * bz + h11 * segDur * bvz,
   };
 }
 
