@@ -5,6 +5,7 @@
 #include <cmath>
 #include <algorithm>
 #include <sstream>
+#include <cstdlib>
 
 namespace game {
 
@@ -260,6 +261,15 @@ void GameRoom::_tick(float dt)
 {
     if (_phase != "playing") return;
 
+    static const int kStateEveryTicks = [] {
+        int ticks = 2; // default: 100Hz sim -> 50Hz state snapshots
+        if (const char* v = std::getenv("STATE_EVERY_TICKS")) {
+            const int parsed = std::atoi(v);
+            if (parsed > 0) ticks = parsed;
+        }
+        return std::max(1, ticks);
+    }();
+
     _processInputs();
 
     // Apply movement + grapple for each living player
@@ -308,7 +318,7 @@ void GameRoom::_tick(float dt)
 
     // Broadcast state at PATCH_RATE
     ++_patchTick;
-    if (_patchTick >= Config::PATCH_RATE_TICKS) {
+    if (_patchTick >= kStateEveryTicks) {
         _patchTick = 0;
         _broadcastState();
     }

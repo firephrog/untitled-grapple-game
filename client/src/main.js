@@ -4406,6 +4406,8 @@ const CLIENT_TICK_RATE = 100;
 const CLIENT_WALK_SPEED = 25;
 const CLIENT_JUMP_VEL = 10;
 const LOCAL_AUTH_SPEED = 28;
+const INPUT_SEND_HZ = Math.max(20, Number((typeof window !== 'undefined' && window.__INPUT_SEND_HZ) || 60));
+const INPUT_SEND_EVERY_TICKS = Math.max(1, Math.round(CLIENT_TICK_RATE / INPUT_SEND_HZ));
 
 function applyInput(inputs, camDir) {
   const len = Math.sqrt(camDir.x**2 + camDir.z**2);
@@ -4447,6 +4449,8 @@ function applyInput(inputs, camDir) {
 const pending = [];     // { seq, inputs, camDir }
 let   lastAck = 0;
 let   lastReconcileAck = -1;
+let   clientSimTick = 0;
+let   lastSentInputMask = -1;
 
 const localGrapple = {};
 
@@ -6231,6 +6235,7 @@ function animate() {
         camDir: cd,
         camPos: cp
       };
+      clientSimTick++;
 
       pending.push(inp);
       if (pending.length > 120) pending.shift();  // safety cap
@@ -6240,7 +6245,20 @@ function animate() {
         cWorld.step();
       }
 
-      sendGameplay('input', { seq:inp.seq, inputs:inp.inputs, camDir:inp.camDir, camPos:inp.camPos });
+      const inputMask =
+        (keys.w ? 1 : 0) |
+        (keys.a ? 2 : 0) |
+        (keys.s ? 4 : 0) |
+        (keys.d ? 8 : 0);
+      const shouldSendInput =
+        spaceJustPressed ||
+        inputMask !== lastSentInputMask ||
+        (clientSimTick % INPUT_SEND_EVERY_TICKS === 0);
+
+      if (shouldSendInput) {
+        sendGameplay('input', { seq:inp.seq, inputs:inp.inputs, camDir:inp.camDir, camPos:inp.camPos });
+        lastSentInputMask = inputMask;
+      }
 
       acc -= FT;
     }
