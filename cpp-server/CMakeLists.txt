@@ -23,6 +23,10 @@ if(NOT Corrosion_FOUND)
     FetchContent_MakeAvailable(Corrosion)
 endif()
 
+# Ensure Corrosion/cargo emits cxx bridge headers into a deterministic path
+# that our C++ include uses: target/cxxbridge/rapier-bridge/src/lib.rs.h
+set(ENV{CARGO_TARGET_DIR} "${CMAKE_CURRENT_SOURCE_DIR}/target")
+
 corrosion_import_crate(MANIFEST_PATH "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml")
 # corrosion creates a target named `rapier_bridge`
 
