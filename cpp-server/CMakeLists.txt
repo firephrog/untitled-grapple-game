@@ -4,6 +4,12 @@ project(ugg-game-server LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+option(UGG_NATIVE_OPTIMIZE "Enable native CPU tuning flags for Release builds" ON)
+
 # Export compile_commands.json so VS Code IntelliSense can find all headers
 # automatically (avoids manual includePath configuration).
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -170,6 +176,21 @@ set(SRC
 )
 
 add_executable(ugg-server ${SRC})
+
+include(CheckIPOSupported)
+check_ipo_supported(RESULT UGG_IPO_SUPPORTED OUTPUT UGG_IPO_ERROR)
+if(UGG_IPO_SUPPORTED)
+    set_property(TARGET ugg-server PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+else()
+    message(STATUS "IPO/LTO not enabled: ${UGG_IPO_ERROR}")
+endif()
+
+if(UGG_NATIVE_OPTIMIZE)
+    target_compile_options(ugg-server PRIVATE
+        $<$<AND:$<CONFIG:Release>,$<CXX_COMPILER_ID:GNU>>:-march=native -mtune=native>
+        $<$<AND:$<CONFIG:Release>,$<CXX_COMPILER_ID:Clang>>:-march=native -mtune=native>
+    )
+endif()
 
 target_include_directories(ugg-server PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"

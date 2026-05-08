@@ -15,6 +15,13 @@ const { getGrpcClient }      = require('../game/GrpcClient');
 const { getRedisGameBridge } = require('../game/RedisGameBridge');
 const { MAP_LIST, getMap, resolveVotes, mapFilePath } = require('../maps');
 const { RoomState, PlayerState, BombState } = require('../schema');
+const { writeDiagnostic } = require('../lib/DiagnosticsLogger');
+
+const ROOM_PATCH_HZ = Math.max(1, Number(process.env.ROOM_PATCH_HZ || 60));
+const ROOM_PATCH_MIN_INTERVAL_MS = 1000 / ROOM_PATCH_HZ;
+const PING_GAP_SPIKE_MS = Math.max(250, Number(process.env.PING_GAP_SPIKE_MS || 2500));
+const SNAPSHOT_PROC_SPIKE_MS = Math.max(1, Number(process.env.SNAPSHOT_PROC_SPIKE_MS || 12));
+const VERBOSE_PING_LOG = process.env.ROOM_VERBOSE_PING_LOG === '1';
 
 class BaseGameRoom extends Room {
   onCreate(options) {
@@ -36,6 +43,8 @@ class BaseGameRoom extends Room {
     this._pingCount   = 0;     // total pings received
     this._snapProcMs  = 0;     // cumulative ms in _applyStateSnapshot, reset every 10 pings
     this._snapCount   = 0;     // gRPC snapshots processed, reset every 10 pings
+    this._lastPingAt  = new Map();
+    this._lastPatchAtMs = 0;
 
     // Disable the timer-based patch loop — we call broadcastPatch() manually
     // immediately after each gRPC state update, so clients get it with zero
@@ -52,8 +61,23 @@ class BaseGameRoom extends Room {
       const _t0 = process.hrtime.bigint();
       c.send('pong', { t: d?.t });
       const handlerUs = Number(process.hrtime.bigint() - _t0) / 1e3;
+      const now = Date.now();
+      const prev = this._lastPingAt.get(c.sessionId) || now;
+      const gapMs = now - prev;
+      this._lastPingAt.set(c.sessionId, now);
+
+      if (gapMs > PING_GAP_SPIKE_MS) {
+        writeDiagnostic('ping_spike', {
+          roomId: this.roomId,
+          sessionId: c.sessionId,
+          gapMs,
+          clients: this.clients.length,
+          mode: this._mode,
+        });
+      }
+
       this._pingCount++;
-      if (this._pingCount % 10 === 0) {
+      if (VERBOSE_PING_LOG && this._pingCount % 10 === 0) {
         const avgSnapMs = this._snapCount
           ? (this._snapProcMs / this._snapCount).toFixed(2)
           : '—';
@@ -262,8 +286,12 @@ class BaseGameRoom extends Room {
     if (msg.payload === 'state') {
       const snap = msg.state;
       this._applyStateSnapshot(snap);
-      // Push the patch to clients immediately (no timer wait)
-      this.broadcastPatch();
+      // Prevent over-patching at high authoritative tick rates.
+      const now = Date.now();
+      if (now - this._lastPatchAtMs >= ROOM_PATCH_MIN_INTERVAL_MS) {
+        this.broadcastPatch();
+        this._lastPatchAtMs = now;
+      }
     } else if (msg.payload === 'event') {
       let data = {};
       try { data = JSON.parse(msg.event.json_payload); } catch {}
@@ -359,8 +387,19 @@ class BaseGameRoom extends Room {
 
     if (snap.phase) this.state.phase = snap.phase;
 
-    this._snapProcMs += Date.now() - _t0;
+    const elapsedMs = Date.now() - _t0;
+    this._snapProcMs += elapsedMs;
     this._snapCount++;
+
+    if (elapsedMs > SNAPSHOT_PROC_SPIKE_MS) {
+      writeDiagnostic('snapshot_proc_spike', {
+        roomId: this.roomId,
+        elapsedMs,
+        players: this.state.players.size,
+        bombs: this.state.bombs.size,
+        mode: this._mode,
+      });
+    }
   }
 
   // Returns the MongoDB user ID string for a session ID (or the session ID as fallback)

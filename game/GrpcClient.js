@@ -27,16 +27,28 @@ class GrpcClient {
     this._client  = new proto.GameService(
       this._address,
       grpc.credentials.createInsecure(),
+      {
+        'grpc.keepalive_time_ms': Number(process.env.GRPC_KEEPALIVE_TIME_MS || 20000),
+        'grpc.keepalive_timeout_ms': Number(process.env.GRPC_KEEPALIVE_TIMEOUT_MS || 10000),
+        'grpc.keepalive_permit_without_calls': 1,
+        'grpc.http2.max_pings_without_data': 0,
+        'grpc.initial_reconnect_backoff_ms': Number(process.env.GRPC_INITIAL_BACKOFF_MS || 250),
+        'grpc.max_reconnect_backoff_ms': Number(process.env.GRPC_MAX_BACKOFF_MS || 2000),
+      },
     );
     this._maxUnaryRetries = Number(process.env.GRPC_UNARY_RETRIES || 10);
     this._retryDelayMs = Number(process.env.GRPC_UNARY_RETRY_DELAY_MS || 250);
+    this._unaryDeadlineMs = Number(process.env.GRPC_UNARY_DEADLINE_MS || 2500);
   }
 
   // ── unary helpers ──────────────────────────────────────────────────────────
 
   _call(method, req) {
     const attempt = (left) => new Promise((resolve, reject) => {
-      this._client[method](req, (err, resp) => {
+      this._client[method](
+        req,
+        { deadline: Date.now() + this._unaryDeadlineMs },
+        (err, resp) => {
         if (!err) return resolve(resp);
 
         // Startup race hardening: C++ may still be binding when Node creates a room.

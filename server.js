@@ -24,6 +24,10 @@ const { TITLES, TITLE_LIST, getTitle } = require('./skins');
 const { migrateSkinsStructure }        = require('./migrations/migrateSkinsStructure');
 const { getGrpcClient }                = require('./game/GrpcClient');
 const { getRedisGameBridge }           = require('./game/RedisGameBridge');
+const { writeDiagnostic, getDiagnosticsPath } = require('./lib/DiagnosticsLogger');
+
+const EVENT_LOOP_WARN_MS = Math.max(1, Number(process.env.EVENT_LOOP_WARN_MS || 20));
+const EVENT_LOOP_LOG_MS = Math.max(EVENT_LOOP_WARN_MS, Number(process.env.EVENT_LOOP_LOG_MS || 60));
 
 
 //mango db
@@ -995,17 +999,57 @@ gameServer.define('lobby', Lobby);
 // that prevents callbacks (including the ping handler) from running on time.
 {
   const PROBE_INTERVAL = 50;   // fire every 50ms
-  const WARN_THRESHOLD = 20;   // warn if actual delay exceeds expected by >20ms
+  const WARN_THRESHOLD = EVENT_LOOP_WARN_MS;
+  let _lastLoggedAt = 0;
   let _lastProbe = Date.now();
   setInterval(() => {
     const now   = Date.now();
     const stall = now - _lastProbe - PROBE_INTERVAL;
     if (stall > WARN_THRESHOLD) {
       console.warn(`[EventLoop stall] ${stall}ms — event loop was blocked`);
+      if (stall >= EVENT_LOOP_LOG_MS && (now - _lastLoggedAt) >= 1000) {
+        _lastLoggedAt = now;
+        writeDiagnostic('event_loop_stall', {
+          stallMs: stall,
+          thresholdMs: EVENT_LOOP_LOG_MS,
+          rssBytes: process.memoryUsage().rss,
+          heapUsedBytes: process.memoryUsage().heapUsed,
+        });
+      }
     }
     _lastProbe = now;
   }, PROBE_INTERVAL).unref(); // unref so it doesn't keep process alive
 }
+
+process.on('uncaughtException', (err) => {
+  writeDiagnostic('process_crash', {
+    reason: 'uncaughtException',
+    message: err?.message || String(err),
+    stack: err?.stack || '',
+  });
+  console.error('[FATAL] uncaughtException:', err);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  writeDiagnostic('process_crash', {
+    reason: 'unhandledRejection',
+    message: reason?.message || String(reason),
+    stack: reason?.stack || '',
+  });
+  console.error('[FATAL] unhandledRejection:', reason);
+  process.exit(1);
+});
+
+process.on('SIGINT', () => {
+  writeDiagnostic('process_signal', { signal: 'SIGINT' });
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  writeDiagnostic('process_signal', { signal: 'SIGTERM' });
+  process.exit(0);
+});
 
 httpServer.listen(CFG.PORT, () => {
   console.log(`[STARTUP] Untitled Grapple Game V0.6`);
@@ -1026,4 +1070,10 @@ httpServer.listen(CFG.PORT, () => {
   console.log(`[STARTUP] gRPC PVP backend: ${process.env.CPP_SERVER_ADDR || '127.0.0.1:50051'}`);
   console.log(`[STARTUP] gRPC FFA backend: ${process.env.FFA_CPP_SERVER_ADDR || process.env.CPP_SERVER_ADDR || '127.0.0.1:50051'}`);
   console.log('[STARTUP] Game simulation: C++ server (Rapier3D via cxx bridge)');
+  console.log(`[STARTUP] Diagnostics log: ${getDiagnosticsPath()}`);
+  writeDiagnostic('process_start', {
+    port: CFG.PORT,
+    grpcPvp: process.env.CPP_SERVER_ADDR || '127.0.0.1:50051',
+    grpcFfa: process.env.FFA_CPP_SERVER_ADDR || process.env.CPP_SERVER_ADDR || '127.0.0.1:50051',
+  });
 });
