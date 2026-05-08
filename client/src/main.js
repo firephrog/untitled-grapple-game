@@ -6318,8 +6318,12 @@ function animate() {
 
       if (!localServerAuthMotion) {
         applyInput(inp.inputs, inp.camDir);
-        cWorld.step();
       }
+
+      // Always advance local physics so camera/body motion stays continuous.
+      // In server-authoritative phases (grapple/high-speed), we skip client input
+      // forces but still integrate velocity/collisions every tick.
+      cWorld.step();
 
       const inputMask =
         (keys.w ? 1 : 0) |

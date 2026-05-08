@@ -217,7 +217,7 @@ if [ "$PROFILE_EC2" -eq 1 ]; then
   # On 2 vCPU instances, one shared C++ backend significantly reduces context
   # switching and avoids starvation under mixed PVP/FFA load.
   echo "[start] Starting single shared C++ physics server on :${CPP_PVP_GRPC_PORT}..."
-  STATE_EVERY_TICKS=3 GRPC_PORT=${CPP_PVP_GRPC_PORT} WS_PORT=${CPP_PVP_WS_PORT} "$cpp_bin" >"$ROOT/.runlogs/cpp-shared.log" 2>&1 &
+  STATE_EVERY_TICKS=2 GRPC_PORT=${CPP_PVP_GRPC_PORT} WS_PORT=${CPP_PVP_WS_PORT} "$cpp_bin" >"$ROOT/.runlogs/cpp-shared.log" 2>&1 &
   cpp_shared_pid=$!
   echo "  PID $cpp_shared_pid  -> $cpp_bin (gRPC ${CPP_PVP_GRPC_PORT}, WS ${CPP_PVP_WS_PORT}, mode=shared)"
 
@@ -256,7 +256,7 @@ echo "[start] Starting Node.js game server..."
     FFA_CPP_SERVER_ADDR="127.0.0.1:${CPP_FFA_GRPC_PORT}" \
     CPP_PVP_WS_PORT="${CPP_PVP_WS_PORT}" \
     CPP_FFA_WS_PORT="${CPP_FFA_WS_PORT}" \
-    ROOM_PATCH_HZ='30' \
+    ROOM_PATCH_HZ='100' \
     EVENT_LOOP_WARN_MS='25' \
     EVENT_LOOP_LOG_MS='80' \
     GRPC_UNARY_RETRIES='6' \
